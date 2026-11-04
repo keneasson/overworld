@@ -163,7 +163,7 @@ export function Unlock({ onSubmit, error }) {
         <button type="submit" className="primary">
           Unlock
         </button>
-        <p className="muted small">The key was printed when you deployed (also saved in .projectmap.local.json).</p>
+        <p className="muted small">The key is saved in .conf/deploy.json on the machine you deployed from.</p>
       </form>
     </div>
   );

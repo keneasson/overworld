@@ -10,12 +10,13 @@
 // Run the copy before deploying code that reads the new keys, and prune once the app checks out.
 // It's safe to repeat: a project already in the new layout is never copied over again.
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import { dynamoTable } from '../../api/model/table.mjs';
 import { modelFor } from '../../api/model/index.mjs';
+import { readDeployConfig } from '../local-config.mjs';
 
 const root = new URL('../../', import.meta.url).pathname;
-const local = JSON.parse(readFileSync(`${root}.projectmap.local.json`, 'utf8'));
+const local = readDeployConfig();
 const prune = process.argv.includes('--prune');
 const table = await dynamoTable(local.tableName, { region: local.region });
 const model = modelFor(table);

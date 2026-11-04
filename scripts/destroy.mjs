@@ -2,11 +2,10 @@
 // your maps survive; the command to delete it is printed at the end.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readDeployConfig } from './local-config.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
-const localFile = `${root}.projectmap.local.json`;
-const local = existsSync(localFile) ? JSON.parse(readFileSync(localFile, 'utf8')) : {};
+const local = readDeployConfig();
 const stack = process.env.STACK_NAME ?? local.stack ?? 'projectmap';
 const region = process.env.AWS_REGION ?? local.region;
 const profileArgs = process.env.AWS_PROFILE ? ['--profile', process.env.AWS_PROFILE] : [];

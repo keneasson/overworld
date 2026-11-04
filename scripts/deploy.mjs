@@ -2,20 +2,27 @@
 //
 //   npm run deploy                       # uses your default AWS profile/region
 //   AWS_PROFILE=x AWS_REGION=y npm run deploy
-//   STACK_NAME=projectmap-dev npm run deploy
+//   STACK_NAME=projectmap-dev npm run deploy -- --new   # a second stack
 //
-// The access key is generated on first deploy and kept in .projectmap.local.json
+// The access key is generated on first deploy and kept in .conf/deploy.json
 // (git-ignored). Set PROJECTMAP_ACCESS_KEY to choose your own.
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { build } from 'esbuild';
 import { APP_NAME } from '../shared/brand.js';
+import { readDeployConfig, writeDeployConfig } from './local-config.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
-const localFile = `${root}.projectmap.local.json`;
-const local = existsSync(localFile) ? JSON.parse(readFileSync(localFile, 'utf8')) : {};
+const local = readDeployConfig();
+
+// A checkout without .conf/ (a worktree, a fresh clone) doesn't know the live stack's region or
+// access key: deploying from it would replace the key, or create a second stack elsewhere.
+if (!local.stack && !process.argv.includes('--new')) {
+  console.error('✖ No .conf/deploy.json in this checkout.\n  Copy .conf/ from the checkout you deploy from, or run `npm run deploy -- --new` to create a new stack.');
+  process.exit(1);
+}
 
 function run(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, { cwd: root, stdio: opts.capture ? ['ignore', 'pipe', 'inherit'] : 'inherit', encoding: 'utf8' });
@@ -77,10 +84,9 @@ const outputs = JSON.parse(
 const out = Object.fromEntries(outputs.map((o) => [o.OutputKey, o.OutputValue]));
 const url = out.Url.replace(/\/$/, '');
 
-writeFileSync(localFile, JSON.stringify({ stack, region, url, accessKey, tableName: out.TableName, account: identity.Account }, null, 2));
-chmodSync(localFile, 0o600);
+writeDeployConfig({ stack, region, url, accessKey, tableName: out.TableName, account: identity.Account });
 
 const health = await fetch(`${url}/api/health`).then((r) => r.status).catch((e) => e.message);
 console.log(`\n✔ ${APP_NAME} is live: ${url}`);
 console.log(`  health check: ${health}`);
-console.log(`  access key:   saved in .projectmap.local.json (enter it once per browser)`);
+console.log(`  access key:   saved in .conf/deploy.json (enter it once per browser)`);

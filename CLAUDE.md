@@ -25,8 +25,8 @@ npm run deploy   # builds, bundles, sam deploy; prints the URL and runs a health
 
 ## Conventions
 
-- **Naming.** The product name may change, so keep it in `shared/brand.js` and keep code comments name-neutral. Deployed identifiers stay `projectmap`: the stack, the `x-projectmap-key` header, browser storage keys and `.projectmap.local.json`.
-- **Never print or commit secrets.** That covers the access key in `.projectmap.local.json` and GitHub tokens, which are used per request and never stored.
+- **Naming.** The product name may change, so keep it in `shared/brand.js` and keep code comments name-neutral. Deployed identifiers stay `projectmap`: the stack, the `x-projectmap-key` header and browser storage keys.
+- **Secrets live in `.conf/`, which git ignores as a whole.** Never print or commit them. That covers the access key in `.conf/deploy.json` and GitHub tokens, which are used per request and never stored. A new secret or machine-local setting goes in `.conf/`, read through `scripts/local-config.mjs`.
 - **Code style.**
   - Match the surrounding code: single quotes, long lines (about 180 columns), and short comments that say why.
   - No formatter is installed, so don't run `npx prettier`.

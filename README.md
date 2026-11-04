@@ -102,19 +102,20 @@ The rollups (progress, health, bug counts, definition score) are computed in the
 npm install
 npm run dev        # http://localhost:5173. The API runs in-process on a JSON file in .data/
 npm test           # API, import engine and layout tests
-npm run deploy     # builds, bundles, and runs sam deploy (default AWS profile/region)
+npm run deploy     # builds, bundles, and runs sam deploy (first time: npm run deploy -- --new)
 npm run destroy    # removes the stack (the table is kept; the command to drop it is printed)
 ```
 
 `deploy` uses `AWS_PROFILE`, `AWS_REGION` and `STACK_NAME` when set. On the first deploy it
-generates an access key and writes it, with the URL, to `.projectmap.local.json` (git-ignored,
-mode 600). Set `PROJECTMAP_ACCESS_KEY` to choose your own key.
+generates an access key and writes it, with the URL, to `.conf/deploy.json`. Set
+`PROJECTMAP_ACCESS_KEY` to choose your own key. Secrets and machine-local settings all live in
+`.conf/`, which git ignores as a whole.
 
 Changes to the keys of data that is already deployed go in `scripts/migrations/`, numbered and
 run by hand. Each migration backs the table up to `.data/backups/` before it writes anything.
 
 The name lives in `shared/brand.js` (plus this README and the descriptions in `template.yaml`).
-The stack, the access-key header, browser storage and `.projectmap.local.json` keep the original
+The stack, the access-key header and browser storage keep the original
 `projectmap` name on purpose, so renaming never strands a deployed map.
 
 ## Mapping a GitHub repository

@@ -3,6 +3,7 @@ web/dist/
 .build/
 .aws-sam/
 .data/
-.projectmap.local.json
+# Secrets and machine-local settings: everything in .conf/ stays on this machine.
+.conf/
 .DS_Store
 samconfig.toml
