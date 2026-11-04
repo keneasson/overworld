@@ -73,7 +73,9 @@ export async function importGitHub({ repo, token }, fetchImpl = fetch) {
   });
   const specs = specPaths.map((p, i) => texts[manifestPaths.length + i] && parseSpec(p, texts[manifestPaths.length + i])).filter((s) => s && s.sections.length);
 
-  return buildProject({ repo: info, paths, manifests, specs, issues });
+  // Open pull requests saying "Closes #N" put issue N in progress. One page is plenty for most repositories.
+  const pulls = await rest(`/repos/${owner}/${name}/pulls?state=open&per_page=100`).catch(() => []);
+  return buildProject({ repo: info, paths, manifests, specs, issues, pulls: (Array.isArray(pulls) ? pulls : []).map((p) => ({ number: p.number, title: p.title, body: p.body ?? '' })) });
 }
 
 async function inBatches(items, size, fn) {
@@ -94,6 +96,7 @@ async function viaRest(owner, name, rest) {
     title: i.title,
     body: i.body ?? '',
     state: i.state,
+    stateReason: i.state_reason ?? null,
     url: i.html_url,
     labels: i.labels.map((l) => (typeof l === 'string' ? l : l.name)),
     milestone: i.milestone && { title: i.milestone.title, dueOn: i.milestone.due_on },
@@ -121,7 +124,7 @@ async function viaRest(owner, name, rest) {
 }
 
 async function viaGraphQL(owner, name, headers, fetchImpl) {
-  const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){issues(first:50,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor}nodes{number title body state url labels(first:20){nodes{name}} milestone{title dueOn} assignees(first:3){nodes{login}} parent{number} issueType{name} closedByPullRequestsReferences(first:5){nodes{number files(first:100){nodes{path}}}}}}}}`;
+  const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){issues(first:50,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor}nodes{number title body state stateReason url labels(first:20){nodes{name}} milestone{title dueOn} assignees(first:3){nodes{login}} parent{number} issueType{name} closedByPullRequestsReferences(first:5){nodes{number files(first:100){nodes{path}}}}}}}}`;
   const issues = [];
   let after = null;
   do {
@@ -139,6 +142,7 @@ async function viaGraphQL(owner, name, headers, fetchImpl) {
         title: i.title,
         body: i.body ?? '',
         state: i.state.toLowerCase(),
+        stateReason: i.stateReason,
         url: i.url,
         labels: i.labels.nodes.map((l) => l.name),
         milestone: i.milestone,

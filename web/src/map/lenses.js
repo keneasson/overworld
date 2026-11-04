@@ -43,7 +43,8 @@ function politicalFill(n) {
   const a = areaOf(n);
   const base = hsl(AREA_HUES[a.index % AREA_HUES.length]);
   base.l = Math.min(0.94, Math.max(0.6, base.l + (n.depth - 1) * 0.025 + ((n.index % 3) - 1) * 0.035));
-  base.s *= n.status === 'done' ? 0.55 : 1;
+  base.s *= n.status === 'done' ? 0.55 : n.status === 'rejected' ? 0.1 : 1;
+  if (n.status === 'rejected') base.l = Math.min(0.95, base.l + 0.05);
   return base.formatHex();
 }
 
@@ -57,6 +58,33 @@ const fog = interpolateRgbBasis(['#c4c9d0', '#e6e1cc', '#d5ead0', '#bfe0bf']);
 const kept = interpolateRgbBasis(['#f7b2ac', '#ffe08f', '#bde5c6', '#8fd19e']);
 const BEHAVIOUR_FILL = { done: '#8fd19e', in_progress: '#ffe08f', review: '#ffe08f', planned: '#f7b2ac', blocked: '#f7b2ac', idea: '#e3e5e8' };
 const BEHAVIOUR_DOT = { in_progress: '#f9ab00', review: '#f9ab00', planned: '#d93025', blocked: '#d93025', idea: '#9b8cff' };
+// The lifecycle, in the colours of the status: labels on GitHub. Containers show what most of their work is waiting on.
+const LIFECYCLE = [
+  ['needs_decision', '#8b5cf6', 'Needs decision'],
+  ['blocked', '#ea4335', 'Blocked'],
+  ['in_progress', '#f59e0b', 'In progress'],
+  ['review', '#12b5cb', 'In review'],
+  ['ready', '#2da44e', 'Ready'],
+  ['planned', '#c9cdd2', 'Open, no status'],
+  ['idea', '#e3e5e8', 'Draft'],
+  ['done', '#9cc0f5', 'Done'],
+  ['rejected', '#f1f3f4', 'Rejected (ruin)'],
+];
+const NO_WORK = '#eceee6';
+const LIFECYCLE_COLOR = Object.fromEntries(LIFECYCLE.map(([s, c]) => [s, c]));
+const LIFECYCLE_NAME = Object.fromEntries(LIFECYCLE.map(([s, , l]) => [s, l]));
+const OPEN = LIFECYCLE.map(([s]) => s).filter((s) => s !== 'done' && s !== 'rejected');
+// The state that most of a region's open work is in; done only when nothing is open.
+function lifecycleOfRegion(n) {
+  const states = n.stats.states;
+  const open = OPEN.filter((s) => states[s]).sort((a, b) => states[b] - states[a])[0];
+  return open ?? (states.done ? 'done' : n.status === 'rejected' || states.rejected ? 'rejected' : 'done');
+}
+const lifecycleSummary = (states) =>
+  LIFECYCLE.filter(([s]) => states[s])
+    .map(([s, , l]) => `${states[s]} ${l.replace(' (ruin)', '').toLowerCase()}`)
+    .join(' · ');
+
 const OWNER_COLORS = ['#a9cdf5', '#f7c59f', '#b6e0b0', '#e9b6e3', '#f5e19c', '#a7e0dc', '#d3c0f0', '#f4b0b0', '#c9d99a', '#b9c7d6'];
 
 const pct = (v) => `${Math.round(v * 100)}%`;
@@ -162,6 +190,23 @@ export const LENSES = [
     ],
   },
   {
+    id: 'lifecycle',
+    name: 'Lifecycle',
+    chip: 'Lifecycle',
+    icon: '🚦',
+    blurb: 'Where the work stands: ready, in progress, waiting on a decision, done or rejected.',
+    theme: LIGHT,
+    fill: (n) => (!Object.keys(n.stats.states).length ? NO_WORK : (LIFECYCLE_COLOR[n.children.length ? lifecycleOfRegion(n) : n.status] ?? LIFECYCLE_COLOR.planned)),
+    hatch: (n) => n.status === 'rejected',
+    dots: (n) => !n.children.length && n.status === 'needs_decision',
+    dotColor: () => '#8b5cf6',
+    stat: (n) => (!Object.keys(n.stats.states).length ? 'No work here' : n.children.length ? lifecycleSummary(n.stats.states) : (LIFECYCLE_NAME[n.status] ?? n.status)),
+    matches: (n) => !n.children.length && (n.status === 'needs_decision' || n.tags.includes('status-unclear')),
+    sort: (a, b) => (a.status === 'needs_decision' ? 0 : 1) - (b.status === 'needs_decision' ? 0 : 1),
+    count: (tree) => tree.root.stats.states.needs_decision ?? 0,
+    legend: () => [...LIFECYCLE.map(([, color, label]) => ({ color, label, hatch: label.includes('ruin') })), { color: NO_WORK, label: 'No work here' }],
+  },
+  {
     id: 'behaviours',
     name: 'Behaviours',
     chip: 'Behaviours',
@@ -249,5 +294,8 @@ export const LIGHT_COLORS = {
   in_progress: '#fff0b8',
   review: '#fff0b8',
   blocked: '#ff8a80',
+  ready: '#ffbf5e',
+  needs_decision: '#b9a8ff',
   done: '#ffffff',
+  rejected: '#3c4043',
 };

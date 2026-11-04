@@ -54,6 +54,11 @@ plus *Behind the screen*, and top-level items have *Its own continent?*.
 - **Progress**: terrain from sand (untouched) to deep green (done).
 - **Bugs**: heat by open bugs, with each bug as an incident dot.
 - **Poorly defined (Fog)**: hatches items missing a summary, details, acceptance criteria or an estimate.
+- **Lifecycle**: where the work stands, using the `status:` labels in [CONTRIBUTING.md](CONTRIBUTING.md):
+  - draft, needs decision, ready, in progress, done and rejected;
+  - rejected work stays as a faded, hatched ruin;
+  - an open `## Open questions` section, or an open pull request that closes the issue, overrides the label;
+  - regions take the colour of most of their open work.
 - **Behaviours**: the laws of each place. Regions are coloured by how many of their spec'd behaviours
   are kept (green), partly kept (amber) or missing (red); undecided ones are violet; land with no spec is hatched.
 - **New features**: a night view where every `new-feature` user story is a light, so clusters glow.

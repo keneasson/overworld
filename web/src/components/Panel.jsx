@@ -29,7 +29,7 @@ export function KindBadge({ kind }) {
   return <span className={`kind kind-${kind}`}>{KIND_LABEL[kind]}</span>;
 }
 
-const STATUS_DOT = { idea: '#a142f4', planned: '#9aa0a6', in_progress: '#1a73e8', review: '#12b5cb', blocked: '#d93025', done: '#1e8e3e' };
+const STATUS_DOT = { idea: '#a142f4', planned: '#9aa0a6', ready: '#2da44e', needs_decision: '#8b5cf6', in_progress: '#1a73e8', review: '#12b5cb', blocked: '#d93025', done: '#1e8e3e', rejected: '#bdc1c6' };
 
 export function StatusDot({ status }) {
   return <span className="status-dot" style={{ background: STATUS_DOT[status] }} title={STATUS_LABEL[status]} />;

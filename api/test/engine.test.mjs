@@ -163,3 +163,36 @@ test('reads behaviour specs: status, decisions and the issues they cite', () => 
     ],
   );
 });
+
+test('reads the lifecycle from labels, closed reasons, pull requests and open questions', async () => {
+  const { lifecycleOf, closedByOpenPrs, openQuestions, usesLifecycle } = await import('../engine/lifecycle.mjs');
+  const it = (labels, extra = {}) => ({ number: 7, title: 'x', body: '', state: 'open', labels, assignees: [], ...extra });
+  const strict = { strict: true };
+  // LIFE-01
+  assert.equal(lifecycleOf(it(['status:draft']), strict).status, 'idea');
+  assert.equal(lifecycleOf(it(['status:ready']), strict).status, 'ready');
+  assert.equal(lifecycleOf(it(['status:in-progress']), strict).status, 'in_progress');
+  assert.deepEqual(lifecycleOf(it(['status:needs-decision']), strict), { status: 'needs_decision', definition: 'vague', unclear: '' });
+  // LIFE-02
+  assert.equal(lifecycleOf(it([], { state: 'closed', stateReason: 'COMPLETED' })).status, 'done');
+  assert.equal(lifecycleOf(it([], { state: 'closed', stateReason: 'not_planned' })).status, 'rejected');
+  assert.equal(lifecycleOf(it([], { state: 'closed', stateReason: null })).status, 'done', 'old issues closed before reasons existed are done');
+  // LIFE-03
+  const inProgress = closedByOpenPrs([{ number: 30, title: 'Lifecycle layer', body: 'Closes #7. Also fixes: #9; refs #11' }]);
+  assert.deepEqual([...inProgress].sort(), [7, 9]);
+  assert.equal(lifecycleOf(it(['status:ready']), { ...strict, inProgress }).status, 'in_progress', 'the pull request beats the label');
+  // LIFE-04
+  const asking = '## Why\nBecause.\n\n## Open questions\n\n- Fargate or Cloudflare?\n';
+  assert.equal(openQuestions(asking), '- Fargate or Cloudflare?');
+  assert.equal(openQuestions('## Open questions\n\n<!-- list them here -->\n'), '', 'template comments are not questions');
+  assert.equal(openQuestions('## Open questions\n\nNone at the epic level.\n'), '');
+  assert.equal(openQuestions('## Open questions\n\n---\n📍 placed by words'), '', 'the placement note is not a question');
+  assert.equal(lifecycleOf(it(['status:ready'], { body: asking }), strict).status, 'needs_decision', 'open questions beat the label');
+  // LIFE-05
+  assert.equal(lifecycleOf(it([]), strict).unclear, 'it has no status label');
+  assert.equal(lifecycleOf(it(['status:ready', 'status:draft']), strict).unclear, 'it has 2 status labels');
+  // Repositories without the lifecycle read as before.
+  assert.equal(usesLifecycle([it(['bug'])]), false);
+  assert.deepEqual(lifecycleOf(it(['wip'])), { status: 'in_progress', definition: 'auto', unclear: '' });
+  assert.equal(lifecycleOf(it(['blocked'])).status, 'blocked');
+});

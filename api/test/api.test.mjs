@@ -105,7 +105,9 @@ function fakeShop() {
     issue(4, 'Card tokens', 'Part of #1. See `apps/web/app/api/payments/route.ts`.', { milestone: { title: 'v1', due_on: '2027-01-31T00:00:00Z' } }),
     issue(5, 'Think about the vibe', 'Hmm.'),
     issue(6, 'A PR', '', { pull_request: {} }),
+    issue(8, 'Dark mode toggle', 'Maybe later.', { state: 'closed', state_reason: 'not_planned' }),
   ];
+  const pulls = [{ number: 9, title: 'Vibes', body: 'Closes #5' }];
   const files = { 'package.json': { name: 'shop', workspaces: ['apps/*'] }, 'apps/web/package.json': { name: 'web', dependencies: { next: '16.0.0', stripe: '19.0.0' } } };
   const spec =
     '# Behaviour spec: Checkout\n\n> What paying must do.\n\n## 1. Paying — `PAY`\n\n| ID | Scenario | Status |\n|---|---|---|\n| PAY-01 | A saved card pays in one tap. | ✅ |\n| PAY-02 | A coupon applies before paying. | ❌ #3 |\n| PAY-03 | Who refunds? | 🔷 |\n';
@@ -130,6 +132,8 @@ function fakeShop() {
         ? ((files[decodeURIComponent(raw[1])] && JSON.stringify(files[decodeURIComponent(raw[1])])) ?? (raw[1].endsWith('checkout.md') ? spec : null))
         : url.includes('/issues?')
           ? issues
+          : url.includes('/pulls?')
+            ? pulls
           : url.includes('/git/trees/')
             ? { tree }
             : { full_name: 'octo/shop', description: '', html_url: 'https://github.com/octo/shop', default_branch: 'main' };
@@ -166,6 +170,8 @@ test('maps a GitHub repository: code is the land, issues the work, specs the law
   assert.equal(byTitle('#3 ').priority, 'P1');
   assert.equal(byTitle('#3 ').status, 'in_progress');
   assert.equal(byTitle('#2 ').status, 'done');
+  assert.equal(byTitle('#8 ').status, 'rejected', 'closed as not planned is a ruin, not done');
+  assert.equal(byTitle('#5 ').status, 'in_progress', 'an open pull request that closes it');
   assert.equal(byTitle('#2 ').links[0].type, 'depends');
   assert.equal(byTitle('#4 ').due, '2027-01-31');
   assert.equal(nodes.find((n) => n.id === byTitle('#5 ').parentId).title, 'Uncharted', 'nothing to go by: uncharted');

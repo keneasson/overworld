@@ -1,7 +1,7 @@
 // Shared vocabulary for the map. Imported by the Lambda API and the web app.
 
 export const KINDS = ['project', 'area', 'epic', 'feature', 'story', 'task', 'bug', 'behavior'];
-export const STATUSES = ['idea', 'planned', 'in_progress', 'review', 'blocked', 'done'];
+export const STATUSES = ['idea', 'planned', 'ready', 'needs_decision', 'in_progress', 'review', 'blocked', 'done', 'rejected'];
 export const HEALTH = ['auto', 'on_track', 'at_risk', 'off_track'];
 export const DEFINITION = ['auto', 'clear', 'vague'];
 export const PRIORITIES = ['', 'P0', 'P1', 'P2', 'P3'];
@@ -37,10 +37,13 @@ export const KIND_LABEL = {
 export const STATUS_LABEL = {
   idea: 'Idea',
   planned: 'Planned',
+  ready: 'Ready',
+  needs_decision: 'Needs decision',
   in_progress: 'In progress',
   review: 'In review',
   blocked: 'Blocked',
   done: 'Done',
+  rejected: 'Rejected',
 };
 
 export const LINK_LABEL = {
