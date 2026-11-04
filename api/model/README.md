@@ -42,6 +42,9 @@ only projects carry its keys, which makes it the project list.
    `api/test/model.test.mjs`.
 4. If existing keys change, add a migration in `scripts/migrations/` that backs the table up
    first.
+5. A new index ships in its own deploy, before any code that reads it. CloudFormation reports
+   the table as updated while DynamoDB is still filling the index, and reads fail until it's
+   done. Adding GSI1 caused about 8 minutes of errors on the project list.
 
 ## Planned for accounts and billing (not built)
 
