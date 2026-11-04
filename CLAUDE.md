@@ -1,0 +1,33 @@
+# Overworld
+
+A project shown as a map. The code is the land, issues are the work on it, and behaviour specs
+are its laws. Zoom out to see the whole product and zoom in to see one task. `README.md`
+explains the product. This file covers how to work on it.
+
+## Commands
+
+```sh
+npm run dev      # web app + API in-process on .data/table.json, http://localhost:5173
+npm test         # must pass before every deploy
+npm run deploy   # builds, bundles, sam deploy; prints the URL and runs a health check
+```
+
+## Where things go
+
+- `api/app.mjs`: the API routes, acting as the controller. It never builds keys and never imports the AWS SDK.
+- `api/model/`: the only code that talks to DynamoDB, using a single-table design.
+  - A new data need gets an access pattern in `api/model/access-patterns/`, its keys in `keys.mjs`, a row in `api/model/README.md` and a test in `api/test/model.test.mjs`.
+  - The app never scans the table.
+- `api/engine/`: the deterministic repository mapper. It uses no AI, so the same repository always gives the same map. AI reading will be a separate, metered feature.
+- `shared/`: the schema and validation used by both sides. `shared/brand.js` holds the product name.
+- `web/`: React plus a Canvas 2D renderer. Rollups are computed in `web/src/model/tree.js`.
+- `scripts/migrations/`: changes to deployed data, numbered and run by hand. Each one backs up the table first.
+
+## Conventions
+
+- **Naming.** The product name may change, so keep it in `shared/brand.js` and keep code comments name-neutral. Deployed identifiers stay `projectmap`: the stack, the `x-projectmap-key` header, browser storage keys and `.projectmap.local.json`.
+- **Never print or commit secrets.** That covers the access key in `.projectmap.local.json` and GitHub tokens, which are used per request and never stored.
+- **Code style.**
+  - Match the surrounding code: single quotes, long lines (about 180 columns), and short comments that say why.
+  - No formatter is installed, so don't run `npx prettier`.
+- **The Fog lens** (poorly defined work) is a favourite. Keep it working.

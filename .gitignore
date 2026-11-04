@@ -1,0 +1,8 @@
+node_modules/
+web/dist/
+.build/
+.aws-sam/
+.data/
+.projectmap.local.json
+.DS_Store
+samconfig.toml

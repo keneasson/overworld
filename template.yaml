@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Overworld - a zoomable, Google-Maps-style view of a project (Lambda Function URL + DynamoDB).
+
+Parameters:
+  AccessKey:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Shared secret the web app sends with every API call.
+
+Resources:
+  Table:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+        - { AttributeName: GSI1PK, AttributeType: S }
+        - { AttributeName: GSI1SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      # Single-table design; the keys and access patterns are in api/model/README.md.
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - { AttributeName: GSI1PK, KeyType: HASH }
+            - { AttributeName: GSI1SK, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      Tags:
+        - { Key: app, Value: projectmap }
+
+  AppFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Overworld web app and API
+      CodeUri: .build/lambda/
+      Handler: index.handler
+      Runtime: nodejs24.x
+      Architectures: [arm64]
+      MemorySize: 512
+      Timeout: 30
+      ReservedConcurrentExecutions: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          ACCESS_KEY: !Ref AccessKey
+          NODE_OPTIONS: --enable-source-maps
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref Table
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: BUFFERED
+      Tags:
+        app: projectmap
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AppFunction}
+      RetentionInDays: 14
+
+Outputs:
+  Url:
+    Description: Overworld URL
+    Value: !GetAtt AppFunctionUrl.FunctionUrl
+  TableName:
+    Value: !Ref Table
+  FunctionName:
+    Value: !Ref AppFunction
