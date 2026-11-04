@@ -2,6 +2,7 @@
   "name": "overworld",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "A Google-Maps-style, semantically zoomable map of a project.",
   "type": "module",
   "engines": {

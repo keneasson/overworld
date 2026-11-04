@@ -158,3 +158,9 @@ At personal-use volumes this costs essentially nothing:
 - DynamoDB on-demand costs fractions of a cent.
 - Logs are kept for 14 days.
 - SAM's artifact bucket holds a few MB.
+
+## Licence
+
+[GNU AGPL-3.0](LICENSE). Contributions are made under the [CLA](CLA.md); see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the issue format and lifecycle, and [VISION.md](VISION.md)
+for why Overworld exists.
