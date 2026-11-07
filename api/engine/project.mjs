@@ -23,7 +23,7 @@ function kindFor(issue, hasChildren, parentIsRegion) {
   return 'task';
 }
 
-function firstLine(body) {
+export function firstLine(body) {
   const line = body
     .split('\n')
     .map((l) => l.replace(/[#>*_`]/g, '').trim())

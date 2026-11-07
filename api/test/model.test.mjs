@@ -70,3 +70,25 @@ test('flags remember one-off facts', async () => {
   await model.flags.set('seeded');
   assert.equal(await model.flags.has('seeded'), true);
 });
+
+test('changesets and comments live in their project partition, and go with it', async () => {
+  const { model, table } = await setup();
+  await model.projects.put(project('a', '2026-03-01T00:00:00Z'));
+  await model.nodes.put('a', [node('root')]);
+  await model.changesets.put('a', { id: 'c2', createdAt: '2026-03-02T00:00:00Z', items: [] });
+  await model.changesets.put('a', { id: 'c1', createdAt: '2026-03-01T00:00:00Z', items: [] });
+  assert.deepEqual((await model.changesets.list('a')).map((c) => c.id), ['c1', 'c2'], 'oldest first');
+  assert.equal((await model.changesets.get('a', 'c1')).id, 'c1');
+  assert.equal(await model.changesets.get('a', 'nope'), null);
+  await model.comments.put('a', { id: '002', itemKey: 'issue-5', text: 'second' });
+  await model.comments.put('a', { id: '001', itemKey: 'issue-5', text: 'first' });
+  await model.comments.put('a', { id: '003', itemKey: 'issue-50', text: 'another item' });
+  assert.deepEqual((await model.comments.list('a', 'issue-5')).map((c) => c.text), ['first', 'second'], "one item's thread, in order, and not issue-50's");
+  assert.equal((await model.comments.list('a')).length, 3);
+  const map = await model.projects.getWithNodes('a');
+  assert.deepEqual(map.nodes.map((n) => n.id), ['root'], 'a map is still only its nodes');
+  await model.comments.delete('a', { itemKey: 'issue-5', id: '001' });
+  assert.equal((await model.comments.list('a', 'issue-5')).length, 1);
+  await model.projects.delete('a');
+  assert.deepEqual(await table.scan(), []);
+});
