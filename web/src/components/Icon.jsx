@@ -23,6 +23,14 @@ const PATHS = {
   sparkle: 'M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z',
   map: 'M9 4L3 6v14l6-2 6 2 6-2V4l-6 2-6-2zM9 4v14M15 6v14',
   refresh: 'M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5',
+  comment: 'M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z',
+  columns: 'M4 5h16v14H4zM10 5v14M15 5v14',
+  check: 'M5 12l5 5L20 7',
+  bold: 'M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z',
+  italic: 'M14 5h-4M14 19h-4M14 5l-4 14',
+  code: 'M9 8l-4 4 4 4M15 8l4 4-4 4',
+  list: 'M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01',
+  numbered: 'M10 6h10M10 12h10M10 18h10M4 5h1v4M4 9h2M4 15h2l-2 3h2',
 };
 
 export function Icon({ name, size = 20, label }) {
