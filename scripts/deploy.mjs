@@ -6,9 +6,12 @@
 //
 // The access key is generated on first deploy and kept in .conf/deploy.json
 // (git-ignored). Set PROJECTMAP_ACCESS_KEY to choose your own.
+//
+// CI (#27) has no .conf/: it names everything itself, and nothing is written locally.
+//   CI=true STACK_NAME=… AWS_REGION=… PROJECTMAP_ACCESS_KEY=… [STAGE=preview] [ARTIFACT_BUCKET=…] [PERMISSIONS_BOUNDARY=…]
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { build } from 'esbuild';
 import { APP_NAME } from '../shared/brand.js';
@@ -16,10 +19,11 @@ import { readDeployConfig, writeDeployConfig } from './local-config.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
 const local = readDeployConfig();
+const fromCi = Boolean(process.env.CI && process.env.STACK_NAME && process.env.AWS_REGION && process.env.PROJECTMAP_ACCESS_KEY);
 
 // A checkout without .conf/ (a worktree, a fresh clone) doesn't know the live stack's region or
 // access key: deploying from it would replace the key, or create a second stack elsewhere.
-if (!local.stack && !process.argv.includes('--new')) {
+if (!local.stack && !fromCi && !process.argv.includes('--new')) {
   console.error('✖ No .conf/deploy.json in this checkout.\n  Copy .conf/ from the checkout you deploy from, or run `npm run deploy -- --new` to create a new stack.');
   process.exit(1);
 }
@@ -67,12 +71,15 @@ run('sam', [
   '--template-file', 'template.yaml',
   '--stack-name', stack,
   '--region', region,
-  '--resolve-s3',
+  // CI's bundles go to a bucket that expires them after 7 days; a local deploy keeps SAM's own bucket.
+  ...(process.env.ARTIFACT_BUCKET ? ['--s3-bucket', process.env.ARTIFACT_BUCKET, '--s3-prefix', stack] : ['--resolve-s3']),
   '--capabilities', 'CAPABILITY_IAM',
   '--no-confirm-changeset',
   '--no-fail-on-empty-changeset',
-  '--tags', 'app=projectmap',
+  '--tags', 'app=projectmap', ...(process.env.STAGE ? [`stage=${process.env.STAGE}`] : []),
   '--parameter-overrides', `AccessKey=${accessKey}`,
+  ...(process.env.STAGE ? [`Stage=${process.env.STAGE}`] : []),
+  ...(process.env.PERMISSIONS_BOUNDARY ? [`PermissionsBoundary=${process.env.PERMISSIONS_BOUNDARY}`] : []),
   ...profileArgs,
 ]);
 
@@ -84,9 +91,13 @@ const outputs = JSON.parse(
 const out = Object.fromEntries(outputs.map((o) => [o.OutputKey, o.OutputValue]));
 const url = out.Url.replace(/\/$/, '');
 
-writeDeployConfig({ stack, region, url, accessKey, tableName: out.TableName, account: identity.Account });
+if (fromCi) {
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `url=${url}\n`);
+} else {
+  writeDeployConfig({ stack, region, url, accessKey, tableName: out.TableName, account: identity.Account });
+}
 
 const health = await fetch(`${url}/api/health`).then((r) => r.status).catch((e) => e.message);
 console.log(`\n✔ ${APP_NAME} is live: ${url}`);
 console.log(`  health check: ${health}`);
-console.log(`  access key:   saved in .conf/deploy.json (enter it once per browser)`);
+if (!fromCi) console.log(`  access key:   saved in .conf/deploy.json (enter it once per browser)`);

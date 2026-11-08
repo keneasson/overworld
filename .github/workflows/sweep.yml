@@ -1,0 +1,37 @@
+# SHIP-07 and SHIP-08: once a day, tear down any preview whose pull request closed, lost its label
+# or went 7 days without a push, and delete deployment records nobody needs.
+name: Sweep
+
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    if: github.repository == 'keneasson/overworld'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+      deployments: write
+    # No environment: a job in one leaves a deployment record behind, and this job is the one that clears them.
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: node scripts/ci/run.mjs sweep

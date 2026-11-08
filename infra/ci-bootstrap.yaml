@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CI's access to AWS (#27): GitHub's OIDC provider, the role CI deploys with, the boundary on every
+  role CI creates, a bucket that expires deploy bundles, and an optional budget alert. Deployed once
+  by the maintainer, by hand. Its names never match projectmap*, so CI can't change its own permissions.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: keneasson/overworld
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: An account has one GitHub OIDC provider. Choose false if it already exists.
+  BudgetEmail:
+    Type: String
+    Default: ''
+    Description: Who is emailed when monthly spend is forecast to pass the budget. Empty for no budget.
+  BudgetUsd:
+    Type: Number
+    Default: 5
+
+Conditions:
+  MakeProvider: !Equals [!Ref CreateOidcProvider, 'true']
+  HasBudget: !Not [!Equals [!Ref BudgetEmail, '']]
+
+Resources:
+  GitHubOidc:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  # Deploy bundles: CloudFormation reads them during a deploy and Lambda copies the code, so a week is plenty.
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ci-artifacts-for-projectmap-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-deploy-bundles
+            Status: Enabled
+            ExpirationInDays: 7
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+      Tags: [{ Key: app, Value: projectmap }]
+
+  # Every role CI creates (the app function's) must carry this, so CI can't make a role that does more than the app.
+  Boundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: ci-boundary-for-projectmap
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem', 'dynamodb:UpdateItem', 'dynamodb:Query', 'dynamodb:Scan', 'dynamodb:BatchGetItem', 'dynamodb:BatchWriteItem', 'dynamodb:ConditionCheckItem', 'dynamodb:DescribeTable']
+            Resource: [!Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/projectmap*']
+          - Effect: Allow
+            Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents']
+            Resource: [!Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/projectmap*']
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ci-deployer-for-projectmap
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [MakeProvider, !Ref GitHubOidc, !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com']
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Jobs in the production environment (limited to main), the preview environment (this
+                # repository's branches, never forks), and jobs on main itself, such as the daily sweep.
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubRepo}:environment:production
+                  - !Sub repo:${GitHubRepo}:environment:preview
+                  - !Sub repo:${GitHubRepo}:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-projectmap-stacks
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'cloudformation:*'
+                Resource: [!Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/projectmap*/*']
+              - Effect: Allow
+                Action: 'cloudformation:CreateChangeSet'
+                Resource: [!Sub 'arn:aws:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31']
+              - Effect: Allow
+                Action: ['cloudformation:ListStacks', 'cloudformation:ValidateTemplate', 'cloudformation:GetTemplateSummary', 'logs:DescribeLogGroups']
+                Resource: '*'
+              - Effect: Allow
+                Action: 'lambda:*'
+                Resource: [!Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:projectmap*']
+              - Effect: Allow
+                Action: ['dynamodb:CreateTable', 'dynamodb:UpdateTable', 'dynamodb:DescribeTable', 'dynamodb:DescribeContinuousBackups', 'dynamodb:DescribeTimeToLive', 'dynamodb:ListTagsOfResource', 'dynamodb:TagResource', 'dynamodb:UntagResource']
+                Resource: [!Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/projectmap*']
+              # Only a preview's table can be deleted. Production's survives anything CI does.
+              - Effect: Allow
+                Action: 'dynamodb:DeleteTable'
+                Resource: [!Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/projectmap-pr-*']
+              - Effect: Allow
+                Action: ['logs:CreateLogGroup', 'logs:DeleteLogGroup', 'logs:PutRetentionPolicy', 'logs:DeleteRetentionPolicy', 'logs:TagResource', 'logs:UntagResource', 'logs:TagLogGroup', 'logs:ListTagsForResource']
+                Resource: [!Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/projectmap*']
+              - Effect: Allow
+                Action: ['iam:GetRole', 'iam:PassRole', 'iam:DeleteRole', 'iam:DetachRolePolicy', 'iam:DeleteRolePolicy', 'iam:GetRolePolicy', 'iam:TagRole', 'iam:UntagRole', 'iam:ListRoleTags', 'iam:UpdateAssumeRolePolicy']
+                Resource: [!Sub 'arn:aws:iam::${AWS::AccountId}:role/projectmap*']
+              # Creating a role, or giving one more to do, needs the boundary on it.
+              - Effect: Allow
+                Action: ['iam:CreateRole', 'iam:AttachRolePolicy', 'iam:PutRolePolicy', 'iam:PutRolePermissionsBoundary']
+                Resource: [!Sub 'arn:aws:iam::${AWS::AccountId}:role/projectmap*']
+                Condition:
+                  StringEquals:
+                    iam:PermissionsBoundary: !Ref Boundary
+              - Effect: Allow
+                Action: ['s3:PutObject', 's3:GetObject']
+                Resource: [!Sub '${ArtifactBucket.Arn}/*']
+              - Effect: Allow
+                Action: ['s3:ListBucket', 's3:GetBucketLocation']
+                Resource: [!GetAtt ArtifactBucket.Arn]
+
+  Budget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudget
+    Properties:
+      Budget:
+        BudgetName: projectmap-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref BudgetUsd, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
+        - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref BudgetEmail }]
+
+Outputs:
+  RoleArn:
+    Value: !GetAtt DeployRole.Arn
+  ArtifactBucket:
+    Value: !Ref ArtifactBucket
+  BoundaryArn:
+    Value: !Ref Boundary

@@ -1,0 +1,74 @@
+# SHIP-02 and SHIP-03: a merge to main is tested, then deployed straight to production. No staging:
+# unfinished work ships dark behind a feature flag. A smoke test checks the live app; if it fails,
+# the last version that passed is deployed again and the run fails.
+name: Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One production deploy at a time, and never cancelled half-way.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    if: github.repository == 'keneasson/overworld'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      deployments: read
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      CI: 'true'
+      STACK_NAME: projectmap
+      STAGE: production
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+      PERMISSIONS_BOUNDARY: ${{ vars.PERMISSIONS_BOUNDARY }}
+      PROJECTMAP_ACCESS_KEY: ${{ secrets.PROJECTMAP_ACCESS_KEY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - id: deploy
+        run: npm run deploy
+      - id: smoke
+        run: node scripts/smoke.mjs "${{ steps.deploy.outputs.url }}"
+
+      - id: previous
+        if: failure() && steps.deploy.outcome == 'success' && steps.smoke.outcome == 'failure'
+        run: node scripts/ci/run.mjs last-good "${{ github.sha }}"
+      - name: Roll back to the last version that passed
+        if: failure() && steps.previous.outputs.sha != ''
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ steps.previous.outputs.sha }}"
+          git checkout --force "${{ steps.previous.outputs.sha }}"
+          npm ci
+          npm run deploy
+          node scripts/smoke.mjs "${{ steps.deploy.outputs.url }}"
+          echo "::error::The smoke test failed on ${{ github.sha }}; production is back on ${{ steps.previous.outputs.sha }}."
