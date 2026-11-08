@@ -18,12 +18,23 @@ model.
 | Flag    | `APP`          | `FLAG#<name>` |          |             |
 | Changeset | `PROJECT#<id>` | `CHANGESET#<changesetId>` | | |
 | Comment | `PROJECT#<id>` | `COMMENT#<itemKey>#<commentId>` | | |
+| Sync job | `PROJECT#<id>` | `JOB#<jobId>` | | |
+| Sync lease | `PROJECT#<id>` | `LEASE#sync` | | |
+| Reconciliation report | `PROJECT#<id>` | `AUDIT#<at>` | | |
+| Repo link | `REPO#<owner/name>` | `PROJECT#<id>` | | |
 
 A project and its nodes share a partition, so one query reads a whole map. Changesets and
 comments share it too, so deleting a project removes them with it. They are keyed by the item
 they concern (`issue-<number>` for a GitHub issue, `node-<id>` otherwise). Comment ids start with the time, so a thread reads in order, because a refresh from
 GitHub gives every node a new id. GSI1 is sparse:
 only projects carry its keys, which makes it the project list.
+
+Sync with GitHub (#3) keeps its state in the project's partition too: the outbox of jobs, the lease
+that lets one worker at a time sync a project, and the last 30 reconciliation reports. All of them
+sort before `NODE#`, so opening a map never reads them. An issue's node id is `issue-<number>`, so a
+webhook about one issue reads and writes one item. Repo links are the one thing outside a project's
+partition: they let a webhook find the projects that map its repository without a scan. A link left
+behind by a deleted project is removed the next time a webhook finds it.
 
 ## Access patterns
 
@@ -43,6 +54,17 @@ only projects carry its keys, which makes it the project list.
 | One item's comment thread | `comments.list(projectId, itemKey)` | Query `begins_with(SK, COMMENT#<itemKey>#)` |
 | Add, resolve or delete a comment | `comments.get` / `put` / `delete` | GetItem, PutItem, DeleteItem |
 | Has a one-off thing happened? | `flags.has(name)`, `flags.set(name)` | GetItem, PutItem |
+| A project's summary, without its map | `projects.get(id)` | GetItem |
+| One node (an issue's is `issue-<number>`) | `nodes.get(projectId, id)` | GetItem |
+| Accept a changeset and queue it for GitHub (the outbox) | `jobs.accept(projectId, changeset, job)` | TransactWriteItems: the changeset and its job, or neither |
+| What is still on its way to GitHub, oldest first | `jobs.list(projectId)` | Query `begins_with(SK, JOB#)` |
+| A job's attempts and next try | `jobs.put(projectId, job)` | PutItem |
+| A changeset synced: its outcome, and its job gone | `jobs.finish(projectId, job, changeset)` | TransactWriteItems |
+| Hold or let go of a project's sync | `leases.claim(projectId, owner, until, now)`, `leases.release(projectId, owner)` | Conditional PutItem; GetItem, DeleteItem |
+| The last reconciliations, newest first | `audits.list(projectId)` | Query `begins_with(SK, AUDIT#)`, descending |
+| Keep a report, and drop those past the last 30 | `audits.put(projectId, report)` | Query, then batched put and deletes |
+| Projects that map a repository (webhooks) | `repos.projectsOf(repo)` | Query `PK = REPO#<owner/name>` |
+| Link or unlink a project and its repository | `repos.link(repo, projectId)`, `repos.unlink(repo, projectId)` | PutItem, DeleteItem |
 
 ## Adding a feature
 

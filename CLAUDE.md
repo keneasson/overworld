@@ -18,6 +18,7 @@ npm run deploy   # builds, bundles, sam deploy; prints the URL and runs a health
 - `api/model/`: the only code that talks to DynamoDB, using a single-table design.
   - A new data need gets an access pattern in `api/model/access-patterns/`, its keys in `keys.mjs`, a row in `api/model/README.md` and a test in `api/test/model.test.mjs`.
   - The app never scans the table.
+- `api/sync.mjs`: sync with GitHub (#3): the outbox worker, webhooks and the nightly reconciliation. `api/github-app.mjs` writes as the GitHub App; `api/aws.mjs` holds what sync needs from AWS (SSM, Scheduler), and `api/handler.mjs` routes the stream and schedules to it.
 - `api/engine/`: the deterministic repository mapper. It uses no AI, so the same repository always gives the same map. AI reading will be a separate, metered feature.
 - `shared/`: the schema and validation used by both sides. `shared/brand.js` holds the product name.
 - `web/`: React plus a Canvas 2D renderer. Rollups are computed in `web/src/model/tree.js`.

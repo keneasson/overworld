@@ -12,7 +12,7 @@ import { cpSync, mkdirSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { build } from 'esbuild';
 import { APP_NAME } from '../shared/brand.js';
-import { readDeployConfig, writeDeployConfig } from './local-config.mjs';
+import { readDeployConfig, readGitHubApp, writeDeployConfig } from './local-config.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
 const local = readDeployConfig();
@@ -38,6 +38,9 @@ const region =
   process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? local.region ?? (run('aws', ['configure', 'get', 'region'], { capture: true }) || 'us-east-1');
 const accessKey = process.env.PROJECTMAP_ACCESS_KEY ?? local.accessKey ?? randomBytes(18).toString('base64url');
 const profileArgs = process.env.AWS_PROFILE ? ['--profile', process.env.AWS_PROFILE] : [];
+// The GitHub App's ids aren't secret. Without them sync stays off; its key and webhook secret go to SSM once (scripts/github-app-secrets.mjs).
+const app = readGitHubApp();
+const appParams = app ? [`GitHubAppId=${app.appId}`, `GitHubInstallationId=${app.installationId}`, `GitHubAppSlug=${app.slug}`] : [];
 
 const identity = JSON.parse(run('aws', ['sts', 'get-caller-identity', '--output', 'json', ...profileArgs], { capture: true }));
 console.log(`→ Deploying stack "${stack}" to account ${identity.Account} in ${region}`);
@@ -72,7 +75,7 @@ run('sam', [
   '--no-confirm-changeset',
   '--no-fail-on-empty-changeset',
   '--tags', 'app=projectmap',
-  '--parameter-overrides', `AccessKey=${accessKey}`,
+  '--parameter-overrides', `AccessKey=${accessKey}`, ...appParams,
   ...profileArgs,
 ]);
 

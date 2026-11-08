@@ -1,7 +1,7 @@
 // HTTP-agnostic API. `handle({ method, path, headers, body })` -> { status, body }.
 // Used by the Lambda handler in AWS and by the Vite dev server locally.
 
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
@@ -16,7 +16,12 @@ class HttpError extends Error {
 
 const digest = (s) => createHash('sha256').update(String(s)).digest();
 
-export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console }) {
+/**
+ * @param {object} [o.sync] the GitHub sync (api/sync.mjs); without it, accepted changesets wait, as before
+ * @param {() => Promise<string>} [o.webhookSecret] the GitHub App's webhook secret
+ * @param {(projectId: string) => void} [o.onAccepted] runs after a changeset is accepted: in AWS the table's stream wakes the worker instead
+ */
+export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, webhookSecret = null, onAccepted = null }) {
   const expected = accessKey ? digest(accessKey) : null;
 
   function authorize(headers) {
@@ -158,8 +163,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       'DELETE',
       /^\/api\/projects\/([\w-]+)$/,
       async ({ params: [pid] }) => {
-        await loadProject(pid);
+        const { project } = await loadProject(pid);
         await model.projects.delete(pid);
+        if (project.githubRepo) await model.repos.unlink(project.githubRepo, pid);
         return { deleted: pid };
       },
     ],
@@ -300,10 +306,14 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         await model.nodes.put(pid, changed);
         const byId = new Map(changed.map((n) => [n.id, n]));
         await touchProject(project, nodes.map((n) => byId.get(n.id) ?? n));
-        // Items mapped from GitHub still have to get there; ones made here are done.
-        const waiting = cs.items.some((it) => it.key.startsWith('issue-'));
+        // Items mapped from GitHub, and new ones for it, still have to get there; ones made here are done.
+        const waiting = Boolean(project.githubRepo) && cs.items.some((it) => /^(issue|new)-/.test(it.key));
         Object.assign(cs, { status: 'accepted', sync: waiting ? 'waiting' : 'synced', acceptedAt: now, updatedAt: now });
-        await model.changesets.put(pid, cs);
+        if (waiting) {
+          // The transactional outbox: the acceptance and the job that takes it to GitHub are written together, or not at all.
+          await model.jobs.accept(pid, cs, { id: commentId(), changesetId: cs.id, repo: project.githubRepo, attempts: 0, createdAt: now });
+          onAccepted?.(pid);
+        } else await model.changesets.put(pid, cs);
         return { changeset: cs, nodes: changed };
       },
     ],
@@ -354,6 +364,43 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       },
     ],
 
+    // ---- Sync with GitHub (#3) ----
+
+    [
+      'POST',
+      /^\/api\/github\/webhook$/,
+      // GitHub signs every delivery with the App's webhook secret; anything unsigned or wrongly signed is refused.
+      async ({ headers, rawBody, body }) => {
+        if (!sync || !webhookSecret) throw new HttpError(404, 'Webhooks are not set up here');
+        const want = `sha256=${createHmac('sha256', await webhookSecret()).update(rawBody ?? '').digest('hex')}`;
+        const got = String(headers['x-hub-signature-256'] ?? '');
+        if (got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) throw new HttpError(401, 'Bad signature');
+        return sync.onWebhook(String(headers['x-github-event'] ?? ''), body);
+      },
+      { public: true },
+    ],
+
+    [
+      'GET',
+      /^\/api\/projects\/([\w-]+)\/sync$/,
+      // What is still on its way to GitHub, and what the last reconciliations fixed.
+      async ({ params: [pid] }) => {
+        if (!(await model.projects.get(pid))) throw new HttpError(404, 'Project not found');
+        return { enabled: Boolean(sync), jobs: await model.jobs.list(pid), reports: await model.audits.list(pid) };
+      },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/sync$/,
+      // Retry now, without waiting for the booked retry.
+      async ({ params: [pid] }) => {
+        if (!sync) throw new HttpError(409, 'Sync with GitHub is not set up here');
+        if (!(await model.projects.get(pid))) throw new HttpError(404, 'Project not found');
+        return sync.drain(pid, { now: true });
+      },
+    ],
+
     ['POST', /^\/api\/import\/json$/, async ({ body }) => saveNewProject(fromImport(body), 'json'), { status: 201 }],
 
     [
@@ -361,7 +408,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/import\/github$/,
       async ({ body }) => {
         const data = await importGitHub({ repo: body?.repo, token: body?.token || undefined }, fetchImpl);
-        return saveNewProject(data, 'github', { githubRepo: data.title });
+        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle });
+        await model.repos.link(data.title, saved.project.id);
+        return saved;
       },
       { status: 201 },
     ],
@@ -377,19 +426,20 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const kept = keepPendingEdits(data.nodes, await model.changesets.list(pid), new Date().toISOString());
         await model.nodes.replace(pid, kept.nodes);
         for (const cs of kept.changed) await model.changesets.put(pid, cs);
-        const updated = await touchProject(project, kept.nodes);
+        const updated = await touchProject(project, kept.nodes, { strictLifecycle: data.strictLifecycle });
+        await model.repos.link(project.githubRepo, pid);
         return { project: updated, nodes: kept.nodes };
       },
     ],
   ];
 
-  return async function handle({ method, path, headers = {}, body = null }) {
+  return async function handle({ method, path, headers = {}, body = null, rawBody = null }) {
     try {
       for (const [m, re, fn, opts = {}] of routes) {
         const match = path.match(re);
         if (!match || m !== method) continue;
         if (!opts.public) authorize(headers);
-        const result = await fn({ params: match.slice(1), body, headers });
+        const result = await fn({ params: match.slice(1), body, headers, rawBody });
         return { status: opts.status ?? 200, body: result };
       }
       const pathKnown = routes.some(([, re]) => re.test(path));
