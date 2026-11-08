@@ -40,6 +40,10 @@ jobs:
       ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
       PERMISSIONS_BOUNDARY: ${{ vars.PERMISSIONS_BOUNDARY }}
       PROJECTMAP_ACCESS_KEY: ${{ secrets.PROJECTMAP_ACCESS_KEY }}
+      # The GitHub App sync writes as (#3). None of these is secret. Previews never get them (SHIP-11).
+      SYNC_APP_ID: ${{ vars.SYNC_APP_ID }}
+      SYNC_INSTALLATION_ID: ${{ vars.SYNC_INSTALLATION_ID }}
+      SYNC_APP_SLUG: ${{ vars.SYNC_APP_SLUG }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4

@@ -17,6 +17,12 @@ const jobsOf = (text) => {
   return body.split(/\n(?=  [\w-]+:\n)/).map((block) => ({ name: block.match(/^ {2}([\w-]+):/)?.[1], text: block })).filter((j) => j.name);
 };
 
+/** A template's resources, as { name, text }: each is the block under `Resources:` indented by two spaces. */
+const resourcesOf = (text) => {
+  const body = text.slice(text.indexOf('\nResources:\n') + 12, text.indexOf('\nOutputs:'));
+  return body.split(/\n(?=  \w+:\n)/).map((block) => ({ name: block.match(/^\s*(\w+):/)?.[1], text: block })).filter((r) => r.name);
+};
+
 const pr = (number, extra = {}) => ({ number, labels: ['preview'], fromFork: false, ...extra });
 const DAY = 24 * 60 * 60 * 1000;
 const now = Date.parse('2026-11-20T12:00:00Z');
@@ -121,4 +127,15 @@ test('SHIP-09 CI reaches AWS only with short-lived OIDC credentials, and cannot 
   const bootstrap = read('infra/ci-bootstrap.yaml');
   for (const name of bootstrap.matchAll(/(?:RoleName|ManagedPolicyName|BucketName): !?S?u?b? ?(\S+)/g)) assert.doesNotMatch(name[1], /^projectmap/, `${name[1]} must sit outside the projectmap* resources CI controls`);
   assert.match(bootstrap, /iam:CreateRole'.*\n(.*\n){1,3}.*iam:PermissionsBoundary: !Ref Boundary/, 'every role CI creates carries the boundary');
+  // So every role the app's stack makes must carry it too, or CI can't deploy it.
+  for (const { name, text } of resourcesOf(read('template.yaml'))) {
+    if (/Type: AWS::(IAM::Role|Serverless::Function)\n/.test(text)) assert.match(text, /PermissionsBoundary: !If \[HasBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue\]/, `${name} carries the boundary`);
+  }
+});
+
+test('SHIP-11 a preview never syncs with GitHub', () => {
+  const preview = workflows.find((w) => w.file === 'preview.yml').text;
+  const production = workflows.find((w) => w.file === 'production.yml').text;
+  assert.doesNotMatch(preview, /SYNC_|GitHubApp|GITHUB_APP/, "a preview isn't given the GitHub App, so sync stays off");
+  for (const name of ['SYNC_APP_ID', 'SYNC_INSTALLATION_ID', 'SYNC_APP_SLUG']) assert.match(production, new RegExp(`${name}: \\$\\{\\{ vars\\.${name} \\}\\}`), `production passes ${name}`);
 });

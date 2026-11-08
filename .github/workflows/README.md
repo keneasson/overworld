@@ -8,7 +8,7 @@ to be seen running before it merges.
 |---|---|---|
 | `ci.yml` | every pull request, including forks | `npm test` and the build (SHIP-01) |
 | `production.yml` | a push to main | the tests, then deploy, smoke test, and roll back to the last version that passed if the smoke test fails (SHIP-02, SHIP-03) |
-| `preview.yml` | a pull request labelled `preview`, from this repository | its own stack `projectmap-pr-<N>` with an empty table, one comment with the URL, torn down on close or unlabel (SHIP-04 to SHIP-07) |
+| `preview.yml` | a pull request labelled `preview`, from this repository | its own stack `projectmap-pr-<N>` with an empty table, one comment with the URL, torn down on close or unlabel (SHIP-04 to SHIP-07). Sync with GitHub is off in a preview (SHIP-11). |
 | `sweep.yml` | daily at 07:17 UTC, or by hand | tears down previews past their rules, and deletes deployment records nobody needs (SHIP-07, SHIP-08) |
 | `cla.yml` | pull requests | the CLA check |
 
@@ -60,6 +60,10 @@ gh variable set AWS_REGION           -R keneasson/overworld --body ca-central-1
 gh variable set AWS_ROLE_ARN         -R keneasson/overworld --body "$(out RoleArn)"
 gh variable set ARTIFACT_BUCKET      -R keneasson/overworld --body "$(out ArtifactBucket)"
 gh variable set PERMISSIONS_BOUNDARY -R keneasson/overworld --body "$(out BoundaryArn)"
+# The GitHub App sync writes as (#3). None of these is secret, and only production gets them (SHIP-11).
+gh variable set SYNC_APP_ID          -R keneasson/overworld --body 5672649
+gh variable set SYNC_INSTALLATION_ID -R keneasson/overworld --body 179984521
+gh variable set SYNC_APP_SLUG        -R keneasson/overworld --body overworldmap
 ```
 
 **3. GitHub: the environments.** Production deploys only from main.

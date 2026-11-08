@@ -63,6 +63,29 @@ Resources:
           - Effect: Allow
             Action: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents']
             Resource: [!Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/projectmap*']
+          # Sync with GitHub (#3): the outbox stream, its dead letters, the App's secrets, retry schedules and the role they run as.
+          - Effect: Allow
+            Action: ['dynamodb:DescribeStream', 'dynamodb:GetRecords', 'dynamodb:GetShardIterator']
+            Resource: [!Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/projectmap*/stream/*']
+          - Effect: Allow
+            Action: 'dynamodb:ListStreams'
+            Resource: '*'
+          - Effect: Allow
+            Action: 'sqs:SendMessage'
+            Resource: [!Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:projectmap*']
+          - Effect: Allow
+            Action: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath']
+            Resource: [!Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/projectmap*']
+          - Effect: Allow
+            Action: ['scheduler:CreateSchedule', 'scheduler:UpdateSchedule']
+            Resource: [!Sub 'arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/projectmap*']
+          - Effect: Allow
+            Action: 'iam:PassRole'
+            Resource: [!Sub 'arn:aws:iam::${AWS::AccountId}:role/projectmap*']
+            Condition: { StringEquals: { iam:PassedToService: scheduler.amazonaws.com } }
+          - Effect: Allow
+            Action: 'lambda:InvokeFunction'
+            Resource: [!Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:projectmap*']
 
   DeployRole:
     Type: AWS::IAM::Role
@@ -122,6 +145,29 @@ Resources:
                 Condition:
                   StringEquals:
                     iam:PermissionsBoundary: !Ref Boundary
+              # Sync (#3): the table's stream, the function's stream trigger, the nightly rule and the dead-letter queue.
+              - Effect: Allow
+                Action: ['dynamodb:DescribeStream', 'dynamodb:GetRecords', 'dynamodb:GetShardIterator']
+                Resource: [!Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/projectmap*/stream/*']
+              - Effect: Allow
+                Action: ['dynamodb:ListStreams', 'lambda:GetEventSourceMapping', 'lambda:ListEventSourceMappings']
+                Resource: '*'
+              # Event source mappings have no name to scope by, only the function they feed.
+              - Effect: Allow
+                Action: ['lambda:CreateEventSourceMapping', 'lambda:UpdateEventSourceMapping', 'lambda:DeleteEventSourceMapping']
+                Resource: '*'
+                Condition:
+                  ArnLike:
+                    lambda:FunctionArn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:projectmap*'
+              - Effect: Allow
+                Action: ['lambda:TagResource', 'lambda:UntagResource', 'lambda:ListTags']
+                Resource: [!Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:event-source-mapping:*']
+              - Effect: Allow
+                Action: ['events:PutRule', 'events:DeleteRule', 'events:DescribeRule', 'events:PutTargets', 'events:RemoveTargets', 'events:EnableRule', 'events:DisableRule', 'events:ListTargetsByRule', 'events:TagResource', 'events:UntagResource', 'events:ListTagsForResource']
+                Resource: [!Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/projectmap*']
+              - Effect: Allow
+                Action: ['sqs:CreateQueue', 'sqs:DeleteQueue', 'sqs:GetQueueAttributes', 'sqs:SetQueueAttributes', 'sqs:TagQueue', 'sqs:UntagQueue', 'sqs:ListQueueTags']
+                Resource: [!Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:projectmap*']
               - Effect: Allow
                 Action: ['s3:PutObject', 's3:GetObject']
                 Resource: [!Sub '${ArtifactBucket.Arn}/*']

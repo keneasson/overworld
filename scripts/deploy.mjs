@@ -9,9 +9,10 @@
 //
 // CI (#27) has no .conf/: it names everything itself, and nothing is written locally.
 //   CI=true STACK_NAME=… AWS_REGION=… PROJECTMAP_ACCESS_KEY=… [STAGE=preview] [ARTIFACT_BUCKET=…] [PERMISSIONS_BOUNDARY=…]
+//   [SYNC_APP_ID=… SYNC_INSTALLATION_ID=… SYNC_APP_SLUG=…]   production only: previews never sync with GitHub
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, cpSync, mkdirSync, rmSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { build } from 'esbuild';
 import { APP_NAME } from '../shared/brand.js';
@@ -65,6 +66,15 @@ await build({
 });
 cpSync(`${root}web/dist`, `${root}.build/lambda/public`, { recursive: true });
 
+// The GitHub App that sync (#3) writes as. Passed only to a template that declares them; a parameter
+// left out keeps its previous value, so a local deploy doesn't turn sync off.
+const declared = readFileSync(`${root}template.yaml`, 'utf8');
+const sync = [
+  ['GitHubAppId', process.env.SYNC_APP_ID],
+  ['GitHubInstallationId', process.env.SYNC_INSTALLATION_ID],
+  ['GitHubAppSlug', process.env.SYNC_APP_SLUG],
+].filter(([name, value]) => value && new RegExp(`\\n  ${name}:\\n`).test(declared)).map(([name, value]) => `${name}=${value}`);
+
 console.log('→ sam deploy');
 run('sam', [
   'deploy',
@@ -80,6 +90,7 @@ run('sam', [
   '--parameter-overrides', `AccessKey=${accessKey}`,
   ...(process.env.STAGE ? [`Stage=${process.env.STAGE}`] : []),
   ...(process.env.PERMISSIONS_BOUNDARY ? [`PermissionsBoundary=${process.env.PERMISSIONS_BOUNDARY}`] : []),
+  ...sync,
   ...profileArgs,
 ]);
 
