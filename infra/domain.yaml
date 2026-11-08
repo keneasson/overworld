@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Overworld - a custom domain in front of the app's Lambda Function URL (CloudFront, certificate, DNS).
+
+# Function URLs can't take a custom domain, so CloudFront sits in front, with caching off: every
+# request still reaches the app. This is its own stack, in us-east-1 because CloudFront only uses
+# certificates from there, and it leaves the app's stack alone. Deploy it after the app stack:
+#
+#   aws cloudformation deploy --region us-east-1 --stack-name projectmap-domain \
+#     --template-file infra/domain.yaml \
+#     --parameter-overrides HostedZoneId=<zone> OriginDomain=<function url host, no https://>
+#
+# If the app stack is ever replaced, its Function URL changes; redeploy this with the new host.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: overworld.kene.info
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: The Route 53 zone that holds DomainName.
+  OriginDomain:
+    Type: String
+    Description: The app's Function URL host, for example abc123.lambda-url.ca-central-1.on.aws
+    AllowedPattern: '^[a-z0-9]+\.lambda-url\.[a-z0-9-]+\.on\.aws$'
+
+Resources:
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - { DomainName: !Ref DomainName, HostedZoneId: !Ref HostedZoneId }
+      Tags:
+        - { Key: app, Value: projectmap }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub 'projectmap at ${DomainName}'
+        Aliases: [!Ref DomainName]
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: app
+            DomainName: !Ref OriginDomain
+            CustomOriginConfig: { OriginProtocolPolicy: https-only, OriginSSLProtocols: [TLSv1.2] }
+        DefaultCacheBehavior:
+          TargetOriginId: app
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # AWS managed policies: CachingDisabled, and AllViewerExceptHostHeader (the Function URL
+          # must see its own host, and the app needs every other header, the access key included).
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+      Tags:
+        - { Key: app, Value: projectmap }
+
+  # Z2FDTNDATAQYW2 is CloudFront's own zone id, the same for every distribution.
+  RecordA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget: { DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2 }
+  RecordAAAA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget: { DNSName: !GetAtt Distribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2 }
+
+Outputs:
+  Url:
+    Value: !Sub 'https://${DomainName}'
+  DistributionId:
+    Value: !Ref Distribution
