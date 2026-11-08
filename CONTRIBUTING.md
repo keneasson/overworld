@@ -18,6 +18,9 @@ Kind: Epic | Feature | Story | Task | Bug · Place: <page, path or area>
 ## Open questions              ← while this has anything in it, the issue needs a decision
 ```
 
+Leave *Open questions* empty, or write "None", when nothing is undecided. The map reads all of
+this deterministically; see `api/engine/lifecycle.mjs`.
+
 ## Lifecycle
 
 Every open issue carries exactly one `status:` label.

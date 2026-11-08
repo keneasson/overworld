@@ -91,10 +91,15 @@ function rollup(n, today) {
   const kids = n.children;
   const leaf = kids.length === 0;
   const done = n.status === 'done';
+  // Rejected work stays on the map as a ruin, but no longer counts as work to do.
+  const rejected = n.status === 'rejected';
   const overdue = Boolean(n.due) && n.due < today && !done;
   const def = definitionScore(n, !leaf);
   const s = {
     raw: 0,
+    work: 0,
+    // Lifecycle counts are about work; land mapped from the code (tagged 'code') has none of its own.
+    states: leaf && !n.tags.includes('code') ? { [n.status]: 1 } : {},
     progress: 0,
     health: 'on_track',
     overdue,
@@ -119,27 +124,32 @@ function rollup(n, today) {
   if (leaf) {
     const est = n.estimate != null ? 0.7 + Math.min(n.estimate, 13) * 0.1 : 1;
     s.raw = n.weight ?? (BASE_WEIGHT[n.kind] ?? 2) * est;
+    s.work = rejected ? 0 : s.raw;
     s.progress = { done: 1, review: 0.85, in_progress: 0.45, blocked: 0.2 }[n.status] ?? 0;
-    if (done) s.health = 'done';
+    if (done || rejected) s.health = 'done';
     else if (n.status === 'blocked' || overdue) s.health = 'off_track';
-    else if (n.status === 'idea' || n.status === 'planned') s.health = 'not_started';
+    else if (['idea', 'planned', 'ready', 'needs_decision'].includes(n.status)) s.health = 'not_started';
     if (n.due && !done && s.health !== 'off_track' && daysUntil(n.due, today) <= 7 && s.progress < 0.5) s.health = 'at_risk';
     if (n.assignee) s.owners.set(n.assignee, s.raw);
   } else {
     let total = 0, progress = 0, defSum = 0;
     const weightBy = { off_track: 0, at_risk: 0, on_track: 0, not_started: 0, done: 0 };
+    let area = 0;
     for (const c of kids) {
       const cs = c.stats;
-      total += cs.raw;
-      progress += cs.progress * cs.raw;
+      area += cs.raw;
+      total += cs.work;
+      progress += cs.progress * cs.work;
       defSum += cs.defAvg * cs.raw;
-      weightBy[cs.health] += cs.raw;
+      weightBy[cs.health] += cs.work;
+      for (const [k, v] of Object.entries(cs.states)) s.states[k] = (s.states[k] ?? 0) + v;
       for (const key of ['items', 'leaves', 'doneLeaves', 'openBugs', 'bugs', 'newFeatures', 'newFeaturesDone', 'poorlyDefined', 'blocked', 'behaviours', 'behavioursKept']) s[key] += cs[key];
       for (const [who, w] of cs.owners) s.owners.set(who, (s.owners.get(who) ?? 0) + w);
     }
-    s.raw = n.weight ?? total;
-    s.progress = done ? 1 : progress / total;
-    s.defAvg = (def + defSum / total) / 2;
+    s.raw = n.weight ?? area;
+    s.work = rejected ? 0 : total;
+    s.progress = done || !total ? 1 : progress / total;
+    s.defAvg = (def + defSum / area) / 2;
     if (done || weightBy.done === total) s.health = 'done';
     else if (weightBy.off_track / total >= 0.25) s.health = 'off_track';
     else if (weightBy.off_track > 0 || weightBy.at_risk / total >= 0.2) s.health = 'at_risk';
