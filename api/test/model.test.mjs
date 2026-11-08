@@ -71,7 +71,7 @@ test('DATA-01 no request the API serves scans the table', async () => {
   assert.equal(seen.scans, 0);
 });
 
-test('DATA-02 opening a map reads the whole project in one query of its partition', async () => {
+test('DATA-02 opening a map reads the project and its nodes in one query, and nothing else', async () => {
   const { seen, call } = await setup();
   const { pid } = await fullProject(call);
   await fullProject(call);
@@ -80,7 +80,7 @@ test('DATA-02 opening a map reads the whole project in one query of its partitio
   assert.equal(seen.queries.length, 1, 'one query');
   const [read] = seen.queries;
   assert.equal(new Set(read.map((it) => it.PK)).size, 1, 'one partition');
-  assert.deepEqual([...new Set(read.map((it) => it.entity))].sort(), ['changeset', 'comment', 'node', 'project'], 'the project, its nodes, changesets and comments');
+  assert.deepEqual([...new Set(read.map((it) => it.entity))].sort(), ['node', 'project'], 'changesets and comments load only when asked for');
   assert.equal(read.filter((it) => it.entity === 'node').length, body.nodes.length, 'and no other project');
 });
 

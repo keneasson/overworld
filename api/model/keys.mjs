@@ -8,7 +8,10 @@
 //   Comment   PROJECT#<id>    COMMENT#<itemKey>#<commentId>
 //
 // A project and its nodes share a partition (an item collection): one query reads a
-// whole map, and one query finds everything to delete. Changesets and comments live there too,
+// whole map, and one query finds everything to delete. The map's entities sort last
+// (CHANGESET# < COMMENT# < NODE# < PROJECT), so opening a map is one range query from NODE#
+// on, and never reads the changesets or comments: those load when they're asked for (DATA-02).
+// A new entity in the partition must sort before NODE#, or every map open would read it. Changesets and comments live there too,
 // keyed by the item they concern (an issue number, not a node id, since a refresh renews node ids). GSI1 is sparse; only projects
 // carry its keys, so it is the list of projects, most recently updated first.
 
@@ -26,6 +29,7 @@ export const keys = {
   flag: (name) => ({ PK: 'APP', SK: `FLAG#${name}` }),
   changeset: (projectId, id) => ({ PK: projectPartition(projectId), SK: `${CHANGESET_PREFIX}${id}` }),
   comment: (projectId, { itemKey, id }) => ({ PK: projectPartition(projectId), SK: `${COMMENT_PREFIX}${itemKey}#${id}` }),
+  mapOf: (projectId) => ({ pk: projectPartition(projectId), skFrom: NODE_PREFIX }),
   commentsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `${COMMENT_PREFIX}${itemKey ? `${itemKey}#` : ''}` }),
 };
 

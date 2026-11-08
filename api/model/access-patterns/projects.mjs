@@ -17,9 +17,9 @@ export function projects(table) {
       return (await table.query({ index: 'GSI1', pk: ALL_PROJECTS, newestFirst: true })).map(strip);
     },
 
-    /** A project and all of its nodes, or null. One query of the project's partition. */
+    /** A project and all of its nodes, or null. One query of the project's partition, and only of the map: see keys.mjs. */
     async getWithNodes(id) {
-      const items = await table.query({ pk: keys.project(id).PK });
+      const items = await table.query(keys.mapOf(id));
       const head = items.find((it) => it.SK === PROJECT_SK);
       if (!head) return null;
       return { project: strip(head), nodes: items.filter((it) => it.SK.startsWith(NODE_PREFIX)).map(strip) };
