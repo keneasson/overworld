@@ -5,8 +5,7 @@ import { LENS_BY_ID } from '../src/map/lenses.js';
 
 const node = (id, parentId, status, extra = {}) => ({ id, parentId, title: id, kind: parentId === 'root' ? 'epic' : 'task', status, ...extra });
 
-// LIFE-06: each state has a colour and a legend entry, and counts roll up through every zoom level.
-test('the Lifecycle layer rolls states up and leaves rejected work out of progress', () => {
+test('LIFE-06 the Lifecycle layer colours each state and rolls counts up, leaving rejected work out of progress', () => {
   const tree = buildTree([
     { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' },
     node('epic', 'root', 'planned'),
@@ -33,7 +32,7 @@ test('the Lifecycle layer rolls states up and leaves rejected work out of progre
   assert.equal(new Set(colours).size, colours.length, 'every state has its own colour');
 });
 
-test('a region whose work was all rejected is settled, not empty', () => {
+test('LIFE-06 a region whose work was all rejected is settled, not empty', () => {
   const tree = buildTree([
     { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' },
     node('epic', 'root', 'planned'),

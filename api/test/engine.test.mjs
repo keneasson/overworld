@@ -4,6 +4,7 @@ import { nestByReferences } from '../engine/references.mjs';
 import { mapArchitecture } from '../engine/architecture.mjs';
 import { makeLocator } from '../engine/placement.mjs';
 import { parseSpec } from '../engine/behaviours.mjs';
+import { lifecycleOf, closedByOpenPrs, openQuestions, usesLifecycle } from '../engine/lifecycle.mjs';
 
 const issue = (number, title, body = '') => ({ number, title, body, labels: [], parent: null });
 const parents = (issues) => Object.fromEntries([...nestByReferences(issues)].map(([c, { parent }]) => [c, parent]));
@@ -164,34 +165,49 @@ test('reads behaviour specs: status, decisions and the issues they cite', () => 
   );
 });
 
-test('reads the lifecycle from labels, closed reasons, pull requests and open questions', async () => {
-  const { lifecycleOf, closedByOpenPrs, openQuestions, usesLifecycle } = await import('../engine/lifecycle.mjs');
-  const it = (labels, extra = {}) => ({ number: 7, title: 'x', body: '', state: 'open', labels, assignees: [], ...extra });
-  const strict = { strict: true };
-  // LIFE-01
+const lifecycleIssue = (labels, extra = {}) => ({ number: 7, title: 'x', body: '', state: 'open', labels, assignees: [], ...extra });
+const strict = { strict: true };
+
+test('LIFE-01 status labels give the state', () => {
+  const it = lifecycleIssue;
   assert.equal(lifecycleOf(it(['status:draft']), strict).status, 'idea');
   assert.equal(lifecycleOf(it(['status:ready']), strict).status, 'ready');
   assert.equal(lifecycleOf(it(['status:in-progress']), strict).status, 'in_progress');
   assert.deepEqual(lifecycleOf(it(['status:needs-decision']), strict), { status: 'needs_decision', definition: 'vague', unclear: '' });
-  // LIFE-02
+});
+
+test('LIFE-02 closed as completed is done, closed as not planned is rejected', () => {
+  const it = lifecycleIssue;
   assert.equal(lifecycleOf(it([], { state: 'closed', stateReason: 'COMPLETED' })).status, 'done');
   assert.equal(lifecycleOf(it([], { state: 'closed', stateReason: 'not_planned' })).status, 'rejected');
   assert.equal(lifecycleOf(it([], { state: 'closed', stateReason: null })).status, 'done', 'old issues closed before reasons existed are done');
-  // LIFE-03
+});
+
+test('LIFE-03 an open pull request that closes an issue puts it in progress', () => {
+  const it = lifecycleIssue;
   const inProgress = closedByOpenPrs([{ number: 30, title: 'Lifecycle layer', body: 'Closes #7. Also fixes: #9; refs #11' }]);
   assert.deepEqual([...inProgress].sort(), [7, 9]);
   assert.equal(lifecycleOf(it(['status:ready']), { ...strict, inProgress }).status, 'in_progress', 'the pull request beats the label');
-  // LIFE-04
+});
+
+test('LIFE-04 open questions put an issue in Needs decision, whatever its label', () => {
+  const it = lifecycleIssue;
   const asking = '## Why\nBecause.\n\n## Open questions\n\n- Fargate or Cloudflare?\n';
   assert.equal(openQuestions(asking), '- Fargate or Cloudflare?');
   assert.equal(openQuestions('## Open questions\n\n<!-- list them here -->\n'), '', 'template comments are not questions');
   assert.equal(openQuestions('## Open questions\n\nNone at the epic level.\n'), '');
   assert.equal(openQuestions('## Open questions\n\n---\n📍 placed by words'), '', 'the placement note is not a question');
   assert.equal(lifecycleOf(it(['status:ready'], { body: asking }), strict).status, 'needs_decision', 'open questions beat the label');
-  // LIFE-05
+});
+
+test('LIFE-05 no status label, or more than one, is unclear and says why', () => {
+  const it = lifecycleIssue;
   assert.equal(lifecycleOf(it([]), strict).unclear, 'it has no status label');
   assert.equal(lifecycleOf(it(['status:ready', 'status:draft']), strict).unclear, 'it has 2 status labels');
-  // Repositories without the lifecycle read as before.
+});
+
+test('repositories without the lifecycle read as before', () => {
+  const it = lifecycleIssue;
   assert.equal(usesLifecycle([it(['bug'])]), false);
   assert.deepEqual(lifecycleOf(it(['wip'])), { status: 'in_progress', definition: 'auto', unclear: '' });
   assert.equal(lifecycleOf(it(['blocked'])).status, 'blocked');

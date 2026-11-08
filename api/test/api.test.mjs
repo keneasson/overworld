@@ -7,6 +7,7 @@ import { createApi } from '../app.mjs';
 import { createModel } from '../model/index.mjs';
 import { parseRepo, importGitHub } from '../github.mjs';
 import { sanitizeNode } from '../../shared/schema.js';
+import { fakeShop } from './fake-github.mjs';
 
 async function setup(accessKey = 'secret-key') {
   const dir = await mkdtemp(join(tmpdir(), 'projectmap-'));
@@ -95,52 +96,6 @@ test('parses GitHub repo references', () => {
   assert.throws(() => parseRepo('nope'));
 });
 
-/** A small repository on a fake GitHub: a Next.js shop with issues and a behaviour spec. */
-function fakeShop() {
-  const issue = (number, title, body = '', extra = {}) => ({ number, title, body, state: 'open', html_url: `https://github.com/octo/shop/issues/${number}`, labels: [], milestone: null, assignees: [], ...extra });
-  const issues = [
-    issue(1, 'Epic: checkout', '- [ ] #2\n- [ ] #3'),
-    issue(2, 'Pay with saved card', 'depends on #4', { state: 'closed', labels: [{ name: 'enhancement' }] }),
-    issue(3, 'Coupon field broken', 'The field on /checkout rejects valid codes.', { labels: [{ name: 'bug' }, { name: 'P1' }], assignees: [{ login: 'ken' }] }),
-    issue(4, 'Card tokens', 'Part of #1. See `apps/web/app/api/payments/route.ts`.', { milestone: { title: 'v1', due_on: '2027-01-31T00:00:00Z' } }),
-    issue(5, 'Think about the vibe', 'Hmm.'),
-    issue(6, 'A PR', '', { pull_request: {} }),
-    issue(8, 'Dark mode toggle', 'Maybe later.', { state: 'closed', state_reason: 'not_planned' }),
-  ];
-  const pulls = [{ number: 9, title: 'Vibes', body: 'Closes #5' }];
-  const files = { 'package.json': { name: 'shop', workspaces: ['apps/*'] }, 'apps/web/package.json': { name: 'web', dependencies: { next: '16.0.0', stripe: '19.0.0' } } };
-  const spec =
-    '# Behaviour spec: Checkout\n\n> What paying must do.\n\n## 1. Paying — `PAY`\n\n| ID | Scenario | Status |\n|---|---|---|\n| PAY-01 | A saved card pays in one tap. | ✅ |\n| PAY-02 | A coupon applies before paying. | ❌ #3 |\n| PAY-03 | Who refunds? | 🔷 |\n';
-  const tree = [
-    'package.json',
-    'apps/web/package.json',
-    'apps/web/app/(shop)/page.tsx',
-    'apps/web/app/(shop)/checkout/page.tsx',
-    'apps/web/app/(shop)/cart/page.tsx',
-    'apps/web/app/(shop)/products/page.tsx',
-    'apps/web/app/auth/signin/page.tsx',
-    'apps/web/app/api/payments/route.ts',
-    'apps/web/components/site-header.tsx',
-    'docs/behavior/checkout.md',
-  ].map((path) => ({ path, type: 'blob' }));
-  return {
-    issues,
-    issue,
-    fetch: async (url) => {
-      const raw = url.match(/^https:\/\/raw\.githubusercontent\.com\/octo\/shop\/main\/(.*)$/);
-      const body = raw
-        ? ((files[decodeURIComponent(raw[1])] && JSON.stringify(files[decodeURIComponent(raw[1])])) ?? (raw[1].endsWith('checkout.md') ? spec : null))
-        : url.includes('/issues?')
-          ? issues
-          : url.includes('/pulls?')
-            ? pulls
-          : url.includes('/git/trees/')
-            ? { tree }
-            : { full_name: 'octo/shop', description: '', html_url: 'https://github.com/octo/shop', default_branch: 'main' };
-      return { ok: body != null, status: body == null ? 404 : 200, json: async () => body, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)) };
-    },
-  };
-}
 
 test('maps a GitHub repository: code is the land, issues the work, specs the laws', async () => {
   const { fetch: fake } = fakeShop();
@@ -234,8 +189,7 @@ async function shopProject() {
   return { shop, call, pid: project.id, nodes, node, map: async () => (await call('GET', `/api/projects/${project.id}`)).body.nodes };
 }
 
-// EDIT-03: several items of an area, edited side by side, collect into one changeset.
-test('edits to several items collect into one changeset and are accepted together', async () => {
+test('EDIT-03 edits to several items collect into one changeset, accepted together', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Ken' })).body.changeset;
   assert.equal(cs.status, 'open');
@@ -270,7 +224,7 @@ test('edits to several items collect into one changeset and are accepted togethe
   assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'x', markdown: '' })).status, 409);
 });
 
-test('a changeset can be discarded, and an empty one cannot be accepted', async () => {
+test('EDIT-03 a changeset can be discarded, and an empty one cannot be accepted', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
   assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`)).status, 400);
@@ -284,7 +238,7 @@ test('a changeset can be discarded, and an empty one cannot be accepted', async 
   assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${other.id}/items`, { key: '../x', title: 'x', markdown: '' })).status, 400);
 });
 
-test('an item that changed since editing began is a conflict, never overwritten', async () => {
+test('EDIT-03 an item that changed since editing began is a conflict, never overwritten', async () => {
   const { shop, call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think about the vibe', markdown: 'Ours.' });
@@ -296,7 +250,7 @@ test('an item that changed since editing began is a conflict, never overwritten'
   assert.match((await map()).find((n) => n.title.startsWith('#5 ')).body, /^Theirs/);
 });
 
-test("a refresh from GitHub keeps accepted edits that haven't synced yet", async () => {
+test("EDIT-03 a refresh from GitHub keeps accepted edits that haven't synced yet", async () => {
   const { shop, call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'Coupon field broken', markdown: 'Fixed wording.' });
@@ -317,8 +271,7 @@ test("a refresh from GitHub keeps accepted edits that haven't synced yet", async
   );
 });
 
-// EDIT-04: a comment on one behaviour or section is anchored there and travels with it.
-test('comments are anchored to a section or a behaviour and survive a refresh', async () => {
+test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', async () => {
   const { call, pid } = await shopProject();
   const a = await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { behaviour: 'PAY-10' }, text: 'Which vault?', author: 'QA' });
   assert.equal(a.status, 201);

@@ -49,8 +49,10 @@ only projects carry its keys, which makes it the project list.
 1. Write the access pattern in the table above first: what is asked for, and by whom.
 2. Choose keys so that it's a GetItem or a Query on one partition. The app never scans.
    `scan()` exists for migrations and backups only.
-3. Add the keys to `keys.mjs`, the method to `access-patterns/`, and a test in
-   `api/test/model.test.mjs`.
+3. Add the keys to `keys.mjs` and the method to `access-patterns/`. Which keys a pattern uses
+   is mechanics, so it gets no test of its own: `api/test/model.test.mjs` tests the design's
+   promises once, through the API (DATA-01 no scans, DATA-02 one query per map, DATA-03 a
+   project's partition goes with it). The feature's own tests prove its behaviours.
 4. If existing keys change, add a migration in `scripts/migrations/` that backs the table up
    first.
 5. A new index ships in its own deploy, before any code that reads it. CloudFormation reports

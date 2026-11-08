@@ -41,6 +41,13 @@ issue's open questions and move the issue to `status:needs-decision`. Don't gues
 
 - Link the issue with `Closes #N`. One issue per pull request where you can.
 - Name the behaviour IDs the change satisfies, and the tests that prove them.
+- Every test proves a behaviour, and is named by its ID plus a short, clear statement:
+  `test('EDIT-01 each section opens as its own field')`. The issue holds the full behaviour.
+  A test that names no behaviour is given one (proposed in its issue, then ratified) or deleted.
+- Test what the product does, never how it does it, so a refactor that keeps the behaviour keeps
+  the test passing. If there's no behaviour to prove, there's no test.
+- A behaviour and its tests change in the same pull request, and the ID never changes, even if the
+  behaviour moves to another issue.
 - `npm test` must pass.
 - Follow the conventions in [CLAUDE.md](CLAUDE.md). It's written for agents, but it applies to
   everyone.
