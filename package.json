@@ -16,6 +16,11 @@
     "destroy": "node scripts/destroy.mjs"
   },
   "dependencies": {
+    "@tiptap/extensions": "^3.33.0",
+    "@tiptap/markdown": "^3.33.0",
+    "@tiptap/pm": "^3.33.0",
+    "@tiptap/react": "^3.33.0",
+    "@tiptap/starter-kit": "^3.33.0",
     "d3": "^7.9.0",
     "d3-voronoi-map": "^2.1.1",
     "d3-weighted-voronoi": "^1.1.3",

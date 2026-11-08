@@ -16,8 +16,13 @@ model.
 | Project | `PROJECT#<id>` | `PROJECT`     | `PROJECTS` | `<updatedAt>` |
 | Node    | `PROJECT#<id>` | `NODE#<nodeId>` |          |             |
 | Flag    | `APP`          | `FLAG#<name>` |          |             |
+| Changeset | `PROJECT#<id>` | `CHANGESET#<changesetId>` | | |
+| Comment | `PROJECT#<id>` | `COMMENT#<itemKey>#<commentId>` | | |
 
-A project and its nodes share a partition, so one query reads a whole map. GSI1 is sparse:
+A project and its nodes share a partition, so one query reads a whole map. Changesets and
+comments share it too, so deleting a project removes them with it. They are keyed by the item
+they concern (`issue-<number>` for a GitHub issue, `node-<id>` otherwise). Comment ids start with the time, so a thread reads in order, because a refresh from
+GitHub gives every node a new id. GSI1 is sparse:
 only projects carry its keys, which makes it the project list.
 
 ## Access patterns
@@ -31,6 +36,12 @@ only projects carry its keys, which makes it the project list.
 | Add or change nodes | `nodes.put(projectId, nodes)` | Batched puts |
 | Delete nodes | `nodes.delete(projectId, ids)` | Batched deletes |
 | Replace a whole map (GitHub refresh) | `nodes.replace(projectId, nodes)` | Query `begins_with(SK, NODE#)`, puts first, then deletes |
+| An area's changesets: open, accepted and waiting to sync, discarded | `changesets.list(projectId)` | Query `begins_with(SK, CHANGESET#)` |
+| Open one changeset | `changesets.get(projectId, id)` | GetItem |
+| Save a changeset (edits, accept, discard) | `changesets.put(projectId, changeset)` | PutItem |
+| Every comment in a project, by item then time | `comments.list(projectId)` | Query `begins_with(SK, COMMENT#)` |
+| One item's comment thread | `comments.list(projectId, itemKey)` | Query `begins_with(SK, COMMENT#<itemKey>#)` |
+| Add, resolve or delete a comment | `comments.get` / `put` / `delete` | GetItem, PutItem, DeleteItem |
 | Has a one-off thing happened? | `flags.has(name)`, `flags.set(name)` | GetItem, PutItem |
 
 ## Adding a feature
