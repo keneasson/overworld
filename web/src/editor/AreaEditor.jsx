@@ -15,7 +15,7 @@ const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
  * Edit several items of one area side by side. Every edit goes into the area's open changeset,
  * which is saved as you type and accepted or discarded as one.
  */
-export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setComments, onAccepted, onClose, toast, fail, mobile }) {
+export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setComments, loadComments, onAccepted, onClose, toast, fail, mobile }) {
   const scope = tree.byId.get(scopeId) ?? tree.root;
   const items = useMemo(() => editableItems(tree, scope), [tree, scope]);
   const byKey = useMemo(() => new Map(items.map((n) => [itemKeyOf(n), n])), [items]);
@@ -59,6 +59,9 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
       cancelled = true;
     };
   }, [projectId, scope.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Threads load for the columns that are open, not for the whole area.
+  useEffect(() => loadComments(openKeys.filter((k) => byKey.has(k))), [openKeys, byKey, loadComments]);
 
   const ensureChangeset = useCallback(() => {
     csPromise.current ??= api.createChangeset(projectId, { scopeId: scope.id, author: name }).then(({ changeset: cs }) => {

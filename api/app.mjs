@@ -311,6 +311,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     // ---- Comments, anchored to a section or a behaviour of one item ----
 
     ['GET', /^\/api\/projects\/([\w-]+)\/comments$/, async ({ params: [pid] }) => ({ comments: await model.comments.list(pid) })],
+    // One item's thread: the web app loads comments only for what is open, never a whole project's.
+    ['GET', /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)$/, async ({ params: [pid, itemKey] }) => ({ comments: await model.comments.list(pid, itemKey) })],
 
     [
       'POST',
