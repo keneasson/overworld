@@ -3,20 +3,11 @@
 // .conf/ locally and from AWS once deployed; this file is only handed a way to read it.
 
 import { createSign } from 'node:crypto';
+import { PermanentError, TransientError } from '../errors.mjs';
+
+export { PermanentError, TransientError };
 
 const API = 'https://api.github.com';
-
-/** A failure worth retrying (GitHub slow, down or rate-limited), and when to try again at the earliest. */
-export class TransientError extends Error {
-  constructor(message, retryAt = null) {
-    super(message);
-    this.transient = true;
-    this.retryAt = retryAt;
-  }
-}
-
-/** A failure that retrying won't fix (no such issue, no access, a rejected edit): it needs a person. */
-export class PermanentError extends Error {}
 
 const b64url = (v) => Buffer.from(typeof v === 'string' ? v : JSON.stringify(v)).toString('base64url');
 

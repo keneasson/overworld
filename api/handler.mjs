@@ -1,13 +1,14 @@
 // AWS Lambda entry point. One function serves three kinds of event:
 //   a Function URL request   /api/* goes to the JSON API; everything else is the built web app
-//   the table's stream       a new sync job (the outbox) wakes the worker for its project
+//   the table's stream       a newly saved item (the outbox) wakes the worker for its project
 //   a schedule               { overworld: 'drain', projectId } for a retry, { overworld: 'reconcile' } nightly
 
 import { createApi } from './app.mjs';
 import { createModel } from './model/index.mjs';
 import { serveStatic, SECURITY_HEADERS } from './static.mjs';
 import { awsSync } from './aws.mjs';
-import { githubApp } from './github-app.mjs';
+import { githubApp } from './stores/github/app.mjs';
+import { createStores } from './stores/index.mjs';
 import { createSync } from './sync.mjs';
 
 let ready;
@@ -16,8 +17,9 @@ async function getApp() {
   ready ??= (async () => {
     const model = await createModel();
     const aws = awsSync();
-    const sync = aws.enabled ? createSync({ model, github: githubApp(aws.app), schedule: aws.schedule }) : null;
-    const api = createApi({ model, accessKey: process.env.ACCESS_KEY ?? '', sync, webhookSecret: sync && aws.webhookSecret });
+    const stores = createStores({ githubApp: aws.enabled ? githubApp(aws.app) : null });
+    const sync = aws.enabled ? createSync({ model, stores, schedule: aws.schedule }) : null;
+    const api = createApi({ model, accessKey: process.env.ACCESS_KEY ?? '', sync, stores, webhookSecret: sync && aws.webhookSecret });
     return { api, sync, aws };
   })();
   return ready;

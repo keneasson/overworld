@@ -1,5 +1,5 @@
-// Sync with GitHub: the outbox of saved items, the lease on a project's sync and its write budget, the
-// reports of each reconciliation, and which projects map a repository. All but the repository links live in the
+// Sync with a store: the outbox of saved items, the lease on a project's sync and its write budget, the
+// reports of each reconciliation, and which projects live in which store. All but the store links live in the
 // project's partition, so deleting a project takes them with it.
 
 import { keys, strip } from '../keys.mjs';
@@ -10,7 +10,7 @@ const REPORTS_KEPT = 30;
 export function jobs(table) {
   const item = (projectId, job) => ({ ...keys.job(projectId, job.id), entity: 'job', projectId, ...job });
   return {
-    /** A project's saved items still to reach GitHub, in the order they were saved. Query begins_with(SK, JOB#). */
+    /** A project's saved items still to reach its store, in the order they were saved. Query begins_with(SK, JOB#). */
     async list(projectId) {
       return (await table.query(keys.jobsOf(projectId))).map(strip);
     },
@@ -20,7 +20,7 @@ export function jobs(table) {
     },
     /**
      * The transactional outbox: each saved item's node and its job, written together or not at all. A job it
-     * replaces (the same item, saved again before it reached GitHub) goes in the same transaction (SYNC-09).
+     * replaces (the same item, saved again before it reached the store) goes in the same transaction (SYNC-09).
      * @param {{ node: object, job: object, replaces?: object }[]} saves
      */
     async save(projectId, saves) {
@@ -32,7 +32,7 @@ export function jobs(table) {
         });
       }
     },
-    /** A job done: it goes, with its node's outcome and any later save of the same item moved onto what GitHub now holds. */
+    /** A job done: it goes, with its node's outcome and any later save of the same item moved onto what the store now holds. */
     async finish(projectId, job, { node = null, rebased = [] } = {}) {
       await table.transact({ puts: [...(node ? [nodeItem(projectId, node)] : []), ...rebased.map((j) => item(projectId, j))], deletes: [keys.job(projectId, job.id)] });
     },
@@ -41,7 +41,7 @@ export function jobs(table) {
 
 export function budgets(table) {
   return {
-    /** The times of a project's recent writes to GitHub. GetItem. Only the worker holding the project's lease touches it. */
+    /** The times of a project's recent writes to its store. GetItem. Only the worker holding the project's lease touches it. */
     async get(projectId) {
       return (await table.get(keys.lease(projectId, 'budget')))?.writes ?? [];
     },
@@ -80,19 +80,19 @@ export function audits(table) {
   };
 }
 
-export function repos(table) {
+export function links(table) {
   return {
-    /** Which projects map this repository, for a webhook about it. Query PK = REPO#<owner/name>. */
-    async projectsOf(repo) {
-      return (await table.query(keys.repoLinks(repo))).map((it) => it.projectId);
+    /** Which projects live in this store (its key, e.g. github:owner/name), for an event about it. Query PK = STORE#<key>. */
+    async projectsOf(key) {
+      return (await table.query(keys.storeLinks(key))).map((it) => it.projectId);
     },
     /** PutItem, on import and on every refresh. */
-    async link(repo, projectId) {
-      await table.put({ ...keys.repoLink(repo, projectId), entity: 'repo-link', projectId });
+    async link(key, projectId) {
+      await table.put({ ...keys.storeLink(key, projectId), entity: 'store-link', projectId });
     },
     /** DeleteItem, when the project is gone. */
-    async unlink(repo, projectId) {
-      await table.delete(keys.repoLink(repo, projectId));
+    async unlink(key, projectId) {
+      await table.delete(keys.storeLink(key, projectId));
     },
   };
 }

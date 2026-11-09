@@ -16,7 +16,7 @@ export function nodes(table) {
       return it ? strip(it) : null;
     },
 
-    /** The nodes not yet in line with GitHub: unsaved, saving, in conflict or failed. Query GSI1 PK = PENDING#<id>, so the map isn't read. */
+    /** The nodes not yet in line with their store: unsaved, saving, in conflict or failed. Query GSI1 PK = PENDING#<id>, so the map isn't read. */
     async pending(projectId) {
       return (await table.query(keys.pendingOf(projectId))).map(strip);
     },

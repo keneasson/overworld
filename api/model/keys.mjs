@@ -6,12 +6,12 @@
 //   Flag      APP             FLAG#<name>
 //   Changeset PROJECT#<id>    CHANGESET#<changesetId>
 //   Comment   PROJECT#<id>    COMMENT#<itemKey>#<commentId>
-//   Node with a sync state             PENDING#<id> <itemKey>  sparse: only nodes not yet in line with GitHub
-//   Sync job  PROJECT#<id>    JOB#<savedAt>#<itemKey>   the outbox: a saved item still to reach GitHub
+//   Node with a sync state             PENDING#<id> <itemKey>  sparse: only nodes not yet in line with their store
+//   Sync job  PROJECT#<id>    JOB#<savedAt>#<itemKey>   the outbox: a saved item still to reach its store
 //   Lease     PROJECT#<id>    LEASE#sync         who is syncing this project, until when
-//   Budget    PROJECT#<id>    LEASE#budget       the project's recent writes to GitHub (SYNC-10)
-//   Report    PROJECT#<id>    AUDIT#<at>         what a reconciliation with GitHub fixed
-//   Repo link REPO#<owner/name>  PROJECT#<id>    which projects map a repository (for webhooks)
+//   Budget    PROJECT#<id>    LEASE#budget       the project's recent writes to its store (SYNC-10)
+//   Report    PROJECT#<id>    AUDIT#<at>         what a reconciliation with the store fixed
+//   Store link STORE#<store key>  PROJECT#<id>  which projects live in a store, e.g. github:owner/name (for its events)
 //
 // A project and its nodes share a partition (an item collection): one query reads a
 // whole map, and one query finds everything to delete. Changesets and comments live there too,
@@ -43,8 +43,8 @@ export const keys = {
   lease: (projectId, name) => ({ PK: projectPartition(projectId), SK: `LEASE#${name}` }),
   audit: (projectId, at) => ({ PK: projectPartition(projectId), SK: `${AUDIT_PREFIX}${at}` }),
   auditsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: AUDIT_PREFIX }),
-  repoLink: (repo, projectId) => ({ PK: `REPO#${repo.toLowerCase()}`, SK: projectPartition(projectId) }),
-  repoLinks: (repo) => ({ pk: `REPO#${repo.toLowerCase()}` }),
+  storeLink: (key, projectId) => ({ PK: `STORE#${key}`, SK: projectPartition(projectId) }),
+  storeLinks: (key) => ({ pk: `STORE#${key}` }),
   commentsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `${COMMENT_PREFIX}${itemKey ? `${itemKey}#` : ''}` }),
 };
 
