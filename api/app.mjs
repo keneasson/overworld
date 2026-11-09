@@ -5,6 +5,10 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
+import { applyTo, conflictsOf, editableOf, findItem, same } from './edits.mjs';
+import { keepPending, markEdited, saveNow } from './sync.mjs';
+import { createStores } from './stores/index.mjs';
+import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -15,7 +19,13 @@ class HttpError extends Error {
 
 const digest = (s) => createHash('sha256').update(String(s)).digest();
 
-export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console }) {
+/**
+ * @param {object} [o.sync] sync with each project's store (api/sync.mjs); without it, saved items wait in the outbox
+ * @param {object} [o.stores] each project's store (api/stores/index.mjs)
+ * @param {() => Promise<string>} [o.webhookSecret] the GitHub App's webhook secret
+ * @param {(projectId: string) => void} [o.onSaved] runs after a save: in AWS the table's stream wakes the worker instead
+ */
+export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, stores = createStores({ fetchImpl }), webhookSecret = null, onSaved = null }) {
   const expected = accessKey ? digest(accessKey) : null;
 
   function authorize(headers) {
@@ -100,6 +110,28 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     return out;
   }
 
+  const KEY = /^(issue-\d+|node-[\w-]+)$/;
+  // Comment ids start with the time, so a thread sorts in order; never reuse a millisecond.
+  let lastMs = 0;
+  const commentId = () => {
+    lastMs = Math.max(Date.now(), lastMs + 1);
+    return `${lastMs.toString(36).padStart(9, '0')}${newId().slice(0, 4)}`;
+  };
+  const author = (v) => String(v ?? '').trim().slice(0, 80) || 'Someone';
+  const text = (v, max, what) => {
+    if (typeof v !== 'string') throw new ValidationError(`${what}: expected text`);
+    if (v.length > max) throw new ValidationError(`${what}: at most ${max} characters`);
+    return v;
+  };
+  const version = (v, what) => ({ title: text(v?.title ?? '', 200, `${what}.title`).trim(), markdown: text(v?.markdown ?? '', 19000, `${what}.markdown`) });
+
+  async function loadChangeset(pid, cid, { open = false } = {}) {
+    const cs = await model.changesets.get(pid, cid);
+    if (!cs) throw new HttpError(404, 'Changeset not found');
+    if (open && cs.status !== 'open') throw new HttpError(409, `This changeset was already ${cs.status}`);
+    return cs;
+  }
+
   const routes = [
     ['GET', /^\/api\/health$/, async () => ({ ok: true, auth: Boolean(expected) }), { public: true }],
 
@@ -135,8 +167,10 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       'DELETE',
       /^\/api\/projects\/([\w-]+)$/,
       async ({ params: [pid] }) => {
-        await loadProject(pid);
+        const { project } = await loadProject(pid);
         await model.projects.delete(pid);
+        const store = stores.forProject(project);
+        if (store) await model.links.unlink(store.key, pid);
         return { deleted: pid };
       },
     ],
@@ -187,7 +221,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           const known = new Set(nodes.map((n) => n.id));
           patch.links = patch.links.filter((l) => known.has(l.to) && l.to !== nid);
         }
-        const node = { ...current, ...patch, id: nid, updatedAt: new Date().toISOString() };
+        let node = { ...current, ...patch, id: nid, updatedAt: new Date().toISOString() };
+        // A change to what the store holds (its text or its state) waits for a save (SYNC-07).
+        if (['title', 'body', 'status'].some((k) => k in patch && patch[k] !== current[k])) node = markEdited(current, node, stores.forProject(project));
         await model.nodes.put(pid, [node]);
         const all = nodes.map((n) => (n.id === nid ? node : n));
         const updatedProject = await touchProject(project, all);
@@ -215,6 +251,175 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       },
     ],
 
+    // ---- Changesets: edits to several items of an area, accepted or discarded together ----
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/changesets$/, async ({ params: [pid] }) => ({ changesets: await model.changesets.list(pid) })],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/changesets$/,
+      async ({ params: [pid], body }) => {
+        const { nodes } = await loadProject(pid);
+        const scope = nodes.find((n) => n.id === body?.scopeId) ?? nodes.find((n) => n.id === ROOT_ID);
+        const now = new Date().toISOString();
+        const changeset = { id: newId(), scopeId: scope.id, scopeTitle: scope.title, status: 'open', author: author(body?.author), items: [], createdAt: now, updatedAt: now };
+        await model.changesets.put(pid, changeset);
+        return { changeset };
+      },
+      { status: 201 },
+    ],
+
+    [
+      'PUT',
+      /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/items$/,
+      // Record one item's edits. Its base is what the map holds now, the first time it's edited.
+      async ({ params: [pid, cid], body }) => {
+        const cs = await loadChangeset(pid, cid, { open: true });
+        const key = String(body?.key ?? '');
+        if (!KEY.test(key)) throw new ValidationError('key: expected issue-<number> or node-<id>');
+        const { nodes } = await loadProject(pid);
+        const node = findItem(nodes, key);
+        if (!node) throw new HttpError(404, 'No such item on the map');
+        const after = version(body, 'item');
+        if (!after.title) throw new ValidationError('title: required');
+        const at = cs.items.findIndex((it) => it.key === key);
+        const base = at >= 0 ? cs.items[at].base : editableOf(node);
+        if (same(base, after)) {
+          if (at >= 0) cs.items.splice(at, 1);
+        } else if (at >= 0) cs.items[at] = { ...cs.items[at], after };
+        else cs.items.push({ key, nodeTitle: node.title, base, after });
+        cs.updatedAt = new Date().toISOString();
+        await model.changesets.put(pid, cs);
+        return { changeset: cs };
+      },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/(accept|discard)$/,
+      async ({ params: [pid, cid, action] }) => {
+        const cs = await loadChangeset(pid, cid, { open: true });
+        const now = new Date().toISOString();
+        if (action === 'discard') {
+          Object.assign(cs, { status: 'discarded', updatedAt: now });
+          await model.changesets.put(pid, cs);
+          return { changeset: cs, nodes: [] };
+        }
+        if (!cs.items.length) throw new ValidationError('nothing to accept: this changeset has no edits');
+        const { project, nodes } = await loadProject(pid);
+        const conflicts = conflictsOf(cs, nodes);
+        if (conflicts.length) throw Object.assign(new HttpError(409, `Changed since you started editing: ${conflicts.map((c) => c.nodeTitle).join(', ')}`), { conflicts: conflicts.map((c) => c.key) });
+        // Accepting changes the map. Items from a store are then unsaved: nothing reaches the store until a save (SYNC-07).
+        const store = stores.forProject(project);
+        const changed = cs.items.map((it) => {
+          const before = findItem(nodes, it.key);
+          return markEdited(before, applyTo(before, it.after, now), store);
+        });
+        await model.nodes.put(pid, changed);
+        const byId = new Map(changed.map((n) => [n.id, n]));
+        await touchProject(project, nodes.map((n) => byId.get(n.id) ?? n));
+        Object.assign(cs, { status: 'accepted', acceptedAt: now, updatedAt: now });
+        await model.changesets.put(pid, cs);
+        return { changeset: cs, nodes: changed };
+      },
+    ],
+
+    // ---- Comments, anchored to a section or a behaviour of one item ----
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/comments$/, async ({ params: [pid] }) => ({ comments: await model.comments.list(pid) })],
+    // One item's thread: the web app loads comments only for what is open, never a whole project's.
+    ['GET', /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)$/, async ({ params: [pid, itemKey] }) => ({ comments: await model.comments.list(pid, itemKey) })],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/comments$/,
+      async ({ params: [pid], body }) => {
+        await loadProject(pid);
+        const itemKey = String(body?.itemKey ?? '');
+        if (!KEY.test(itemKey)) throw new ValidationError('itemKey: expected issue-<number> or node-<id>');
+        const a = body?.anchor ?? {};
+        const anchor = a.behaviour ? { behaviour: text(a.behaviour, 40, 'anchor.behaviour') } : { section: text(a.section ?? 'Why', 60, 'anchor.section') };
+        const said = text(body?.text ?? '', 4000, 'text').trim();
+        if (!said) throw new ValidationError('text: required');
+        const comment = { id: commentId(), itemKey, anchor, text: said, author: author(body?.author), resolved: false, createdAt: new Date().toISOString() };
+        await model.comments.put(pid, comment);
+        return { comment };
+      },
+      { status: 201 },
+    ],
+
+    [
+      'PATCH',
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)$/,
+      async ({ params: [pid, itemKey, id], body }) => {
+        const comment = await model.comments.get(pid, { itemKey, id });
+        if (!comment) throw new HttpError(404, 'Comment not found');
+        comment.resolved = Boolean(body?.resolved);
+        await model.comments.put(pid, comment);
+        return { comment };
+      },
+    ],
+
+    [
+      'DELETE',
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)$/,
+      async ({ params: [pid, itemKey, id] }) => {
+        if (!(await model.comments.get(pid, { itemKey, id }))) throw new HttpError(404, 'Comment not found');
+        await model.comments.delete(pid, { itemKey, id });
+        return { deleted: id };
+      },
+    ],
+
+    // ---- Sync with each project's store (#3) ----
+
+    [
+      'POST',
+      /^\/api\/github\/webhook$/,
+      // GitHub signs every delivery with the App's webhook secret; anything unsigned or wrongly signed is refused.
+      async ({ headers, rawBody, body }) => {
+        if (!sync || !webhookSecret) throw new HttpError(404, 'Webhooks are not set up here');
+        if (!signedByGitHub(rawBody, headers['x-hub-signature-256'], await webhookSecret())) throw new HttpError(401, 'Bad signature');
+        const delivery = eventsFromWebhook(String(headers['x-github-event'] ?? ''), body);
+        return delivery ? sync.onEvents(delivery.key, delivery.events) : { handled: false };
+      },
+      { public: true },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/save$/,
+      // Save: every unsaved item (or just body.keys) goes to the project's store as it is now. It decides nothing (SYNC-08).
+      async ({ params: [pid], body }) => {
+        const { project } = await loadProject(pid);
+        if (!stores.forProject(project)) throw new ValidationError('this project lives only in Overworld: there is no store to save to');
+        const keys = Array.isArray(body?.keys) ? body.keys.filter((k) => typeof k === 'string' && KEY.test(k)) : null;
+        const result = await saveNow({ model, stores }, pid, { keys });
+        if (result.saved.length) onSaved?.(pid);
+        return result;
+      },
+    ],
+
+    [
+      'GET',
+      /^\/api\/projects\/([\w-]+)\/sync$/,
+      // What is still on its way to the store, and what the last reconciliations fixed.
+      async ({ params: [pid] }) => {
+        if (!(await model.projects.get(pid))) throw new HttpError(404, 'Project not found');
+        return { enabled: Boolean(sync), jobs: await model.jobs.list(pid), reports: await model.audits.list(pid) };
+      },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/sync$/,
+      // Retry now, without waiting for the booked retry.
+      async ({ params: [pid] }) => {
+        if (!sync) throw new HttpError(409, 'Sync is not set up here');
+        if (!(await model.projects.get(pid))) throw new HttpError(404, 'Project not found');
+        return sync.drain(pid, { now: true });
+      },
+    ],
+
     ['POST', /^\/api\/import\/json$/, async ({ body }) => saveNewProject(fromImport(body), 'json'), { status: 201 }],
 
     [
@@ -222,7 +427,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/import\/github$/,
       async ({ body }) => {
         const data = await importGitHub({ repo: body?.repo, token: body?.token || undefined }, fetchImpl);
-        return saveNewProject(data, 'github', { githubRepo: data.title });
+        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle });
+        await model.links.link(stores.forProject(saved.project).key, saved.project.id);
+        return saved;
       },
       { status: 201 },
     ],
@@ -230,25 +437,28 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     [
       'POST',
       /^\/api\/projects\/([\w-]+)\/refresh$/,
-      // Map the repository again, in place: same project, same link, today's code and issues.
+      // Map the project from its store again, in place: same project, same link, today's code and items.
       async ({ params: [pid], body }) => {
         const { project } = await loadProject(pid);
-        if (!project.githubRepo) throw new ValidationError('only projects imported from GitHub can be refreshed');
-        const data = await importGitHub({ repo: project.githubRepo, token: body?.token || undefined }, fetchImpl);
-        await model.nodes.replace(pid, data.nodes);
-        const updated = await touchProject(project, data.nodes);
-        return { project: updated, nodes: data.nodes };
+        const store = stores.forProject(project);
+        if (!store) throw new ValidationError('only projects imported from a store can be refreshed');
+        const data = await store.mapAgain({ token: body?.token || undefined });
+        const kept = keepPending(data.nodes, await model.nodes.pending(pid), store);
+        await model.nodes.replace(pid, kept.nodes);
+        const updated = await touchProject(project, kept.nodes, data.project);
+        await model.links.link(store.key, pid);
+        return { project: updated, nodes: kept.nodes };
       },
     ],
   ];
 
-  return async function handle({ method, path, headers = {}, body = null }) {
+  return async function handle({ method, path, headers = {}, body = null, rawBody = null }) {
     try {
       for (const [m, re, fn, opts = {}] of routes) {
         const match = path.match(re);
         if (!match || m !== method) continue;
         if (!opts.public) authorize(headers);
-        const result = await fn({ params: match.slice(1), body, headers });
+        const result = await fn({ params: match.slice(1), body, headers, rawBody });
         return { status: opts.status ?? 200, body: result };
       }
       const pathKnown = routes.some(([, re]) => re.test(path));
@@ -256,7 +466,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     } catch (err) {
       const status = err.status ?? 500;
       if (status >= 500) log.error?.(err);
-      return { status, body: { error: status >= 500 ? 'Internal error' : err.message } };
+      return { status, body: { error: status >= 500 ? 'Internal error' : err.message, ...(err.conflicts ? { conflicts: err.conflicts } : {}) } };
     }
   };
 }

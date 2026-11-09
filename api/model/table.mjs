@@ -8,6 +8,9 @@
 //   delete(key)
 //   query({ pk, skBeginsWith, index, newestFirst })  -> every matching item, all pages
 //   write({ puts, deletes })                         batched, retried while throttled
+//   transact({ puts, deletes })                      all or nothing, at most 100 items (the outbox)
+//   claim(key, { owner, until, now })                -> true if this owner now holds the lease: nobody did,
+//                                                    it ran out, or it was already this owner's
 //   scan()                                           every item; for migrations and backups only
 
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
@@ -22,7 +25,7 @@ export function createTable(env = process.env) {
 
 export async function dynamoTable(tableName, { region } = {}) {
   const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
-  const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, QueryCommand, BatchWriteCommand, ScanCommand } = await import('@aws-sdk/lib-dynamodb');
+  const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, QueryCommand, BatchWriteCommand, ScanCommand, TransactWriteCommand } = await import('@aws-sdk/lib-dynamodb');
   const db = DynamoDBDocumentClient.from(new DynamoDBClient(region ? { region } : {}), {
     marshallOptions: { removeUndefinedValues: true, convertEmptyValues: false },
   });
@@ -69,6 +72,28 @@ export async function dynamoTable(tableName, { region } = {}) {
           if (attempt) await new Promise((r) => setTimeout(r, 50 * 2 ** attempt));
           pending = (await db.send(new BatchWriteCommand({ RequestItems: pending }))).UnprocessedItems;
         }
+      }
+    },
+    async transact({ puts = [], deletes = [] }) {
+      if (puts.length + deletes.length > 100) throw new Error('A transaction holds at most 100 items');
+      const TransactItems = [...puts.map((Item) => ({ Put: { TableName: tableName, Item } })), ...deletes.map((Key) => ({ Delete: { TableName: tableName, Key } }))];
+      await db.send(new TransactWriteCommand({ TransactItems }));
+    },
+    async claim(key, { owner, until, now }) {
+      try {
+        await db.send(
+          new PutCommand({
+            TableName: tableName,
+            Item: { ...key, entity: 'lease', owner, until },
+            ConditionExpression: 'attribute_not_exists(PK) OR #until < :now OR #owner = :owner',
+            ExpressionAttributeNames: { '#until': 'until', '#owner': 'owner' },
+            ExpressionAttributeValues: { ':now': now, ':owner': owner },
+          }),
+        );
+        return true;
+      } catch (err) {
+        if (err.name === 'ConditionalCheckFailedException') return false;
+        throw err;
       }
     },
     async scan() {
@@ -129,6 +154,22 @@ export function fileTable(path) {
       for (const it of puts) all.set(at(it), clone(it));
       for (const key of deletes) all.delete(at(key));
       await save();
+    },
+    async transact({ puts = [], deletes = [] }) {
+      if (puts.length + deletes.length > 100) throw new Error('A transaction holds at most 100 items');
+      // One in-memory change and one save: all or nothing already.
+      const all = await load();
+      for (const it of puts) all.set(at(it), clone(it));
+      for (const key of deletes) all.delete(at(key));
+      await save();
+    },
+    async claim(key, { owner, until, now }) {
+      const all = await load();
+      const held = all.get(at(key));
+      if (held && held.until >= now && held.owner !== owner) return false;
+      all.set(at(key), { ...key, entity: 'lease', owner, until });
+      await save();
+      return true;
     },
     async scan() {
       return [...(await load()).values()].map(clone);

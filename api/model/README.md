@@ -14,11 +14,31 @@ model.
 | Entity  | PK             | SK            | GSI1PK   | GSI1SK      |
 | ------- | -------------- | ------------- | -------- | ----------- |
 | Project | `PROJECT#<id>` | `PROJECT`     | `PROJECTS` | `<updatedAt>` |
-| Node    | `PROJECT#<id>` | `NODE#<nodeId>` |          |             |
+| Node    | `PROJECT#<id>` | `NODE#<nodeId>` | `PENDING#<id>`, only while it has a sync state | `<itemKey>` |
 | Flag    | `APP`          | `FLAG#<name>` |          |             |
+| Changeset | `PROJECT#<id>` | `CHANGESET#<changesetId>` | | |
+| Comment | `PROJECT#<id>` | `COMMENT#<itemKey>#<commentId>` | | |
+| Sync job | `PROJECT#<id>` | `JOB#<savedAt>#<itemKey>` | | |
+| Sync lease | `PROJECT#<id>` | `LEASE#sync` | | |
+| Write budget | `PROJECT#<id>` | `LEASE#budget` | | |
+| Reconciliation report | `PROJECT#<id>` | `AUDIT#<at>` | | |
+| Store link | `STORE#<store key>` | `PROJECT#<id>` | | |
 
-A project and its nodes share a partition, so one query reads a whole map. GSI1 is sparse:
-only projects carry its keys, which makes it the project list.
+A project and its nodes share a partition, so one query reads a whole map. Changesets and
+comments share it too, so deleting a project removes them with it. They are keyed by the item
+they concern (`issue-<number>` for a GitHub issue, `node-<id>` otherwise). Comment ids start with the time, so a thread reads in order, because a refresh from
+GitHub gives every node a new id. GSI1 is sparse. Projects carry its keys, which makes it the project list.
+So does a node while it has a sync state (unsaved, saving, conflict or failed): that makes it the list of
+items not yet in line with their store, so a save or a refresh finds them without reading the map.
+
+Sync with each project's store (#3) keeps its state in the project's partition too: the outbox of saved items (one
+job per item and save; an item saved again before it was written replaces its job), the lease that lets
+one worker at a time sync a project, its recent writes (the write budget), and the last 30 reconciliation reports. All of them
+sort before `NODE#`, so opening a map never reads them. An issue's node id is `issue-<number>`, so a
+webhook about one issue reads and writes one item. Store links are the one thing outside a project's
+partition: they let an event from a store (a GitHub webhook, say) find the projects that live there
+without a scan. A store's key names it, e.g. `github:owner/name`. A link left behind by a deleted
+project is removed the next time an event finds it.
 
 ## Access patterns
 
@@ -30,8 +50,27 @@ only projects carry its keys, which makes it the project list.
 | Delete a project and its map | `projects.delete(id)` | Query the partition, batched deletes |
 | Add or change nodes | `nodes.put(projectId, nodes)` | Batched puts |
 | Delete nodes | `nodes.delete(projectId, ids)` | Batched deletes |
-| Replace a whole map (GitHub refresh) | `nodes.replace(projectId, nodes)` | Query `begins_with(SK, NODE#)`, puts first, then deletes |
+| Replace a whole map (read from its store again) | `nodes.replace(projectId, nodes)` | Query `begins_with(SK, NODE#)`, puts first, then deletes |
+| An area's changesets: open, accepted, discarded | `changesets.list(projectId)` | Query `begins_with(SK, CHANGESET#)` |
+| Open one changeset | `changesets.get(projectId, id)` | GetItem |
+| Save a changeset (edits, accept, discard) | `changesets.put(projectId, changeset)` | PutItem |
+| Every comment in a project, by item then time | `comments.list(projectId)` | Query `begins_with(SK, COMMENT#)` |
+| One item's comment thread | `comments.list(projectId, itemKey)` | Query `begins_with(SK, COMMENT#<itemKey>#)` |
+| Add, resolve or delete a comment | `comments.get` / `put` / `delete` | GetItem, PutItem, DeleteItem |
 | Has a one-off thing happened? | `flags.has(name)`, `flags.set(name)` | GetItem, PutItem |
+| A project's summary, without its map | `projects.get(id)` | GetItem |
+| One node (an issue's is `issue-<number>`) | `nodes.get(projectId, id)` | GetItem |
+| Items not yet in line with their store (to save, or to keep through a refresh) | `nodes.pending(projectId)` | Query GSI1, `GSI1PK = PENDING#<id>` |
+| Save: queue items for the store (the outbox) | `jobs.save(projectId, saves)` | TransactWriteItems: each item's node, its job and the job it replaces, or none of them |
+| What is still on its way to the store, in the order saved | `jobs.list(projectId)` | Query `begins_with(SK, JOB#)` |
+| A job's attempts, next try, or the new item's ref | `jobs.put(projectId, job)` | PutItem |
+| An item synced: its node's outcome, and its job gone | `jobs.finish(projectId, job, { node, rebased })` | TransactWriteItems |
+| A project's recent writes to its store | `budgets.get(projectId)`, `budgets.put(projectId, writes)` | GetItem, PutItem |
+| Hold or let go of a project's sync | `leases.claim(projectId, owner, until, now)`, `leases.release(projectId, owner)` | Conditional PutItem; GetItem, DeleteItem |
+| The last reconciliations, newest first | `audits.list(projectId)` | Query `begins_with(SK, AUDIT#)`, descending |
+| Keep a report, and drop those past the last 30 | `audits.put(projectId, report)` | Query, then batched put and deletes |
+| Projects that live in a store (its events) | `links.projectsOf(key)` | Query `PK = STORE#<key>` |
+| Link or unlink a project and its store | `links.link(key, projectId)`, `links.unlink(key, projectId)` | PutItem, DeleteItem |
 
 ## Adding a feature
 

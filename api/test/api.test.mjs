@@ -7,6 +7,7 @@ import { createApi } from '../app.mjs';
 import { createModel } from '../model/index.mjs';
 import { parseRepo, importGitHub } from '../github.mjs';
 import { sanitizeNode } from '../../shared/schema.js';
+import { fakeShop } from './fake-github.mjs';
 
 async function setup(accessKey = 'secret-key') {
   const dir = await mkdtemp(join(tmpdir(), 'projectmap-'));
@@ -95,52 +96,6 @@ test('parses GitHub repo references', () => {
   assert.throws(() => parseRepo('nope'));
 });
 
-/** A small repository on a fake GitHub: a Next.js shop with issues and a behaviour spec. */
-function fakeShop() {
-  const issue = (number, title, body = '', extra = {}) => ({ number, title, body, state: 'open', html_url: `u${number}`, labels: [], milestone: null, assignees: [], ...extra });
-  const issues = [
-    issue(1, 'Epic: checkout', '- [ ] #2\n- [ ] #3'),
-    issue(2, 'Pay with saved card', 'depends on #4', { state: 'closed', labels: [{ name: 'enhancement' }] }),
-    issue(3, 'Coupon field broken', 'The field on /checkout rejects valid codes.', { labels: [{ name: 'bug' }, { name: 'P1' }], assignees: [{ login: 'ken' }] }),
-    issue(4, 'Card tokens', 'Part of #1. See `apps/web/app/api/payments/route.ts`.', { milestone: { title: 'v1', due_on: '2027-01-31T00:00:00Z' } }),
-    issue(5, 'Think about the vibe', 'Hmm.'),
-    issue(6, 'A PR', '', { pull_request: {} }),
-    issue(8, 'Dark mode toggle', 'Maybe later.', { state: 'closed', state_reason: 'not_planned' }),
-  ];
-  const pulls = [{ number: 9, title: 'Vibes', body: 'Closes #5' }];
-  const files = { 'package.json': { name: 'shop', workspaces: ['apps/*'] }, 'apps/web/package.json': { name: 'web', dependencies: { next: '16.0.0', stripe: '19.0.0' } } };
-  const spec =
-    '# Behaviour spec: Checkout\n\n> What paying must do.\n\n## 1. Paying — `PAY`\n\n| ID | Scenario | Status |\n|---|---|---|\n| PAY-01 | A saved card pays in one tap. | ✅ |\n| PAY-02 | A coupon applies before paying. | ❌ #3 |\n| PAY-03 | Who refunds? | 🔷 |\n';
-  const tree = [
-    'package.json',
-    'apps/web/package.json',
-    'apps/web/app/(shop)/page.tsx',
-    'apps/web/app/(shop)/checkout/page.tsx',
-    'apps/web/app/(shop)/cart/page.tsx',
-    'apps/web/app/(shop)/products/page.tsx',
-    'apps/web/app/auth/signin/page.tsx',
-    'apps/web/app/api/payments/route.ts',
-    'apps/web/components/site-header.tsx',
-    'docs/behavior/checkout.md',
-  ].map((path) => ({ path, type: 'blob' }));
-  return {
-    issues,
-    issue,
-    fetch: async (url) => {
-      const raw = url.match(/^https:\/\/raw\.githubusercontent\.com\/octo\/shop\/main\/(.*)$/);
-      const body = raw
-        ? ((files[decodeURIComponent(raw[1])] && JSON.stringify(files[decodeURIComponent(raw[1])])) ?? (raw[1].endsWith('checkout.md') ? spec : null))
-        : url.includes('/issues?')
-          ? issues
-          : url.includes('/pulls?')
-            ? pulls
-          : url.includes('/git/trees/')
-            ? { tree }
-            : { full_name: 'octo/shop', description: '', html_url: 'https://github.com/octo/shop', default_branch: 'main' };
-      return { ok: body != null, status: body == null ? 404 : 200, json: async () => body, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)) };
-    },
-  };
-}
 
 test('maps a GitHub repository: code is the land, issues the work, specs the laws', async () => {
   const { fetch: fake } = fakeShop();
@@ -181,7 +136,7 @@ test('maps a GitHub repository: code is the land, issues the work, specs the law
   assert.equal(pay2.status, 'planned');
   assert.deepEqual(pay2.links, [{ to: byTitle('#3 ').id, type: 'depends', label: '' }]);
   assert.equal(byTitle('PAY-01').status, 'done');
-  assert.equal(byTitle('PAY-03').definition, 'vague', 'a decision still needed is fog');
+  assert.notEqual(byTitle('PAY-03').definition, 'vague', 'a decision still needed is a question, not Fog');
   // Every node is valid as stored.
   for (const n of nodes) assert.doesNotThrow(() => sanitizeNode(n), n.title);
   assert.match(nodes[0].body, /6 pages|5 pages|4 pages/);
@@ -219,4 +174,121 @@ test('stores where an item sits and what kind of continent it is', async () => {
   assert.equal(moved.body.node.place, 'top-left');
   assert.equal((await call('PATCH', `/api/projects/${pid}/nodes/${node.id}`, { place: 'upside-down' })).status, 400);
   assert.equal((await call('PATCH', `/api/projects/${pid}/nodes/${node.id}`, { surface: 'moon' })).status, 400);
+});
+
+// ---- The area editor: changesets and anchored comments (#5) ----
+
+async function shopProject() {
+  const shop = fakeShop();
+  shop.issues[3].body = 'Part of #1.\n\n## Why\n\nCards need tokens.\n\n## Behaviours\n\n- PAY-10 Given a card, when saved, then it is a token.\n\n## Acceptance\n\n## Out of scope\n\n## Open questions\n\nNone.\n';
+  const dir = await mkdtemp(join(tmpdir(), 'projectmap-'));
+  const api = createApi({ model: await createModel({ DATA_FILE: join(dir, 'db.json') }), accessKey: 'k', fetchImpl: shop.fetch, log: { error() {} } });
+  const call = (method, path, body) => api({ method, path, body, headers: { 'x-projectmap-key': 'k' } });
+  const { project, nodes } = (await call('POST', '/api/import/github', { repo: 'octo/shop' })).body;
+  const node = (n) => nodes.find((x) => x.title.startsWith(`#${n} `));
+  return { shop, call, pid: project.id, nodes, node, map: async () => (await call('GET', `/api/projects/${project.id}`)).body.nodes };
+}
+
+// EDIT-03: several items of an area, edited side by side, collect into one changeset.
+test('edits to several items collect into one changeset and are accepted together', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Ken' })).body.changeset;
+  assert.equal(cs.status, 'open');
+  assert.equal(cs.scopeTitle, '#1 Epic: checkout');
+
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const edited = four.replace('Cards need tokens.', 'Cards need tokens, never numbers.').replace('None.', '- Which vault?');
+  let res = await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: edited });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.changeset.items[0].base, { title: 'Card tokens', markdown: four }, 'the base is the item as the map had it');
+  res = await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'Coupon field rejects valid codes', markdown: node(3).body.replace(/\n\n---\n📍[^\n]*$/, '') });
+  assert.equal(res.body.changeset.items.length, 2);
+  // Putting an item back as it was takes it out of the changeset.
+  res = await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'Coupon field broken', markdown: node(3).body.replace(/\n\n---\n📍[^\n]*$/, '') });
+  assert.equal(res.body.changeset.items.length, 1);
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'Coupon field rejects valid codes', markdown: node(3).body.replace(/\n\n---\n📍[^\n]*$/, '') });
+
+  const before = await map();
+  const accepted = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`);
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.changeset.status, 'accepted');
+  const after = await map();
+  const four2 = after.find((n) => n.title.startsWith('#4 '));
+  assert.equal(four2.sync, 'unsaved', 'GitHub receives it when it is saved');
+  assert.match(four2.body, /never numbers/);
+  assert.match(four2.body, /\n\n---\n📍 /, "the map's note stays");
+  assert.equal(four2.status, 'needs_decision', 'an open question needs a decision');
+  assert.notEqual(four2.definition, 'vague', 'a question is not Fog');
+  assert.equal(after.find((n) => n.title.startsWith('#3 ')).title, '#3 Coupon field rejects valid codes');
+  assert.equal(after.length, before.length);
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`)).status, 409, 'accepted once');
+  assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'x', markdown: '' })).status, 409);
+});
+
+test('a changeset can be discarded, and an empty one cannot be accepted', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`)).status, 400);
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think harder', markdown: 'Hmm.' });
+  const before = await map();
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/discard`)).body.changeset.status, 'discarded');
+  assert.deepEqual(await map(), before);
+  assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-404', title: 'x', markdown: '' })).status, 409);
+  const other = (await call('POST', `/api/projects/${pid}/changesets`, {})).body.changeset;
+  assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${other.id}/items`, { key: 'issue-404', title: 'x', markdown: '' })).status, 404);
+  assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${other.id}/items`, { key: '../x', title: 'x', markdown: '' })).status, 400);
+});
+
+test('an item that changed since editing began is a conflict, never overwritten', async () => {
+  const { shop, call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think about the vibe', markdown: 'Ours.' });
+  shop.issues[4].body = 'Theirs, edited on GitHub.';
+  await call('POST', `/api/projects/${pid}/refresh`, {});
+  const res = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`);
+  assert.equal(res.status, 409);
+  assert.deepEqual(res.body.conflicts, ['issue-5']);
+  assert.match((await map()).find((n) => n.title.startsWith('#5 ')).body, /^Theirs/);
+});
+
+test("a refresh from GitHub keeps accepted edits that aren't on GitHub yet", async () => {
+  const { shop, call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'Coupon field broken', markdown: 'Fixed wording.' });
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think about the vibe', markdown: 'Ours.' });
+  await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`);
+  shop.issues[4].body = 'Theirs, edited on GitHub.';
+  await call('POST', `/api/projects/${pid}/refresh`, {});
+  const nodes = await map();
+  assert.match(nodes.find((n) => n.title.startsWith('#3 ')).body, /^Fixed wording\./, 'GitHub unchanged: our edit stays on the map');
+  assert.match(nodes.find((n) => n.title.startsWith('#5 ')).body, /^Theirs/, 'GitHub moved on: theirs shows, and ours waits for a person');
+  assert.deepEqual(
+    [3, 5].map((n) => nodes.find((x) => x.title.startsWith(`#${n} `)).sync),
+    ['unsaved', 'conflict'],
+  );
+});
+
+// EDIT-04: a comment on one behaviour or section is anchored there and travels with it.
+test('comments are anchored to a section or a behaviour and survive a refresh', async () => {
+  const { call, pid } = await shopProject();
+  const a = await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { behaviour: 'PAY-10' }, text: 'Which vault?', author: 'QA' });
+  assert.equal(a.status, 201);
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.' });
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-40', anchor: { section: 'Why' }, text: 'Elsewhere.' });
+  assert.equal((await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', text: '  ' })).status, 400);
+  await call('POST', `/api/projects/${pid}/refresh`, {});
+  const { comments } = (await call('GET', `/api/projects/${pid}/comments`)).body;
+  assert.deepEqual(
+    comments.map((c) => [c.itemKey, c.anchor, c.text, c.author]),
+    [
+      ['issue-4', { behaviour: 'PAY-10' }, 'Which vault?', 'QA'],
+      ['issue-4', { section: 'Why' }, 'Agreed.', 'Someone'],
+      ['issue-40', { section: 'Why' }, 'Elsewhere.', 'Someone'],
+    ],
+  );
+  const id = a.body.comment.id;
+  assert.equal((await call('PATCH', `/api/projects/${pid}/comments/issue-4/${id}`, { resolved: true })).body.comment.resolved, true);
+  assert.equal((await call('DELETE', `/api/projects/${pid}/comments/issue-4/${id}`)).status, 200);
+  assert.equal((await call('DELETE', `/api/projects/${pid}/comments/issue-4/${id}`)).status, 404);
+  assert.equal((await call('GET', `/api/projects/${pid}/comments`)).body.comments.length, 2);
 });

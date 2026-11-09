@@ -35,7 +35,7 @@ async function request(method, path, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) throw new AuthError(data.error ?? 'Access key required');
-  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(data.error ?? `Request failed (${res.status})`), { status: res.status, conflicts: data.conflicts });
   return data;
 }
 
@@ -50,4 +50,13 @@ export const api = {
   importJson: (data) => request('POST', '/api/import/json', data),
   importGithub: (body) => request('POST', '/api/import/github', body),
   refreshGithub: (id, body) => request('POST', `/api/projects/${id}/refresh`, body),
+  listChangesets: (pid) => request('GET', `/api/projects/${pid}/changesets`),
+  createChangeset: (pid, body) => request('POST', `/api/projects/${pid}/changesets`, body),
+  putChangesetItem: (pid, cid, item) => request('PUT', `/api/projects/${pid}/changesets/${cid}/items`, item),
+  acceptChangeset: (pid, cid) => request('POST', `/api/projects/${pid}/changesets/${cid}/accept`),
+  discardChangeset: (pid, cid) => request('POST', `/api/projects/${pid}/changesets/${cid}/discard`),
+  itemComments: (pid, itemKey) => request('GET', `/api/projects/${pid}/comments/${itemKey}`),
+  addComment: (pid, comment) => request('POST', `/api/projects/${pid}/comments`, comment),
+  resolveComment: (pid, c, resolved) => request('PATCH', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}`, { resolved }),
+  deleteComment: (pid, c) => request('DELETE', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}`),
 };

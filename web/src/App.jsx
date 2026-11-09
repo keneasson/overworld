@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { itemKeyOf } from '@shared/issue-shape.js';
 import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
 import { MapView } from './map/MapView.jsx';
@@ -6,6 +7,8 @@ import { LENS_BY_ID } from './map/lenses.js';
 import { Breadcrumbs, Chips, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts, Tooltip } from './components/Chrome.jsx';
 import { Details, Results } from './components/Panel.jsx';
 import { Editor } from './components/Editor.jsx';
+// The rich-text editor is big; load it the first time someone edits.
+const AreaEditor = lazy(() => import('./editor/AreaEditor.jsx').then((m) => ({ default: m.AreaEditor })));
 import { Drawer, Unlock } from './components/Drawer.jsx';
 import { Icon } from './components/Icon.jsx';
 
@@ -48,6 +51,8 @@ export function App() {
   });
   const [selectedId, setSelectedId] = useState(initial.n);
   const [editing, setEditing] = useState(null); // { id } | { create: { parentId, kind } }
+  const [areaEdit, setAreaEdit] = useState(null); // { scopeId, startKey }
+  const [comments, setComments] = useState([]);
   const [resultsOpen, setResultsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [focusId, setFocusId] = useState(null);
@@ -109,6 +114,32 @@ export function App() {
     };
   }, [projectId, projects, fail]);
 
+  // Comments load one item at a time, when its details or its editor column open; a large project never
+  // pays for every thread up front. `commentsFor` remembers which items it has asked for.
+  const commentsFor = useRef(new Set());
+  useEffect(() => {
+    setComments([]);
+    setAreaEdit(null);
+    commentsFor.current = new Set();
+  }, [projectId]);
+  const loadComments = useCallback(
+    (keys) => {
+      const pid = projectId;
+      for (const key of keys) {
+        if (commentsFor.current.has(key)) continue;
+        commentsFor.current.add(key);
+        api
+          .itemComments(pid, key)
+          .then((d) => latest.current.projectId === pid && setComments((cs) => [...cs.filter((c) => c.itemKey !== key), ...d.comments]))
+          .catch((err) => {
+            commentsFor.current.delete(key);
+            fail(err);
+          });
+      }
+    },
+    [projectId, fail],
+  );
+
   const scene = useMemo(() => {
     if (!data) return null;
     const s = buildScene(data.nodes, data.project.id, sceneRef.current, projection);
@@ -118,6 +149,9 @@ export function App() {
   const tree = scene?.tree;
   const lens = LENS_BY_ID[lensId];
   const selected = selectedId ? tree?.byId.get(selectedId) : null;
+  useEffect(() => {
+    if (selected) loadComments([itemKeyOf(selected)]);
+  }, [selected, loadComments]);
 
   useEffect(() => {
     if (tree && selectedId && !tree.byId.has(selectedId)) setSelectedId(null);
@@ -201,14 +235,14 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key !== 'Escape' || drawerOpen) return;
+      if (e.key !== 'Escape' || drawerOpen || areaEdit) return;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
       if (editing) setEditing(null);
       else closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [editing, drawerOpen, closePanel]);
+  }, [editing, drawerOpen, areaEdit, closePanel]);
 
   const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
 
@@ -380,7 +414,9 @@ export function App() {
                 lens={lens}
                 onPick={pick}
                 onFly={(id) => mapRef.current?.flyTo(id)}
+                comments={comments}
                 onEdit={() => setEditing({ id: selected.id })}
+                onEditText={(scopeId, startKey) => setAreaEdit({ scopeId, startKey })}
                 onAdd={(parentId, kind) => setEditing({ create: { parentId, kind } })}
                 onClose={closePanel}
                 onCopyLink={async () => {
@@ -471,6 +507,28 @@ export function App() {
             setLocked(true);
           }}
         />
+      )}
+      {areaEdit && tree && (
+        <Suspense fallback={<div className="area-editor loading">Opening the editor…</div>}>
+          <AreaEditor
+            key={areaEdit.scopeId}
+            projectId={data.project.id}
+            tree={tree}
+            scopeId={areaEdit.scopeId}
+            startKey={areaEdit.startKey}
+            comments={comments}
+            setComments={setComments}
+            loadComments={loadComments}
+            mobile={mobile}
+            toast={toast}
+            fail={fail}
+            onClose={() => setAreaEdit(null)}
+            onAccepted={(nodes) => {
+              const byId = new Map(nodes.map((n) => [n.id, n]));
+              replaceNodes((ns) => ns.map((n) => byId.get(n.id) ?? n));
+            }}
+          />
+        </Suspense>
       )}
       <Toasts toasts={toasts} />
     </div>
