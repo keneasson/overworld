@@ -173,7 +173,7 @@ itself, deterministically: no AI, so the same repository always draws the same m
 - **The laws are the behaviour specs.** Markdown tables (`| ID | Scenario | Status |` with
   ✅ ⚠️ ❌ ⏸ 🔷) in `docs/behavior/`, `specs/` or `requirements/`, and Gherkin `.feature` files,
   become behaviours under the place they describe, linked to the issues they cite.
-  "🔷 Decision needed" is fog.
+  "🔷 Decision needed" is a question to answer, not Fog: Fog is behaviour nobody knows yet.
 
 Milestones become due dates and tags (they say when, not where). Labels and issue types set the
 kind; `depends on #123` becomes a dependency. The ↻ button next to an imported project maps the

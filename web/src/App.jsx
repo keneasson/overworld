@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { itemKeyOf } from '@shared/issue-shape.js';
 import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
 import { MapView } from './map/MapView.jsx';
@@ -113,19 +114,31 @@ export function App() {
     };
   }, [projectId, projects, fail]);
 
+  // Comments load one item at a time, when its details or its editor column open; a large project never
+  // pays for every thread up front. `commentsFor` remembers which items it has asked for.
+  const commentsFor = useRef(new Set());
   useEffect(() => {
     setComments([]);
     setAreaEdit(null);
-    if (!projectId || !projects?.some((p) => p.id === projectId)) return;
-    let cancelled = false;
-    api
-      .listComments(projectId)
-      .then((d) => !cancelled && setComments(d.comments))
-      .catch(fail);
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, projects, fail]);
+    commentsFor.current = new Set();
+  }, [projectId]);
+  const loadComments = useCallback(
+    (keys) => {
+      const pid = projectId;
+      for (const key of keys) {
+        if (commentsFor.current.has(key)) continue;
+        commentsFor.current.add(key);
+        api
+          .itemComments(pid, key)
+          .then((d) => latest.current.projectId === pid && setComments((cs) => [...cs.filter((c) => c.itemKey !== key), ...d.comments]))
+          .catch((err) => {
+            commentsFor.current.delete(key);
+            fail(err);
+          });
+      }
+    },
+    [projectId, fail],
+  );
 
   const scene = useMemo(() => {
     if (!data) return null;
@@ -136,6 +149,9 @@ export function App() {
   const tree = scene?.tree;
   const lens = LENS_BY_ID[lensId];
   const selected = selectedId ? tree?.byId.get(selectedId) : null;
+  useEffect(() => {
+    if (selected) loadComments([itemKeyOf(selected)]);
+  }, [selected, loadComments]);
 
   useEffect(() => {
     if (tree && selectedId && !tree.byId.has(selectedId)) setSelectedId(null);
@@ -502,6 +518,7 @@ export function App() {
             startKey={areaEdit.startKey}
             comments={comments}
             setComments={setComments}
+            loadComments={loadComments}
             mobile={mobile}
             toast={toast}
             fail={fail}

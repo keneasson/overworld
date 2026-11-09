@@ -150,7 +150,7 @@ test('reads behaviour specs: status, decisions and the issues they cite', () => 
       ['SEE-01', 'done', 'auto'],
       ['SEE-02', 'in_progress', 'auto'],
       ['SEE-03', 'idea', 'auto'],
-      ['SEE-04', 'idea', 'vague'],
+      ['SEE-04', 'idea', 'auto'],
       ['SEE-05', 'planned', 'auto'],
     ],
   );
@@ -173,7 +173,7 @@ test('LIFE-01 status labels give the state', () => {
   assert.equal(lifecycleOf(it(['status:draft']), strict).status, 'idea');
   assert.equal(lifecycleOf(it(['status:ready']), strict).status, 'ready');
   assert.equal(lifecycleOf(it(['status:in-progress']), strict).status, 'in_progress');
-  assert.deepEqual(lifecycleOf(it(['status:needs-decision']), strict), { status: 'needs_decision', definition: 'vague', unclear: '' });
+  assert.deepEqual(lifecycleOf(it(['status:needs-decision']), strict), { status: 'needs_decision', definition: 'auto', unclear: '' });
 });
 
 test('LIFE-02 closed as completed is done, closed as not planned is rejected', () => {

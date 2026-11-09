@@ -6,20 +6,30 @@
 //   Flag      APP             FLAG#<name>
 //   Changeset PROJECT#<id>    CHANGESET#<changesetId>
 //   Comment   PROJECT#<id>    COMMENT#<itemKey>#<commentId>
+//   Node with a sync state             PENDING#<id> <itemKey>  sparse: only nodes not yet in line with their store
+//   Sync job  PROJECT#<id>    JOB#<savedAt>#<itemKey>   the outbox: a saved item still to reach its store
+//   Lease     PROJECT#<id>    LEASE#sync         who is syncing this project, until when
+//   Budget    PROJECT#<id>    LEASE#budget       the project's recent writes to its store (SYNC-10)
+//   Report    PROJECT#<id>    AUDIT#<at>         what a reconciliation with the store fixed
+//   Store link STORE#<store key>  PROJECT#<id>  which projects live in a store, e.g. github:owner/name (for its events)
 //
 // A project and its nodes share a partition (an item collection): one query reads a
-// whole map, and one query finds everything to delete. The map's entities sort last
-// (CHANGESET# < COMMENT# < NODE# < PROJECT), so opening a map is one range query from NODE#
-// on, and never reads the changesets or comments: those load when they're asked for (DATA-02).
-// A new entity in the partition must sort before NODE#, or every map open would read it. Changesets and comments live there too,
-// keyed by the item they concern (an issue number, not a node id, since a refresh renews node ids). GSI1 is sparse; only projects
-// carry its keys, so it is the list of projects, most recently updated first.
+// whole map, and one query finds everything to delete. The map's entities sort last: every prefix in a
+// project's partition other than NODE# (CHANGESET#, COMMENT#, JOB#, LEASE#, AUDIT#) sorts before it, and
+// PROJECT after it, so opening a map is one range query from NODE# on, and never reads the changesets,
+// comments or sync's records: those load when they're asked for (DATA-02). A new entity in the partition
+// must sort before NODE#, or every map open would read it. Changesets and comments are keyed by the item
+// they concern (an issue number, or a node id for items made here). GSI1 is sparse: projects carry its keys,
+// so it lists projects, most recently updated first; and so do nodes that are unsaved, saving, in conflict
+// or failed, so a save or a refresh finds them without reading the map.
 
 export const ALL_PROJECTS = 'PROJECTS';
 export const PROJECT_SK = 'PROJECT';
 export const NODE_PREFIX = 'NODE#';
 export const CHANGESET_PREFIX = 'CHANGESET#';
 export const COMMENT_PREFIX = 'COMMENT#';
+export const JOB_PREFIX = 'JOB#';
+export const AUDIT_PREFIX = 'AUDIT#';
 
 const projectPartition = (projectId) => `PROJECT#${projectId}`;
 
@@ -30,6 +40,15 @@ export const keys = {
   changeset: (projectId, id) => ({ PK: projectPartition(projectId), SK: `${CHANGESET_PREFIX}${id}` }),
   comment: (projectId, { itemKey, id }) => ({ PK: projectPartition(projectId), SK: `${COMMENT_PREFIX}${itemKey}#${id}` }),
   mapOf: (projectId) => ({ pk: projectPartition(projectId), skFrom: NODE_PREFIX }),
+  pending: (projectId, itemKey) => ({ GSI1PK: `PENDING#${projectId}`, GSI1SK: itemKey }),
+  pendingOf: (projectId) => ({ index: 'GSI1', pk: `PENDING#${projectId}` }),
+  job: (projectId, id) => ({ PK: projectPartition(projectId), SK: `${JOB_PREFIX}${id}` }),
+  jobsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: JOB_PREFIX }),
+  lease: (projectId, name) => ({ PK: projectPartition(projectId), SK: `LEASE#${name}` }),
+  audit: (projectId, at) => ({ PK: projectPartition(projectId), SK: `${AUDIT_PREFIX}${at}` }),
+  auditsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: AUDIT_PREFIX }),
+  storeLink: (key, projectId) => ({ PK: `STORE#${key}`, SK: projectPartition(projectId) }),
+  storeLinks: (key) => ({ pk: `STORE#${key}` }),
   commentsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `${COMMENT_PREFIX}${itemKey ? `${itemKey}#` : ''}` }),
 };
 

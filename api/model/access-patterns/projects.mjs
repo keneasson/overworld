@@ -25,6 +25,12 @@ export function projects(table) {
       return { project: strip(head), nodes: items.filter((it) => it.SK.startsWith(NODE_PREFIX)).map(strip) };
     },
 
+    /** A project's summary alone, without its map, or null. GetItem. */
+    async get(id) {
+      const it = await table.get(keys.project(id));
+      return it ? strip(it) : null;
+    },
+
     /** Save a project's summary (title, counts, timestamps). PutItem. */
     async put(project) {
       await table.put(item(project));

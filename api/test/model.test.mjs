@@ -95,5 +95,6 @@ test('DATA-03 deleting a project removes its partition and touches nothing else'
   await call('DELETE', `/api/projects/${pid}`);
   const after = await table.scan();
   assert.equal(after.filter((it) => it.PK === partition).length, 0, 'everything in its partition is gone');
-  assert.deepEqual(after, before.filter((it) => it.PK !== partition), 'everything else is as it was');
+  const ours = (it) => it.PK === partition || (it.entity === 'store-link' && it.projectId === pid);
+  assert.deepEqual(after, before.filter((it) => !ours(it)), 'its store links go too, and everything else is as it was');
 });
