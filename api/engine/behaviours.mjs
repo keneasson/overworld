@@ -10,7 +10,7 @@ const STATUS = [
   [/⚠️|⚠|\bpartial\b/i, 'in_progress', 'auto'],
   [/❌|\bgap\b|\bmissing\b|\bnot (yet )?(built|implemented)\b/i, 'planned', 'auto'],
   [/⏸|\bdeferred\b|\blater\b/i, 'idea', 'auto'],
-  [/🔷|\bdecision needed\b|\bdecide\b|\bopen question\b/i, 'idea', 'vague'],
+  [/🔷|\bdecision needed\b|\bdecide\b|\bopen question\b/i, 'idea', 'auto'], // a question to answer, not Fog
 ];
 
 const plain = (s) =>

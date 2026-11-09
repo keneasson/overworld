@@ -70,6 +70,27 @@ and the results list narrows to what is under you.
 Keys: `/` search · `+`/`-` zoom · arrows pan · `Esc` close. Every view is a shareable URL
 (project, selection, lens, position).
 
+## Editing an area together
+
+Issues follow a strict shape (see [CONTRIBUTING.md](CONTRIBUTING.md)): *Why*, *Behaviours*,
+*Acceptance*, *Out of scope* and *Open questions*. Choose **Edit** on an issue, or **Edit area**
+on anything with issues inside it, to open them side by side:
+
+- **Its own field per section.** Each section is a rich-text field. Behaviours are rows of ID,
+  *Given*, *When* and *Then*, and a new row gets the next free ID in the area. Sections you
+  don't touch are saved character for character, so the markdown on GitHub stays as it was.
+- **One changeset.** Edits to every open item collect into the area's changeset, saved as you
+  type. Accept it and the whole map changes at once; discard it and nothing does. If an item
+  changed on GitHub since you started, accepting stops and says which one; nothing is
+  overwritten.
+- **Waiting for GitHub.** Writing to GitHub needs the GitHub App and the sync worker (a separate
+  issue). Until then, accepted changesets wait in Overworld, and a refresh from GitHub keeps
+  their edits on the map.
+- **Anchored comments.** Comment on one section or one behaviour (by its ID). The comment stays
+  with it when items are reordered or the map is refreshed, and shows in the item's details.
+
+On a phone, the editor shows one item at a time with a picker to switch between them.
+
 ## Architecture
 
 ```
@@ -85,7 +106,11 @@ api/model/  The only code that talks to DynamoDB: one table (single-table design
 api/engine/  The deterministic repository mapper (no AI): architecture.mjs reads the code's
           shape, references.mjs nests issues, placement.mjs puts work where its code lives,
           behaviours.mjs reads specs, project.mjs assembles the map.
-shared/   Schema and validation used by both sides.
+api/edits.mjs  Applies changesets to the map, and keeps unsynced ones through a refresh.
+shared/   Schema and validation used by both sides; issue-shape.js reads and writes the
+          strict issue shape without losing a character.
+web/src/editor/  The area editor: TipTap (ProseMirror) fields, loaded the first time
+          someone edits.
 template.yaml  SAM: DynamoDB (on-demand, retained on delete) + Lambda (Node 24, arm64)
                with a public Function URL. Reserved concurrency 10 caps runaway cost.
 ```
@@ -148,7 +173,7 @@ itself, deterministically: no AI, so the same repository always draws the same m
 - **The laws are the behaviour specs.** Markdown tables (`| ID | Scenario | Status |` with
   ✅ ⚠️ ❌ ⏸ 🔷) in `docs/behavior/`, `specs/` or `requirements/`, and Gherkin `.feature` files,
   become behaviours under the place they describe, linked to the issues they cite.
-  "🔷 Decision needed" is fog.
+  "🔷 Decision needed" is a question to answer, not Fog: Fog is behaviour nobody knows yet.
 
 Milestones become due dates and tags (they say when, not where). Labels and issue types set the
 kind; `depends on #123` becomes a dependency. The ↻ button next to an imported project maps the

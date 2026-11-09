@@ -5,6 +5,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
+import { applyTo, conflictsOf, editableOf, findItem, keepPendingEdits, same } from './edits.mjs';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -98,6 +99,28 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       stack.push(...(children.get(cur) ?? []));
     }
     return out;
+  }
+
+  const KEY = /^(issue-\d+|node-[\w-]+)$/;
+  // Comment ids start with the time, so a thread sorts in order; never reuse a millisecond.
+  let lastMs = 0;
+  const commentId = () => {
+    lastMs = Math.max(Date.now(), lastMs + 1);
+    return `${lastMs.toString(36).padStart(9, '0')}${newId().slice(0, 4)}`;
+  };
+  const author = (v) => String(v ?? '').trim().slice(0, 80) || 'Someone';
+  const text = (v, max, what) => {
+    if (typeof v !== 'string') throw new ValidationError(`${what}: expected text`);
+    if (v.length > max) throw new ValidationError(`${what}: at most ${max} characters`);
+    return v;
+  };
+  const version = (v, what) => ({ title: text(v?.title ?? '', 200, `${what}.title`).trim(), markdown: text(v?.markdown ?? '', 19000, `${what}.markdown`) });
+
+  async function loadChangeset(pid, cid, { open = false } = {}) {
+    const cs = await model.changesets.get(pid, cid);
+    if (!cs) throw new HttpError(404, 'Changeset not found');
+    if (open && cs.status !== 'open') throw new HttpError(409, `This changeset was already ${cs.status}`);
+    return cs;
   }
 
   const routes = [
@@ -215,6 +238,122 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       },
     ],
 
+    // ---- Changesets: edits to several items of an area, accepted or discarded together ----
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/changesets$/, async ({ params: [pid] }) => ({ changesets: await model.changesets.list(pid) })],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/changesets$/,
+      async ({ params: [pid], body }) => {
+        const { nodes } = await loadProject(pid);
+        const scope = nodes.find((n) => n.id === body?.scopeId) ?? nodes.find((n) => n.id === ROOT_ID);
+        const now = new Date().toISOString();
+        const changeset = { id: newId(), scopeId: scope.id, scopeTitle: scope.title, status: 'open', sync: null, author: author(body?.author), items: [], createdAt: now, updatedAt: now };
+        await model.changesets.put(pid, changeset);
+        return { changeset };
+      },
+      { status: 201 },
+    ],
+
+    [
+      'PUT',
+      /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/items$/,
+      // Record one item's edits. Its base is what the map holds now, the first time it's edited.
+      async ({ params: [pid, cid], body }) => {
+        const cs = await loadChangeset(pid, cid, { open: true });
+        const key = String(body?.key ?? '');
+        if (!KEY.test(key)) throw new ValidationError('key: expected issue-<number> or node-<id>');
+        const { nodes } = await loadProject(pid);
+        const node = findItem(nodes, key);
+        if (!node) throw new HttpError(404, 'No such item on the map');
+        const after = version(body, 'item');
+        if (!after.title) throw new ValidationError('title: required');
+        const at = cs.items.findIndex((it) => it.key === key);
+        const base = at >= 0 ? cs.items[at].base : editableOf(node);
+        if (same(base, after)) {
+          if (at >= 0) cs.items.splice(at, 1);
+        } else if (at >= 0) cs.items[at] = { ...cs.items[at], after };
+        else cs.items.push({ key, nodeTitle: node.title, base, after });
+        cs.updatedAt = new Date().toISOString();
+        await model.changesets.put(pid, cs);
+        return { changeset: cs };
+      },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/(accept|discard)$/,
+      async ({ params: [pid, cid, action] }) => {
+        const cs = await loadChangeset(pid, cid, { open: true });
+        const now = new Date().toISOString();
+        if (action === 'discard') {
+          Object.assign(cs, { status: 'discarded', updatedAt: now });
+          await model.changesets.put(pid, cs);
+          return { changeset: cs, nodes: [] };
+        }
+        if (!cs.items.length) throw new ValidationError('nothing to accept: this changeset has no edits');
+        const { project, nodes } = await loadProject(pid);
+        const conflicts = conflictsOf(cs, nodes);
+        if (conflicts.length) throw Object.assign(new HttpError(409, `Changed since you started editing: ${conflicts.map((c) => c.nodeTitle).join(', ')}`), { conflicts: conflicts.map((c) => c.key) });
+        const changed = cs.items.map((it) => applyTo(findItem(nodes, it.key), it.after, now));
+        await model.nodes.put(pid, changed);
+        const byId = new Map(changed.map((n) => [n.id, n]));
+        await touchProject(project, nodes.map((n) => byId.get(n.id) ?? n));
+        // Items mapped from GitHub still have to get there; ones made here are done.
+        const waiting = cs.items.some((it) => it.key.startsWith('issue-'));
+        Object.assign(cs, { status: 'accepted', sync: waiting ? 'waiting' : 'synced', acceptedAt: now, updatedAt: now });
+        await model.changesets.put(pid, cs);
+        return { changeset: cs, nodes: changed };
+      },
+    ],
+
+    // ---- Comments, anchored to a section or a behaviour of one item ----
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/comments$/, async ({ params: [pid] }) => ({ comments: await model.comments.list(pid) })],
+    // One item's thread: the web app loads comments only for what is open, never a whole project's.
+    ['GET', /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)$/, async ({ params: [pid, itemKey] }) => ({ comments: await model.comments.list(pid, itemKey) })],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/comments$/,
+      async ({ params: [pid], body }) => {
+        await loadProject(pid);
+        const itemKey = String(body?.itemKey ?? '');
+        if (!KEY.test(itemKey)) throw new ValidationError('itemKey: expected issue-<number> or node-<id>');
+        const a = body?.anchor ?? {};
+        const anchor = a.behaviour ? { behaviour: text(a.behaviour, 40, 'anchor.behaviour') } : { section: text(a.section ?? 'Why', 60, 'anchor.section') };
+        const said = text(body?.text ?? '', 4000, 'text').trim();
+        if (!said) throw new ValidationError('text: required');
+        const comment = { id: commentId(), itemKey, anchor, text: said, author: author(body?.author), resolved: false, createdAt: new Date().toISOString() };
+        await model.comments.put(pid, comment);
+        return { comment };
+      },
+      { status: 201 },
+    ],
+
+    [
+      'PATCH',
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)$/,
+      async ({ params: [pid, itemKey, id], body }) => {
+        const comment = await model.comments.get(pid, { itemKey, id });
+        if (!comment) throw new HttpError(404, 'Comment not found');
+        comment.resolved = Boolean(body?.resolved);
+        await model.comments.put(pid, comment);
+        return { comment };
+      },
+    ],
+
+    [
+      'DELETE',
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)$/,
+      async ({ params: [pid, itemKey, id] }) => {
+        if (!(await model.comments.get(pid, { itemKey, id }))) throw new HttpError(404, 'Comment not found');
+        await model.comments.delete(pid, { itemKey, id });
+        return { deleted: id };
+      },
+    ],
+
     ['POST', /^\/api\/import\/json$/, async ({ body }) => saveNewProject(fromImport(body), 'json'), { status: 201 }],
 
     [
@@ -235,9 +374,11 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project } = await loadProject(pid);
         if (!project.githubRepo) throw new ValidationError('only projects imported from GitHub can be refreshed');
         const data = await importGitHub({ repo: project.githubRepo, token: body?.token || undefined }, fetchImpl);
-        await model.nodes.replace(pid, data.nodes);
-        const updated = await touchProject(project, data.nodes);
-        return { project: updated, nodes: data.nodes };
+        const kept = keepPendingEdits(data.nodes, await model.changesets.list(pid), new Date().toISOString());
+        await model.nodes.replace(pid, kept.nodes);
+        for (const cs of kept.changed) await model.changesets.put(pid, cs);
+        const updated = await touchProject(project, kept.nodes);
+        return { project: updated, nodes: kept.nodes };
       },
     ],
   ];
@@ -256,7 +397,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     } catch (err) {
       const status = err.status ?? 500;
       if (status >= 500) log.error?.(err);
-      return { status, body: { error: status >= 500 ? 'Internal error' : err.message } };
+      return { status, body: { error: status >= 500 ? 'Internal error' : err.message, ...(err.conflicts ? { conflicts: err.conflicts } : {}) } };
     }
   };
 }

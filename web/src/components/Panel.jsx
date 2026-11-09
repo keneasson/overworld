@@ -4,6 +4,8 @@ import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
 import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
+import { issueOf, itemKeyOf } from '@shared/issue-shape.js';
+import { editableItems } from '../editor/items.js';
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
@@ -52,8 +54,12 @@ function NodeRow({ node, onPick, sub }) {
 
 const pct = (v) => `${Math.round(v * 100)}%`;
 
-export function Details({ node, tree, lens, onPick, onFly, onEdit, onAdd, onClose, onCopyLink }) {
+export function Details({ node, tree, lens, comments = [], onPick, onFly, onEdit, onEditText, onAdd, onClose, onCopyLink }) {
   const s = node.stats;
+  const key = itemKeyOf(node);
+  const issue = issueOf(node);
+  const together = editableItems(tree, node).length;
+  const thread = comments.filter((c) => c.itemKey === key);
   const path = pathOf(node).slice(0, -1);
   const incoming = tree.incoming.get(node.id) ?? [];
   const childKind = CHILD_KIND[node.kind] ?? 'task';
@@ -92,12 +98,20 @@ export function Details({ node, tree, lens, onPick, onFly, onEdit, onAdd, onClos
           </span>
           Zoom to
         </button>
-        <button onClick={onEdit}>
+        <button onClick={issue ? () => onEditText(node.id, key) : onEdit}>
           <span className="action-icon">
             <Icon name="edit" />
           </span>
           Edit
         </button>
+        {(together > 1 || (!issue && together > 0)) && (
+          <button onClick={() => onEditText(node.id, null)}>
+            <span className="action-icon">
+              <Icon name="columns" />
+            </span>
+            {issue ? 'Edit area' : 'Edit text'}
+          </button>
+        )}
         <button onClick={() => onAdd(node.id, childKind)}>
           <span className="action-icon">
             <Icon name="plus" />
@@ -202,6 +216,25 @@ export function Details({ node, tree, lens, onPick, onFly, onEdit, onAdd, onClos
               Add details
             </button>
           </p>
+        </section>
+      )}
+
+      {thread.length > 0 && (
+        <section>
+          <h3>
+            Comments <span className="count">{thread.filter((c) => !c.resolved).length}</span>
+          </h3>
+          <ul className="comment-list">
+            {thread.map((c) => (
+              <li key={c.id} className={c.resolved ? 'resolved' : ''}>
+                <span className="anchor">{c.anchor.behaviour ?? c.anchor.section}</span>
+                <strong>{c.author}</strong> {c.text}
+              </li>
+            ))}
+          </ul>
+          <button className="link-btn" onClick={() => onEditText(node.id, key)}>
+            Reply in the editor
+          </button>
         </section>
       )}
 
