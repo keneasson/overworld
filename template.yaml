@@ -44,7 +44,7 @@ Resources:
             - { AttributeName: GSI1PK, KeyType: HASH }
             - { AttributeName: GSI1SK, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
-      # A new sync job (the outbox, #3) wakes the worker through the stream; reading it costs nothing while idle.
+      # A newly saved item (the outbox, #3) wakes the worker through the stream; reading it costs nothing while idle.
       StreamSpecification:
         StreamViewType: NEW_IMAGE
       Tags:

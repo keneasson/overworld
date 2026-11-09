@@ -6,15 +6,19 @@
 //   Flag      APP             FLAG#<name>
 //   Changeset PROJECT#<id>    CHANGESET#<changesetId>
 //   Comment   PROJECT#<id>    COMMENT#<itemKey>#<commentId>
-//   Sync job  PROJECT#<id>    JOB#<jobId>        the outbox: an accepted changeset still to reach GitHub
+//   Node with a sync state             PENDING#<id> <itemKey>  sparse: only nodes not yet in line with GitHub
+//   Sync job  PROJECT#<id>    JOB#<savedAt>#<itemKey>   the outbox: a saved item still to reach GitHub
 //   Lease     PROJECT#<id>    LEASE#sync         who is syncing this project, until when
+//   Budget    PROJECT#<id>    LEASE#budget       the project's recent writes to GitHub (SYNC-10)
 //   Report    PROJECT#<id>    AUDIT#<at>         what a reconciliation with GitHub fixed
 //   Repo link REPO#<owner/name>  PROJECT#<id>    which projects map a repository (for webhooks)
 //
 // A project and its nodes share a partition (an item collection): one query reads a
 // whole map, and one query finds everything to delete. Changesets and comments live there too,
-// keyed by the item they concern (an issue number, not a node id, since a refresh renews node ids). GSI1 is sparse; only projects
-// carry its keys, so it is the list of projects, most recently updated first.
+// keyed by the item they concern (an issue number, or a node id for items made here). GSI1 is sparse: projects
+// carry its keys, so it lists projects, most recently updated first; and so do nodes that are unsaved, saving, in conflict or
+// failed, so a save or a refresh finds them without reading the map. Every prefix in a project's partition other than NODE#
+// sorts before it, so the map is one range query.
 
 export const ALL_PROJECTS = 'PROJECTS';
 export const PROJECT_SK = 'PROJECT';
@@ -32,6 +36,8 @@ export const keys = {
   flag: (name) => ({ PK: 'APP', SK: `FLAG#${name}` }),
   changeset: (projectId, id) => ({ PK: projectPartition(projectId), SK: `${CHANGESET_PREFIX}${id}` }),
   comment: (projectId, { itemKey, id }) => ({ PK: projectPartition(projectId), SK: `${COMMENT_PREFIX}${itemKey}#${id}` }),
+  pending: (projectId, itemKey) => ({ GSI1PK: `PENDING#${projectId}`, GSI1SK: itemKey }),
+  pendingOf: (projectId) => ({ index: 'GSI1', pk: `PENDING#${projectId}` }),
   job: (projectId, id) => ({ PK: projectPartition(projectId), SK: `${JOB_PREFIX}${id}` }),
   jobsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: JOB_PREFIX }),
   lease: (projectId, name) => ({ PK: projectPartition(projectId), SK: `LEASE#${name}` }),

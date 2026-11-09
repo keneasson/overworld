@@ -1,15 +1,16 @@
-// Sync with GitHub: the outbox of accepted changesets, the lease on a project's sync, the reports of
-// each reconciliation, and which projects map a repository. All but the repository links live in the
+// Sync with GitHub: the outbox of saved items, the lease on a project's sync and its write budget, the
+// reports of each reconciliation, and which projects map a repository. All but the repository links live in the
 // project's partition, so deleting a project takes them with it.
 
 import { keys, strip } from '../keys.mjs';
+import { nodeItem } from './nodes.mjs';
 
 const REPORTS_KEPT = 30;
 
 export function jobs(table) {
   const item = (projectId, job) => ({ ...keys.job(projectId, job.id), entity: 'job', projectId, ...job });
   return {
-    /** A project's jobs, oldest first: the order they reach GitHub. Query begins_with(SK, JOB#). */
+    /** A project's saved items still to reach GitHub, in the order they were saved. Query begins_with(SK, JOB#). */
     async list(projectId) {
       return (await table.query(keys.jobsOf(projectId))).map(strip);
     },
@@ -17,14 +18,35 @@ export function jobs(table) {
     async put(projectId, job) {
       await table.put(item(projectId, job));
     },
-    /** The changeset and its outcome, with the job gone, in one transaction. A job whose changeset is gone just goes. */
-    async finish(projectId, job, changeset) {
-      const puts = changeset ? [{ ...keys.changeset(projectId, changeset.id), entity: 'changeset', ...changeset }] : [];
-      await table.transact({ puts, deletes: [keys.job(projectId, job.id)] });
+    /**
+     * The transactional outbox: each saved item's node and its job, written together or not at all. A job it
+     * replaces (the same item, saved again before it reached GitHub) goes in the same transaction (SYNC-09).
+     * @param {{ node: object, job: object, replaces?: object }[]} saves
+     */
+    async save(projectId, saves) {
+      for (let i = 0; i < saves.length; i += 33) {
+        const chunk = saves.slice(i, i + 33); // three items each, at most 100 to a transaction
+        await table.transact({
+          puts: chunk.flatMap((s) => [nodeItem(projectId, s.node), item(projectId, s.job)]),
+          deletes: chunk.filter((s) => s.replaces).map((s) => keys.job(projectId, s.replaces.id)),
+        });
+      }
     },
-    /** The transactional outbox: an accepted changeset and the job that takes it to GitHub, written together or not at all. */
-    async accept(projectId, changeset, job) {
-      await table.transact({ puts: [{ ...keys.changeset(projectId, changeset.id), entity: 'changeset', ...changeset }, item(projectId, job)] });
+    /** A job done: it goes, with its node's outcome and any later save of the same item moved onto what GitHub now holds. */
+    async finish(projectId, job, { node = null, rebased = [] } = {}) {
+      await table.transact({ puts: [...(node ? [nodeItem(projectId, node)] : []), ...rebased.map((j) => item(projectId, j))], deletes: [keys.job(projectId, job.id)] });
+    },
+  };
+}
+
+export function budgets(table) {
+  return {
+    /** The times of a project's recent writes to GitHub. GetItem. Only the worker holding the project's lease touches it. */
+    async get(projectId) {
+      return (await table.get(keys.lease(projectId, 'budget')))?.writes ?? [];
+    },
+    async put(projectId, writes) {
+      await table.put({ ...keys.lease(projectId, 'budget'), entity: 'budget', writes });
     },
   };
 }

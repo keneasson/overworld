@@ -5,7 +5,8 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
-import { applyTo, conflictsOf, editableOf, findItem, keepPendingEdits, same } from './edits.mjs';
+import { applyTo, conflictsOf, editableOf, findItem, same } from './edits.mjs';
+import { keepPending, markEdited, saveNow } from './sync.mjs';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -17,11 +18,11 @@ class HttpError extends Error {
 const digest = (s) => createHash('sha256').update(String(s)).digest();
 
 /**
- * @param {object} [o.sync] the GitHub sync (api/sync.mjs); without it, accepted changesets wait, as before
+ * @param {object} [o.sync] the GitHub sync (api/sync.mjs); without it, saved items wait in the outbox
  * @param {() => Promise<string>} [o.webhookSecret] the GitHub App's webhook secret
- * @param {(projectId: string) => void} [o.onAccepted] runs after a changeset is accepted: in AWS the table's stream wakes the worker instead
+ * @param {(projectId: string) => void} [o.onSaved] runs after a save: in AWS the table's stream wakes the worker instead
  */
-export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, webhookSecret = null, onAccepted = null }) {
+export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, webhookSecret = null, onSaved = null }) {
   const expected = accessKey ? digest(accessKey) : null;
 
   function authorize(headers) {
@@ -216,7 +217,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           const known = new Set(nodes.map((n) => n.id));
           patch.links = patch.links.filter((l) => known.has(l.to) && l.to !== nid);
         }
-        const node = { ...current, ...patch, id: nid, updatedAt: new Date().toISOString() };
+        let node = { ...current, ...patch, id: nid, updatedAt: new Date().toISOString() };
+        // A change to what GitHub holds (its text or its state) waits for a save (SYNC-07).
+        if (['title', 'body', 'status'].some((k) => k in patch && patch[k] !== current[k])) node = markEdited(current, node, project);
         await model.nodes.put(pid, [node]);
         const all = nodes.map((n) => (n.id === nid ? node : n));
         const updatedProject = await touchProject(project, all);
@@ -255,7 +258,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { nodes } = await loadProject(pid);
         const scope = nodes.find((n) => n.id === body?.scopeId) ?? nodes.find((n) => n.id === ROOT_ID);
         const now = new Date().toISOString();
-        const changeset = { id: newId(), scopeId: scope.id, scopeTitle: scope.title, status: 'open', sync: null, author: author(body?.author), items: [], createdAt: now, updatedAt: now };
+        const changeset = { id: newId(), scopeId: scope.id, scopeTitle: scope.title, status: 'open', author: author(body?.author), items: [], createdAt: now, updatedAt: now };
         await model.changesets.put(pid, changeset);
         return { changeset };
       },
@@ -302,18 +305,16 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project, nodes } = await loadProject(pid);
         const conflicts = conflictsOf(cs, nodes);
         if (conflicts.length) throw Object.assign(new HttpError(409, `Changed since you started editing: ${conflicts.map((c) => c.nodeTitle).join(', ')}`), { conflicts: conflicts.map((c) => c.key) });
-        const changed = cs.items.map((it) => applyTo(findItem(nodes, it.key), it.after, now));
+        // Accepting changes the map. Items mapped from GitHub are then unsaved: nothing reaches GitHub until a save (SYNC-07).
+        const changed = cs.items.map((it) => {
+          const before = findItem(nodes, it.key);
+          return markEdited(before, applyTo(before, it.after, now), project);
+        });
         await model.nodes.put(pid, changed);
         const byId = new Map(changed.map((n) => [n.id, n]));
         await touchProject(project, nodes.map((n) => byId.get(n.id) ?? n));
-        // Items mapped from GitHub, and new ones for it, still have to get there; ones made here are done.
-        const waiting = Boolean(project.githubRepo) && cs.items.some((it) => /^(issue|new)-/.test(it.key));
-        Object.assign(cs, { status: 'accepted', sync: waiting ? 'waiting' : 'synced', acceptedAt: now, updatedAt: now });
-        if (waiting) {
-          // The transactional outbox: the acceptance and the job that takes it to GitHub are written together, or not at all.
-          await model.jobs.accept(pid, cs, { id: commentId(), changesetId: cs.id, repo: project.githubRepo, attempts: 0, createdAt: now });
-          onAccepted?.(pid);
-        } else await model.changesets.put(pid, cs);
+        Object.assign(cs, { status: 'accepted', acceptedAt: now, updatedAt: now });
+        await model.changesets.put(pid, cs);
         return { changeset: cs, nodes: changed };
       },
     ],
@@ -381,6 +382,20 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     ],
 
     [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/save$/,
+      // Save: every unsaved item (or just body.keys) goes to GitHub as it is now. It decides nothing (SYNC-08).
+      async ({ params: [pid], body }) => {
+        const { project } = await loadProject(pid);
+        if (!project.githubRepo) throw new ValidationError('only projects mapped from GitHub save to GitHub');
+        const keys = Array.isArray(body?.keys) ? body.keys.filter((k) => typeof k === 'string' && KEY.test(k)) : null;
+        const result = await saveNow(model, pid, { keys });
+        if (result.saved.length) onSaved?.(pid);
+        return result;
+      },
+    ],
+
+    [
       'GET',
       /^\/api\/projects\/([\w-]+)\/sync$/,
       // What is still on its way to GitHub, and what the last reconciliations fixed.
@@ -423,9 +438,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project } = await loadProject(pid);
         if (!project.githubRepo) throw new ValidationError('only projects imported from GitHub can be refreshed');
         const data = await importGitHub({ repo: project.githubRepo, token: body?.token || undefined }, fetchImpl);
-        const kept = keepPendingEdits(data.nodes, await model.changesets.list(pid), new Date().toISOString());
+        const kept = keepPending(data.nodes, await model.nodes.pending(pid), data.strictLifecycle);
         await model.nodes.replace(pid, kept.nodes);
-        for (const cs of kept.changed) await model.changesets.put(pid, cs);
         const updated = await touchProject(project, kept.nodes, { strictLifecycle: data.strictLifecycle });
         await model.repos.link(project.githubRepo, pid);
         return { project: updated, nodes: kept.nodes };

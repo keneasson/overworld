@@ -75,7 +75,8 @@ export function githubApp({ appId, installationId, slug, privateKey, fetchImpl =
   return {
     token,
     getIssue: (repo, number) => call('GET', `/repos/${repo}/issues/${number}`),
-    updateIssue: (repo, number, { title, body }) => call('PATCH', `/repos/${repo}/issues/${number}`, { title, body }),
+    /** Only the fields given: title, body, state, state_reason, labels. */
+    updateIssue: (repo, number, patch) => call('PATCH', `/repos/${repo}/issues/${number}`, patch),
     createIssue: (repo, { title, body, labels }) => call('POST', `/repos/${repo}/issues`, { title, body, labels }),
     /** The issue this App created, since `since`, whose body carries `marker`: the record of a create that crashed before it was written down. */
     async findCreated(repo, marker, since) {

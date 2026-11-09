@@ -1,34 +1,95 @@
-// Sync with GitHub (#3). GitHub is the data store; conflicts are resolved in the editor.
+// Sync with GitHub (#3). Overworld is where people and agents work; GitHub is the permanent store.
 //
-// Sync never merges or chooses between versions. It writes what a person accepted, and only over the
-// version they started from. An item that changed on GitHub since then is written nothing, and goes
-// back to the editor as a conflict (SYNC-06).
+// Work in progress stays here. Only a save reaches GitHub (SYNC-07), and a save decides nothing: it takes
+// each unsaved item as it is at that moment, state included, and queues it to be written (SYNC-08).
 //
-//   accept   writes the changeset and a job (the outbox) in one transaction
-//   drain    takes a project's jobs to GitHub, oldest first, under a lease so only one worker runs.
+//   edit     accepting a changeset, or changing an item on the map, marks it unsaved, remembering the
+//            version GitHub had (its base)
+//   save     saveNow(): the one path every trigger calls. Each unsaved item's snapshot and its job (the
+//            outbox) are written in one transaction; an item saved again before it was written replaces
+//            its job, so GitHub gets one write of the latest version (SYNC-09)
+//   drain    takes a project's jobs to GitHub in the order saved, under a lease so only one worker runs.
 //            Each item is checked against GitHub before it is written, so a worker that dies part-way
-//            through is simply run again: what already arrived is recognised and not written twice.
-//            GitHub slow, down or rate-limited: the job waits and books its own retry (SYNC-02).
+//            through is simply run again. Writes keep to a budget well under GitHub's limits (SYNC-10);
+//            GitHub slow, down or rate-limited anyway: the job books its own retry (SYNC-02)
 //   webhook  an issue edited on GitHub updates its place on the map at once (SYNC-03)
 //   reconcile  nightly: maps each repository again, so a missed webhook can't leave drift (SYNC-04)
+//
+// Sync never merges or chooses between versions. An item that changed on GitHub since it was last read is
+// written nothing; the map shows GitHub's version and the item goes back to a person as a conflict (SYNC-06).
+//
+// A node's sync state, kept on the node so the map can badge it (SYNC-11):
+//   sync      'unsaved' | 'saving' | 'conflict' | 'failed' (absent: in line with GitHub)
+//   base      the version GitHub had when the item was last read
+//   saved     the version last saved, while it is on its way
+//   conflict  { ours, theirs } for a person to resolve;  syncError  why GitHub refused it
 
 import { randomUUID } from 'node:crypto';
-import { editableOf, splitNote } from '../shared/issue-shape.js';
+import { editableOf, issueOf, itemKeyOf, splitNote } from '../shared/issue-shape.js';
 import { fromRest, importGitHub } from './github.mjs';
 import { PermanentError } from './github-app.mjs';
+import { labelsForNew, patchFor, sameVersion, stateAsRead, stateOf, versionOnGitHub } from './github-state.mjs';
 import { closedByOpenPrs } from './engine/lifecycle.mjs';
 import { issueFields, issueNodeId } from './engine/project.mjs';
-import { keepPendingEdits, same } from './edits.mjs';
+import { same } from './edits.mjs';
 
 const LEASE_MS = 120_000; // longer than one Lambda run (30 s), so a lease outlives its worker only briefly
 const BACKOFF_MINUTES = [1, 5, 30, 120, 360, 720, 1440]; // then daily; the nightly reconciliation also retries
+// GitHub allows 80 content-creating requests a minute and 500 an hour. Sync keeps well under, per project.
+export const WRITE_BUDGET = { perMinute: 20, perHour: 150 };
 const MARKER = 'overworld-new-item';
 const NEW_REF = /#(new-[\w-]+)\b/g;
 const PLACEMENT_TAGS = new Set(['placed-by-words', 'unplaced']);
+const SYNC_FIELDS = ['sync', 'base', 'saved', 'savedAt', 'conflict', 'syncError'];
 
-/** An edit's or a new item's text, with references to new items in the same changeset pointing at their issue numbers. */
-const withNumbers = (text, numbers) => text.replace(NEW_REF, (ref, key) => (numbers.has(key) ? `#${numbers.get(key)}` : ref));
-const versionOf = (gh) => ({ title: gh.title, markdown: gh.body ?? '' });
+/** Not an error: the write budget is spent, so this waits until `retryAt`. */
+class OverBudget extends Error {
+  constructor(retryAt) {
+    super('write budget spent');
+    this.retryAt = retryAt;
+  }
+}
+
+const strictOf = (project) => project?.strictLifecycle !== false;
+const inLine = (node) => Object.fromEntries(Object.entries(node).filter(([k]) => !SYNC_FIELDS.includes(k)));
+/** The item as it should read on GitHub. */
+export const versionOf = (node, strict) => ({ ...editableOf(node), ...stateOf(node, { strict }) });
+/** The item as GitHub had it when the map last read it. */
+const versionAsRead = (node, strict) => ({ ...editableOf(node), ...stateAsRead(node, { strict }) });
+/** An item made here, on its way to becoming an issue, is keyed new-<node id>. */
+const jobKeyOf = (node) => (issueOf(node) ? itemKeyOf(node) : `new-${node.id}`);
+
+/**
+ * An item changed in Overworld: from now on it is unsaved, until a save takes it to GitHub (SYNC-07).
+ * Only items mapped from a GitHub repository have anywhere to go.
+ */
+export function markEdited(before, after, project) {
+  if (!project?.githubRepo || !issueOf(before)) return after;
+  const waiting = ['unsaved', 'saving', 'failed'].includes(before.sync);
+  return { ...inLine(after), sync: 'unsaved', base: waiting ? before.base : versionAsRead(before, strictOf(project)), ...(before.saved ? { saved: before.saved, savedAt: before.savedAt } : {}) };
+}
+
+/**
+ * Save now: every unsaved item of the project (or just `keys`) goes into the outbox as it is. The one path
+ * every save trigger calls: a person's Save button today, Overworld's own triggers later.
+ * @returns {Promise<{ saved: string[] }>} the item keys saved
+ */
+export async function saveNow(model, projectId, { keys = null, now = new Date().toISOString() } = {}) {
+  const project = await model.projects.get(projectId);
+  if (!project?.githubRepo) return { saved: [] };
+  const strict = strictOf(project);
+  const chosen = (await model.nodes.pending(projectId)).filter((n) => ['unsaved', 'failed'].includes(n.sync) && (!keys || keys.includes(itemKeyOf(n))));
+  const waiting = await model.jobs.list(projectId);
+  const saves = chosen.map((node) => {
+    const key = jobKeyOf(node);
+    const after = versionOf(node, strict);
+    const job = { id: `${now}#${key}`, key, nodeId: node.id, repo: project.githubRepo, strict, base: node.base ?? null, after, epic: /^Kind:\s*Epic\b/im.test(after.markdown), savedAt: now, attempts: 0 };
+    const replaces = waiting.find((j) => j.key === key && j.id !== job.id);
+    return { node: { ...inLine(node), sync: 'saving', base: node.base, saved: after, savedAt: now }, job, replaces };
+  });
+  await model.jobs.save(projectId, saves);
+  return { saved: saves.map((s) => s.job.key) };
+}
 
 /** A node with what GitHub now says about its issue, keeping where it sits on the map and why. */
 export function mapIssueOnto(node, ghIssue, { strict = true, now = new Date().toISOString() } = {}) {
@@ -37,10 +98,42 @@ export function mapIssueOnto(node, ghIssue, { strict = true, now = new Date().to
   const placement = (node.tags ?? []).filter((t) => PLACEMENT_TAGS.has(t));
   // A pull request that closes the issue keeps it in progress; webhooks about the issue don't say so, so keep what the map knew.
   const inProgress = node.status === 'in_progress' && issue.state === 'open' ? new Set([issue.number]) : new Set();
-  return { ...node, ...issueFields(issue, { lifecycle: { strict, inProgress }, note, placement, kind: node.kind }), updatedAt: now };
+  return { ...inLine(node), ...issueFields(issue, { lifecycle: { strict, inProgress }, note, placement, kind: node.kind }), updatedAt: now };
 }
 
-const changedOnMap = (a, b) => a.title !== b.title || a.body !== b.body || a.status !== b.status || a.definition !== b.definition || String(a.tags) !== String(b.tags);
+/**
+ * GitHub's latest version of an item (`fresh`, as the map reads it) meets the map's (`old`). An item not
+ * waiting for GitHub just takes GitHub's version. One waiting keeps its edits while GitHub still holds what it
+ * started from, or what was last saved; anything else is a change made on GitHub, and a conflict.
+ */
+export function settle(old, fresh, strict) {
+  if (!old.sync) return fresh;
+  const theirs = versionAsRead(fresh, strict);
+  if (old.sync === 'conflict') return { ...fresh, sync: 'conflict', conflict: { ...old.conflict, theirs } };
+  if (sameVersion(theirs, versionOf(old, strict))) return fresh; // already there
+  if (old.base && sameVersion(theirs, old.base)) return old;
+  if (old.saved && sameVersion(theirs, old.saved)) return { ...old, base: old.saved }; // our save arrived; later edits still wait
+  return { ...fresh, sync: 'conflict', conflict: { ours: versionOf(old, strict), theirs } };
+}
+
+/**
+ * After a refresh from GitHub: items still waiting for GitHub keep their edits, or become conflicts. Read
+ * from the pending index, not the map. Items made here that aren't on GitHub yet stay on the map.
+ * @returns {{ nodes: object[], conflicts: string[] }}
+ */
+export function keepPending(freshNodes, pending, strict) {
+  const byId = new Map(freshNodes.map((n) => [n.id, n]));
+  const conflicts = [];
+  for (const old of pending) {
+    const fresh = byId.get(old.id);
+    const kept = fresh ? settle(old, fresh, strict) : old;
+    if (kept.sync === 'conflict' && old.sync !== 'conflict') conflicts.push(itemKeyOf(old));
+    byId.set(old.id, kept);
+  }
+  return { nodes: [...byId.values()], conflicts };
+}
+
+const changedOnMap = (a, b) => a.title !== b.title || a.body !== b.body || a.status !== b.status || a.definition !== b.definition || String(a.tags) !== String(b.tags) || a.sync !== b.sync;
 
 /**
  * @param {object} o
@@ -49,79 +142,89 @@ const changedOnMap = (a, b) => a.title !== b.title || a.body !== b.body || a.sta
  * @param {(projectId: string, at: string) => Promise<void>} o.schedule books a run of drain(projectId) at `at`
  * @param {() => Date} [o.clock]
  */
-export function createSync({ model, github, schedule = async () => {}, fetchImpl = fetch, log = console, clock = () => new Date() }) {
+export function createSync({ model, github, schedule = async () => {}, fetchImpl = fetch, log = console, clock = () => new Date(), budget = WRITE_BUDGET }) {
   const iso = (ms = clock().getTime()) => new Date(ms).toISOString();
 
-  /** Take one changeset's items to GitHub. Progress is saved after every item, so a crash resumes where it stopped. */
-  async function syncChangeset(projectId, repo, cs) {
-    const save = () => model.changesets.put(projectId, cs);
-    const numbers = new Map(cs.items.filter((it) => it.number).map((it) => [it.key, it.number]));
-
-    // New items first, so every other item can point at their numbers (NEW-04).
-    for (const it of cs.items.filter((x) => x.key.startsWith('new-') && !x.number && !x.failed)) {
-      const marker = `<!-- ${MARKER}:${it.key} -->`;
-      try {
-        if (it.creating) {
-          // A create may have reached GitHub just before a crash. Find it rather than create a second one.
-          const found = await github.findCreated(repo, marker, new Date(Date.parse(it.creating) - 60_000).toISOString());
-          if (found) {
-            Object.assign(it, { number: found.number });
-            numbers.set(it.key, found.number);
-            await save();
-            continue;
-          }
-        }
-        it.creating = iso();
-        await save();
-        const labels = ['status:draft', ...(/^Kind:\s*Epic\b/im.test(it.after.markdown) ? ['epic'] : [])];
-        const created = await github.createIssue(repo, { title: it.after.title, body: `${withNumbers(it.after.markdown, numbers)}\n\n${marker}`, labels });
-        Object.assign(it, { number: created.number });
-        numbers.set(it.key, created.number);
-        await save();
-      } catch (err) {
-        if (!(err instanceof PermanentError)) throw err; // GitHub down: retry later. Anything else: a crash, so resume
-        Object.assign(it, { failed: err.message });
-        await save();
-      }
-    }
-
-    // Then every item's final text: edits over the version they started from, and new items without their marker.
-    for (const it of cs.items) {
-      if (it.synced || it.conflict || it.failed) continue;
-      const number = it.key.startsWith('issue-') ? Number(it.key.slice(6)) : it.number;
-      if (!number) continue; // made on the map, not on GitHub: nothing to send
-      const want = { title: it.after.title, markdown: withNumbers(it.after.markdown, numbers) };
-      try {
-        const gh = await github.getIssue(repo, number);
-        const theirs = versionOf(gh);
-        if (same(theirs, want)) it.synced = true; // already there: a retry after a crash, or someone made the same edit
-        else if (it.key.startsWith('new-') ? theirs.markdown.includes(`<!-- ${MARKER}:${it.key} -->`) : same(theirs, it.base)) {
-          await github.updateIssue(repo, number, { title: want.title, body: want.markdown });
-          it.synced = true;
-        } else {
-          // Changed on GitHub since it was accepted: write nothing, show theirs on the map, and hand it back to a person.
-          Object.assign(it, { conflict: true, theirs });
-          await showOnMap(projectId, gh);
-        }
-      } catch (err) {
-        if (!(err instanceof PermanentError)) throw err;
-        it.failed = err.message; // no such issue, no access, a rejected edit: retrying won't help, so a person sees it
-      }
-      await save();
-    }
-    return cs.items.some((it) => it.conflict) ? 'conflict' : cs.items.some((it) => it.failed) ? 'failed' : 'synced';
+  /** Spend one write from the project's budget, or say when the next one is free. */
+  async function spend(projectId) {
+    const t = clock().getTime();
+    const writes = (await model.budgets.get(projectId)).filter((w) => Date.parse(w) > t - 3_600_000);
+    const lastMinute = writes.filter((w) => Date.parse(w) > t - 60_000);
+    if (lastMinute.length >= budget.perMinute) throw new OverBudget(iso(Date.parse(lastMinute[0]) + 60_000));
+    if (writes.length >= budget.perHour) throw new OverBudget(iso(Date.parse(writes[0]) + 3_600_000));
+    await model.budgets.put(projectId, [...writes, iso(t)]);
   }
 
-  async function showOnMap(projectId, gh) {
-    const node = await model.nodes.get(projectId, issueNodeId(gh.number));
-    if (!node) return;
-    const project = await model.projects.get(projectId);
-    const updated = mapIssueOnto(node, gh, { strict: project?.strictLifecycle !== false, now: iso() });
-    if (changedOnMap(node, updated)) await model.nodes.put(projectId, [updated]);
+  /** `#new-<id>` references to items now on GitHub point at their numbers. */
+  async function withNumbers(projectId, text) {
+    const numbers = new Map();
+    for (const [, key] of text.matchAll(NEW_REF)) {
+      const node = await model.nodes.get(projectId, key.slice(4));
+      const issue = node && issueOf(node);
+      if (issue) numbers.set(key, issue.number);
+    }
+    return text.replace(NEW_REF, (ref, key) => (numbers.has(key) ? `#${numbers.get(key)}` : ref));
   }
+
+  /** Take one saved item to GitHub, and say what happened. A new issue's create is written down first, so a crash can't make two. */
+  async function syncItem(projectId, job) {
+    const { repo, strict } = job;
+    const marker = `<!-- ${MARKER}:${job.key} -->`;
+    const want = { ...job.after, markdown: await withNumbers(projectId, job.after.markdown) };
+    let number = job.number ?? (job.key.startsWith('issue-') ? Number(job.key.slice(6)) : null);
+    try {
+      if (!number) {
+        // A create may have reached GitHub just before a crash. Find it rather than create a second one (NEW-04).
+        const found = job.creating && (await github.findCreated(repo, marker, iso(Date.parse(job.creating) - 60_000)));
+        if (found) number = found.number;
+        else {
+          await spend(projectId);
+          await model.jobs.put(projectId, { ...job, creating: iso() });
+          number = (await github.createIssue(repo, { title: want.title, body: `${want.markdown}\n\n${marker}`, labels: labelsForNew(want, { epic: job.epic }) })).number;
+        }
+        await model.jobs.put(projectId, { ...job, number });
+      }
+      const gh = await github.getIssue(repo, number);
+      const theirs = versionOnGitHub(gh, { strict });
+      if (sameVersion(theirs, want)) return { outcome: 'written', number, want }; // already there: a retry after a crash, or the same edit made twice
+      const node = await model.nodes.get(projectId, job.nodeId);
+      const untouched = (job.base && sameVersion(theirs, job.base)) || (node?.base && sameVersion(theirs, node.base)) || (job.key.startsWith('new-') && theirs.markdown.includes(marker));
+      if (!untouched) return { outcome: 'conflict', number, want, gh, theirs };
+      await spend(projectId);
+      await github.updateIssue(repo, number, patchFor(gh, want, { strict }));
+      return { outcome: 'written', number, want };
+    } catch (err) {
+      if (!(err instanceof PermanentError)) throw err; // GitHub down or over budget: later. Anything else: a crash, so resume
+      return { outcome: 'failed', number, error: err.message };
+    }
+  }
+
+  /** A job done: its node says so, and later saves of the same item start from what GitHub now holds. */
+  async function finish(projectId, job, result, waiting) {
+    const node = await model.nodes.get(projectId, job.nodeId);
+    const later = waiting.filter((j) => j.key === job.key && j.id !== job.id);
+    const url = result.number && `https://github.com/${job.repo}/issues/${result.number}`;
+    let next = null;
+    if (node && result.outcome === 'written') {
+      // An item made here is now that issue. (Its node keeps its id; a refresh renames it issue-<number>.)
+      const placed = issueOf(node) ? node : { ...node, url, title: `#${result.number} ${node.title}`.slice(0, 200) };
+      const current = !node.sync || (node.sync === 'saving' && node.savedAt === job.savedAt);
+      next = current ? inLine(placed) : { ...placed, base: result.want };
+    } else if (node && result.outcome === 'conflict') {
+      next = { ...mapIssueOnto(node, result.gh, { strict: job.strict, now: iso() }), sync: 'conflict', conflict: { ours: versionOf(node, job.strict), theirs: result.theirs } };
+    } else if (node && result.outcome === 'failed') {
+      next = { ...node, ...(url && !issueOf(node) ? { url } : {}), sync: 'failed', syncError: result.error };
+    }
+    const rebased = result.outcome === 'written' ? later.map((j) => ({ ...j, base: result.want, number: result.number })) : [];
+    await model.jobs.finish(projectId, job, { node: next, rebased });
+    if (result.outcome !== 'written') for (const j of later) await model.jobs.finish(projectId, j); // a person decides this item now
+  }
+
+  /** The job as it is stored now (a crash-guard may have been written into it), or null if a later save replaced it. */
+  const latest = async (projectId, job) => (await model.jobs.list(projectId)).find((j) => j.id === job.id) ?? null;
 
   /**
-   * Take a project's waiting jobs to GitHub, oldest first. A job that can't go yet holds back the ones after it, so edits arrive in order.
+   * Take a project's saved items to GitHub, new issues first, then in the order saved. A job that can't go yet holds back the ones after it.
    * @param {{ now?: boolean }} [opts] now: don't wait for a booked retry (a person pressed Retry, or the nightly run)
    */
   async function drain(projectId, { now = false } = {}) {
@@ -131,28 +234,38 @@ export function createSync({ model, github, schedule = async () => {}, fetchImpl
       await schedule(projectId, iso(clock().getTime() + 60_000));
       return { status: 'busy' };
     }
+    const next = async () => {
+      const all = await model.jobs.list(projectId);
+      return { all, job: all.find((j) => j.key.startsWith('new-') && !j.number) ?? all[0] };
+    };
     try {
-      // Jobs accepted while this runs join the end of the line: list again until none are left.
-      for (let job = (await model.jobs.list(projectId))[0]; job; job = (await model.jobs.list(projectId))[0]) {
+      // Items saved while this runs join the end of the line: list again until none are left.
+      for (let { all, job } = await next(); job; { all, job } = await next()) {
         if (!now && job.nextAttemptAt && job.nextAttemptAt > iso()) {
           await schedule(projectId, job.nextAttemptAt);
           return { status: 'waiting', until: job.nextAttemptAt };
         }
-        const cs = await model.changesets.get(projectId, job.changesetId);
-        let outcome;
+        let result;
         try {
-          outcome = cs ? await syncChangeset(projectId, job.repo, cs) : null;
+          result = await syncItem(projectId, job);
         } catch (err) {
-          if (!err.transient) throw err;
+          if (!(err instanceof OverBudget) && !err.transient) throw err;
+          const stored = await latest(projectId, job);
+          if (err instanceof OverBudget) {
+            // Not a failure: the writes are spread out instead of refused (SYNC-10).
+            if (stored) await model.jobs.put(projectId, { ...stored, nextAttemptAt: err.retryAt });
+            await schedule(projectId, err.retryAt);
+            return { status: 'waiting', until: err.retryAt };
+          }
           const attempts = (job.attempts ?? 0) + 1;
           const backoff = clock().getTime() + BACKOFF_MINUTES[Math.min(attempts, BACKOFF_MINUTES.length) - 1] * 60_000;
           const nextAttemptAt = iso(Math.max(backoff, err.retryAt ? Date.parse(err.retryAt) : 0));
-          await model.jobs.put(projectId, { ...job, attempts, nextAttemptAt, lastError: err.message });
+          if (stored) await model.jobs.put(projectId, { ...stored, attempts, nextAttemptAt, lastError: err.message });
           await schedule(projectId, nextAttemptAt);
           log.warn?.(`sync ${projectId}: ${err.message}; next try ${nextAttemptAt}`);
           return { status: 'retrying', until: nextAttemptAt };
         }
-        await model.jobs.finish(projectId, job, cs && { ...cs, sync: outcome, syncedAt: iso() });
+        await finish(projectId, job, result, all);
       }
       return { status: 'synced' };
     } finally {
@@ -174,7 +287,7 @@ export function createSync({ model, github, schedule = async () => {}, fetchImpl
       if (event === 'issues' && !payload.issue?.pull_request) {
         const node = await model.nodes.get(projectId, issueNodeId(payload.issue.number));
         if (!node) continue; // not on this map yet: the nightly reconciliation places it
-        const updated = mapIssueOnto(node, payload.issue, { strict: project.strictLifecycle !== false, now: iso() });
+        const updated = settle(node, mapIssueOnto(node, payload.issue, { strict: strictOf(project), now: iso() }), strictOf(project));
         if (!changedOnMap(node, updated)) continue;
         await model.nodes.put(projectId, [updated]);
         await markConflicts(projectId, updated);
@@ -194,7 +307,7 @@ export function createSync({ model, github, schedule = async () => {}, fetchImpl
 
   /** An open changeset that edits this item, from a version GitHub has now moved on from, needs a person. */
   async function markConflicts(projectId, node) {
-    const key = `issue-${node.url.split('/').pop()}`;
+    const key = itemKeyOf(node);
     const now = editableOf(node);
     for (const cs of await model.changesets.list(projectId)) {
       if (cs.status !== 'open') continue;
@@ -214,7 +327,7 @@ export function createSync({ model, github, schedule = async () => {}, fetchImpl
     const at = iso();
     const before = await model.projects.getWithNodes(project.id);
     const data = await importGitHub({ repo: project.githubRepo, token }, fetchImpl);
-    const kept = keepPendingEdits(data.nodes, await model.changesets.list(project.id), at);
+    const kept = keepPending(data.nodes, await model.nodes.pending(project.id), data.strictLifecycle);
     const old = new Map(before.nodes.map((n) => [n.id, n]));
     const fresh = new Map(kept.nodes.map((n) => [n.id, n]));
     const issues = (ids) => ids.filter((id) => id.startsWith('issue-')).map((id) => Number(id.slice(6))).sort((a, b) => a - b);
@@ -224,10 +337,9 @@ export function createSync({ model, github, schedule = async () => {}, fetchImpl
       added: issues([...fresh.keys()].filter((id) => !old.has(id))),
       removed: issues([...old.keys()].filter((id) => !fresh.has(id))),
       changed: issues([...fresh.keys()].filter((id) => old.has(id) && changedOnMap(old.get(id), fresh.get(id)))),
-      conflicts: kept.changed.flatMap((cs) => cs.items.filter((it) => it.conflict).map((it) => it.key)),
+      conflicts: kept.conflicts,
     };
     await model.nodes.replace(project.id, kept.nodes);
-    for (const cs of kept.changed) await model.changesets.put(project.id, cs);
     await model.projects.put({ ...project, nodeCount: kept.nodes.length, strictLifecycle: data.strictLifecycle, updatedAt: at });
     await model.repos.link(project.githubRepo, project.id);
     report.sync = (await model.jobs.list(project.id)).length ? (await drain(project.id, { now: true })).status : 'nothing waiting';

@@ -212,9 +212,9 @@ test('edits to several items collect into one changeset and are accepted togethe
   const accepted = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`);
   assert.equal(accepted.status, 200);
   assert.equal(accepted.body.changeset.status, 'accepted');
-  assert.equal(accepted.body.changeset.sync, 'waiting', 'GitHub issues still have to receive it');
   const after = await map();
   const four2 = after.find((n) => n.title.startsWith('#4 '));
+  assert.equal(four2.sync, 'unsaved', 'GitHub receives it when it is saved');
   assert.match(four2.body, /never numbers/);
   assert.match(four2.body, /\n\n---\n📍 /, "the map's note stays");
   assert.equal(four2.status, 'needs_decision', 'an open question puts it in the Fog');
@@ -251,7 +251,7 @@ test('an item that changed since editing began is a conflict, never overwritten'
   assert.match((await map()).find((n) => n.title.startsWith('#5 ')).body, /^Theirs/);
 });
 
-test("a refresh from GitHub keeps accepted edits that haven't synced yet", async () => {
+test("a refresh from GitHub keeps accepted edits that aren't on GitHub yet", async () => {
   const { shop, call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'Coupon field broken', markdown: 'Fixed wording.' });
@@ -262,13 +262,9 @@ test("a refresh from GitHub keeps accepted edits that haven't synced yet", async
   const nodes = await map();
   assert.match(nodes.find((n) => n.title.startsWith('#3 ')).body, /^Fixed wording\./, 'GitHub unchanged: our edit stays on the map');
   assert.match(nodes.find((n) => n.title.startsWith('#5 ')).body, /^Theirs/, 'GitHub moved on: theirs shows, and ours waits for a person');
-  const [kept] = (await call('GET', `/api/projects/${pid}/changesets`)).body.changesets;
   assert.deepEqual(
-    kept.items.map((it) => [it.key, Boolean(it.conflict)]),
-    [
-      ['issue-3', false],
-      ['issue-5', true],
-    ],
+    [3, 5].map((n) => nodes.find((x) => x.title.startsWith(`#${n} `)).sync),
+    ['unsaved', 'conflict'],
   );
 });
 
