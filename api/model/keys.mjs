@@ -14,11 +14,14 @@
 //   Store link STORE#<store key>  PROJECT#<id>  which projects live in a store, e.g. github:owner/name (for its events)
 //
 // A project and its nodes share a partition (an item collection): one query reads a
-// whole map, and one query finds everything to delete. Changesets and comments live there too,
-// keyed by the item they concern (an issue number, or a node id for items made here). GSI1 is sparse: projects
-// carry its keys, so it lists projects, most recently updated first; and so do nodes that are unsaved, saving, in conflict or
-// failed, so a save or a refresh finds them without reading the map. Every prefix in a project's partition other than NODE#
-// sorts before it, so the map is one range query.
+// whole map, and one query finds everything to delete. The map's entities sort last: every prefix in a
+// project's partition other than NODE# (CHANGESET#, COMMENT#, JOB#, LEASE#, AUDIT#) sorts before it, and
+// PROJECT after it, so opening a map is one range query from NODE# on, and never reads the changesets,
+// comments or sync's records: those load when they're asked for (DATA-02). A new entity in the partition
+// must sort before NODE#, or every map open would read it. Changesets and comments are keyed by the item
+// they concern (an issue number, or a node id for items made here). GSI1 is sparse: projects carry its keys,
+// so it lists projects, most recently updated first; and so do nodes that are unsaved, saving, in conflict
+// or failed, so a save or a refresh finds them without reading the map.
 
 export const ALL_PROJECTS = 'PROJECTS';
 export const PROJECT_SK = 'PROJECT';
@@ -36,6 +39,7 @@ export const keys = {
   flag: (name) => ({ PK: 'APP', SK: `FLAG#${name}` }),
   changeset: (projectId, id) => ({ PK: projectPartition(projectId), SK: `${CHANGESET_PREFIX}${id}` }),
   comment: (projectId, { itemKey, id }) => ({ PK: projectPartition(projectId), SK: `${COMMENT_PREFIX}${itemKey}#${id}` }),
+  mapOf: (projectId) => ({ pk: projectPartition(projectId), skFrom: NODE_PREFIX }),
   pending: (projectId, itemKey) => ({ GSI1PK: `PENDING#${projectId}`, GSI1SK: itemKey }),
   pendingOf: (projectId) => ({ index: 'GSI1', pk: `PENDING#${projectId}` }),
   job: (projectId, id) => ({ PK: projectPartition(projectId), SK: `${JOB_PREFIX}${id}` }),

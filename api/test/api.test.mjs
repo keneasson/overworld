@@ -189,8 +189,7 @@ async function shopProject() {
   return { shop, call, pid: project.id, nodes, node, map: async () => (await call('GET', `/api/projects/${project.id}`)).body.nodes };
 }
 
-// EDIT-03: several items of an area, edited side by side, collect into one changeset.
-test('edits to several items collect into one changeset and are accepted together', async () => {
+test('EDIT-03 edits to several items collect into one changeset, accepted together', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Ken' })).body.changeset;
   assert.equal(cs.status, 'open');
@@ -225,7 +224,7 @@ test('edits to several items collect into one changeset and are accepted togethe
   assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'x', markdown: '' })).status, 409);
 });
 
-test('a changeset can be discarded, and an empty one cannot be accepted', async () => {
+test('EDIT-03 a changeset can be discarded, and an empty one cannot be accepted', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
   assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`)).status, 400);
@@ -239,7 +238,7 @@ test('a changeset can be discarded, and an empty one cannot be accepted', async 
   assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${other.id}/items`, { key: '../x', title: 'x', markdown: '' })).status, 400);
 });
 
-test('an item that changed since editing began is a conflict, never overwritten', async () => {
+test('EDIT-03 an item that changed since editing began is a conflict, never overwritten', async () => {
   const { shop, call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think about the vibe', markdown: 'Ours.' });
@@ -251,7 +250,7 @@ test('an item that changed since editing began is a conflict, never overwritten'
   assert.match((await map()).find((n) => n.title.startsWith('#5 ')).body, /^Theirs/);
 });
 
-test("a refresh from GitHub keeps accepted edits that aren't on GitHub yet", async () => {
+test("EDIT-03 a refresh keeps accepted edits that aren't on GitHub yet", async () => {
   const { shop, call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'Coupon field broken', markdown: 'Fixed wording.' });
@@ -268,8 +267,7 @@ test("a refresh from GitHub keeps accepted edits that aren't on GitHub yet", asy
   );
 });
 
-// EDIT-04: a comment on one behaviour or section is anchored there and travels with it.
-test('comments are anchored to a section or a behaviour and survive a refresh', async () => {
+test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', async () => {
   const { call, pid } = await shopProject();
   const a = await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { behaviour: 'PAY-10' }, text: 'Which vault?', author: 'QA' });
   assert.equal(a.status, 201);

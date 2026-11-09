@@ -16,7 +16,8 @@ npm run deploy   # builds, bundles, sam deploy; prints the URL and runs a health
 
 - `api/app.mjs`: the API routes, acting as the controller. It never builds keys and never imports the AWS SDK.
 - `api/model/`: the only code that talks to DynamoDB, using a single-table design.
-  - A new data need gets an access pattern in `api/model/access-patterns/`, its keys in `keys.mjs`, a row in `api/model/README.md` and a test in `api/test/model.test.mjs`.
+  - A new data need gets an access pattern in `api/model/access-patterns/`, its keys in `keys.mjs` and a row in `api/model/README.md`.
+  - The data layer's behaviours (DATA-01 to DATA-03) are tested once, for the whole design, in `api/test/model.test.mjs`. An access pattern doesn't get a test of its own.
   - The app never scans the table.
 - `api/sync.mjs`: sync with each project's store (#3): saving (`saveNow`, the one path every save trigger calls), the outbox worker, store events and the nightly reconciliation. It reaches a store only through the store API in `api/stores/index.mjs` (SYNC-14), and never imports anything store-specific.
 - `api/stores/github/`: GitHub as a store. `state.mjs` is the one place that says how an item's state is written on GitHub (labels, open or closed); `app.mjs` writes as the GitHub App; `index.mjs` is the store and turns webhooks into store events. `api/aws.mjs` holds what sync needs from AWS (SSM, Scheduler), and `api/handler.mjs` routes the stream and schedules to it.
@@ -34,4 +35,10 @@ npm run deploy   # builds, bundles, sam deploy; prints the URL and runs a health
 - **Code style.**
   - Match the surrounding code: single quotes, long lines (about 180 columns), and short comments that say why.
   - No formatter is installed, so don't run `npx prettier`.
+- **Tests.** Every test proves a behaviour, and is named by its ID plus a short statement: `test('EDIT-01 each section opens as its own field')`.
+  - The behaviour in its issue holds the detail; the name doesn't repeat it. A test that proves several behaviours names each ID.
+  - Test what the product does (the API, the screen, a shared module's promise), never how it does it. A refactor that keeps the behaviour keeps the test passing.
+  - No behaviour, no test. If a test proves something no issue has written down, propose the behaviour in the right issue; if nothing needs proving, delete the test.
+  - A behaviour and its tests change in the same pull request. The ID never changes, even when the behaviour moves to another issue.
+  - Keep the suite small and fast.
 - **The Fog lens** (poorly defined work) is a favourite. Keep it working.
