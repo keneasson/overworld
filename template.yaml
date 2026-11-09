@@ -8,6 +8,15 @@ Parameters:
     NoEcho: true
     MinLength: 16
     Description: Shared secret the web app sends with every API call.
+  Stage:
+    Type: String
+    Default: production
+    AllowedValues: [production, preview]
+    Description: A preview (#27) is small and short-lived; production is the default.
+  PermissionsBoundary:
+    Type: String
+    Default: ''
+    Description: The boundary CI's deploys put on the function's role, so CI can't grant more than the app needs. Empty for local deploys.
   GitHubAppId:
     Type: String
     Default: ''
@@ -20,6 +29,8 @@ Parameters:
     Default: ''
 
 Conditions:
+  IsPreview: !Equals [!Ref Stage, preview]
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundary, '']]
   HasGitHubApp: !And [!Not [!Equals [!Ref GitHubAppId, '']], !Not [!Equals [!Ref GitHubInstallationId, '']]]
 
 Resources:
@@ -60,7 +71,9 @@ Resources:
       Architectures: [arm64]
       MemorySize: 512
       Timeout: 30
-      ReservedConcurrentExecutions: 10
+      # Previews are capped so three of them can't take production's capacity.
+      ReservedConcurrentExecutions: !If [IsPreview, 2, 10]
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
       Environment:
         Variables:
           TABLE_NAME: !Ref Table
@@ -115,11 +128,13 @@ Resources:
         InvokeMode: BUFFERED
       Tags:
         app: projectmap
+        stage: !Ref Stage
 
   # Where sync's retry schedules get their permission to wake the function, and nothing more.
   SchedulerRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -151,7 +166,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /aws/lambda/${AppFunction}
-      RetentionInDays: 14
+      RetentionInDays: !If [IsPreview, 3, 14]
 
 Outputs:
   Url:

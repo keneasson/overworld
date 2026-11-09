@@ -24,6 +24,8 @@ npm run deploy   # builds, bundles, sam deploy; prints the URL and runs a health
 - `shared/`: the schema and validation used by both sides. `shared/brand.js` holds the product name.
 - `web/`: React plus a Canvas 2D renderer. Rollups are computed in `web/src/model/tree.js`.
 - `scripts/migrations/`: changes to deployed data, numbered and run by hand. Each one backs up the table first.
+- `.github/workflows/`: CI and delivery. Pull requests are tested, main deploys to production, and a pull request labelled `preview` gets a temporary stack. The limits and setup are in `.github/workflows/README.md`; the rules are in `scripts/ci/rules.mjs`.
+- `infra/`: AWS resources outside the app's stack, deployed once by hand, such as CI's role (`infra/ci-bootstrap.yaml`).
 
 ## Conventions
 

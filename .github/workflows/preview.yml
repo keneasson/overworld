@@ -1,0 +1,111 @@
+# SHIP-04 to SHIP-07: a pull request from this repository labelled `preview` gets its own stack and
+# empty table, at most 3 at once. Closing the pull request or removing the label tears it down.
+# Pull requests from forks never deploy and get no secrets (SHIP-05).
+name: Preview
+
+on:
+  pull_request:
+    types: [labeled, unlabeled, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.action != 'closed' &&
+      contains(github.event.pull_request.labels.*.name, 'preview') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'preview')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+      issues: write
+    environment:
+      name: preview
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      CI: 'true'
+      STACK_NAME: projectmap-pr-${{ github.event.pull_request.number }}
+      STAGE: preview
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+      PERMISSIONS_BOUNDARY: ${{ vars.PERMISSIONS_BOUNDARY }}
+      PROJECTMAP_ACCESS_KEY: ${{ secrets.PREVIEW_ACCESS_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - id: plan
+        run: node scripts/ci/run.mjs preview-plan "$PR"
+      - if: steps.plan.outputs.action == 'refuse'
+        run: |
+          printf '%s\n' "${{ steps.plan.outputs.message }}" > "$RUNNER_TEMP/preview.md"
+          node scripts/ci/run.mjs comment "$PR" "$RUNNER_TEMP/preview.md"
+          echo "::error::${{ steps.plan.outputs.message }}"
+          exit 1
+      - uses: aws-actions/setup-sam@v2
+        if: steps.plan.outputs.action == 'deploy'
+        with:
+          use-installer: true
+      - id: deploy
+        if: steps.plan.outputs.action == 'deploy'
+        run: npm run deploy
+      - if: steps.plan.outputs.action == 'deploy'
+        run: node scripts/smoke.mjs "${{ steps.deploy.outputs.url }}"
+      - if: steps.plan.outputs.action == 'deploy'
+        run: |
+          cat > "$RUNNER_TEMP/preview.md" <<MD
+          🛰️ **Preview:** ${{ steps.deploy.outputs.url }}
+
+          Built from ${{ github.event.pull_request.head.sha }}. It starts with an empty table and the demo project, and uses the preview access key.
+          It's torn down when this pull request closes, when the \`preview\` label is removed, or after 7 days without a push.
+          MD
+          node scripts/ci/run.mjs comment "$PR" "$RUNNER_TEMP/preview.md"
+
+  teardown:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action == 'closed' || (github.event.action == 'unlabeled' && github.event.label.name == 'preview'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+      issues: write
+    environment: preview
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      # The base branch's scripts, not the pull request's: teardown runs code that has been merged.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: node scripts/ci/run.mjs teardown "projectmap-pr-$PR" "pull request ${{ github.event.action }}"
+      - run: |
+          printf '%s\n' "🛰️ The preview was torn down: its stack, table and logs are gone." > "$RUNNER_TEMP/preview.md"
+          node scripts/ci/run.mjs comment "$PR" "$RUNNER_TEMP/preview.md"
