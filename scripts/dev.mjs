@@ -4,8 +4,21 @@
 import { createServer } from 'vite';
 import { createApi } from '../api/app.mjs';
 import { createModel } from '../api/model/index.mjs';
+import { githubApp } from '../api/stores/github/app.mjs';
+import { createStores } from '../api/stores/index.mjs';
+import { createSync } from '../api/sync.mjs';
+import { readGitHubApp } from './local-config.mjs';
 
-const api = createApi({ model: await createModel({ DATA_FILE: process.env.DATA_FILE ?? '.data/table.json' }), accessKey: process.env.ACCESS_KEY ?? '' });
+const model = await createModel({ DATA_FILE: process.env.DATA_FILE ?? '.data/table.json' });
+
+// Sync writes to real GitHub issues, so it is off locally unless asked for: SYNC=1 npm run dev.
+// There's no stream or scheduler here: a save drains straight away, and retries are timers.
+const app = process.env.SYNC === '1' ? readGitHubApp() : null;
+if (process.env.SYNC === '1' && !app) console.warn('SYNC=1, but .conf/ has no github-app.json and github-app.pem: sync stays off');
+const stores = createStores({ githubApp: app ? githubApp(app) : null });
+const sync = app && createSync({ model, stores, schedule: async (pid, at) => setTimeout(() => sync.drain(pid), Math.max(0, Date.parse(at) - Date.now())).unref() });
+const drainSoon = (pid) => sync.drain(pid).catch((err) => console.error(`sync ${pid}:`, err));
+const api = createApi({ model, accessKey: process.env.ACCESS_KEY ?? '', sync, stores, onSaved: sync && drainSoon });
 
 async function readBody(req) {
   const chunks = [];

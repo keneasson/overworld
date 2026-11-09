@@ -78,6 +78,25 @@ export async function importGitHub({ repo, token }, fetchImpl = fetch) {
   return buildProject({ repo: info, paths, manifests, specs, issues, pulls: (Array.isArray(pulls) ? pulls : []).map((p) => ({ number: p.number, title: p.title, body: p.body ?? '' })) });
 }
 
+/** An issue as GitHub's REST API (and its webhooks) send it, in the shape the mapper reads. */
+export function fromRest(i) {
+  return {
+    number: i.number,
+    title: i.title,
+    body: i.body ?? '',
+    state: i.state,
+    stateReason: i.state_reason ?? null,
+    url: i.html_url,
+    labels: (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name)),
+    milestone: i.milestone && { title: i.milestone.title, dueOn: i.milestone.due_on },
+    assignees: (i.assignees ?? []).map((a) => a.login),
+    type: i.type?.name ?? null,
+    parent: null,
+    prs: [],
+    subIssueCount: i.sub_issues_summary?.total ?? 0,
+  };
+}
+
 async function inBatches(items, size, fn) {
   const out = [];
   for (let i = 0; i < items.length; i += size) out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
@@ -91,21 +110,7 @@ async function viaRest(owner, name, rest) {
     raw.push(...batch.filter((i) => !i.pull_request));
     if (batch.length < 100) break;
   }
-  const issues = raw.map((i) => ({
-    number: i.number,
-    title: i.title,
-    body: i.body ?? '',
-    state: i.state,
-    stateReason: i.state_reason ?? null,
-    url: i.html_url,
-    labels: i.labels.map((l) => (typeof l === 'string' ? l : l.name)),
-    milestone: i.milestone && { title: i.milestone.title, dueOn: i.milestone.due_on },
-    assignees: (i.assignees ?? []).map((a) => a.login),
-    type: i.type?.name ?? null,
-    parent: null,
-    prs: [],
-    subIssueCount: i.sub_issues_summary?.total ?? 0,
-  }));
+  const issues = raw.map(fromRest);
   // Sub-issue relationships need one request per parent; cap it to stay inside unauthenticated rate limits.
   const parents = issues.filter((i) => i.subIssueCount > 0).slice(0, 25);
   const byNumber = new Map(issues.map((i) => [i.number, i]));

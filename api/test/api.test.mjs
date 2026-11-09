@@ -7,6 +7,7 @@ import { createApi } from '../app.mjs';
 import { createModel } from '../model/index.mjs';
 import { parseRepo, importGitHub } from '../github.mjs';
 import { sanitizeNode } from '../../shared/schema.js';
+import { fakeShop } from './fake-github.mjs';
 
 async function setup(accessKey = 'secret-key') {
   const dir = await mkdtemp(join(tmpdir(), 'projectmap-'));
@@ -95,52 +96,6 @@ test('parses GitHub repo references', () => {
   assert.throws(() => parseRepo('nope'));
 });
 
-/** A small repository on a fake GitHub: a Next.js shop with issues and a behaviour spec. */
-function fakeShop() {
-  const issue = (number, title, body = '', extra = {}) => ({ number, title, body, state: 'open', html_url: `https://github.com/octo/shop/issues/${number}`, labels: [], milestone: null, assignees: [], ...extra });
-  const issues = [
-    issue(1, 'Epic: checkout', '- [ ] #2\n- [ ] #3'),
-    issue(2, 'Pay with saved card', 'depends on #4', { state: 'closed', labels: [{ name: 'enhancement' }] }),
-    issue(3, 'Coupon field broken', 'The field on /checkout rejects valid codes.', { labels: [{ name: 'bug' }, { name: 'P1' }], assignees: [{ login: 'ken' }] }),
-    issue(4, 'Card tokens', 'Part of #1. See `apps/web/app/api/payments/route.ts`.', { milestone: { title: 'v1', due_on: '2027-01-31T00:00:00Z' } }),
-    issue(5, 'Think about the vibe', 'Hmm.'),
-    issue(6, 'A PR', '', { pull_request: {} }),
-    issue(8, 'Dark mode toggle', 'Maybe later.', { state: 'closed', state_reason: 'not_planned' }),
-  ];
-  const pulls = [{ number: 9, title: 'Vibes', body: 'Closes #5' }];
-  const files = { 'package.json': { name: 'shop', workspaces: ['apps/*'] }, 'apps/web/package.json': { name: 'web', dependencies: { next: '16.0.0', stripe: '19.0.0' } } };
-  const spec =
-    '# Behaviour spec: Checkout\n\n> What paying must do.\n\n## 1. Paying — `PAY`\n\n| ID | Scenario | Status |\n|---|---|---|\n| PAY-01 | A saved card pays in one tap. | ✅ |\n| PAY-02 | A coupon applies before paying. | ❌ #3 |\n| PAY-03 | Who refunds? | 🔷 |\n';
-  const tree = [
-    'package.json',
-    'apps/web/package.json',
-    'apps/web/app/(shop)/page.tsx',
-    'apps/web/app/(shop)/checkout/page.tsx',
-    'apps/web/app/(shop)/cart/page.tsx',
-    'apps/web/app/(shop)/products/page.tsx',
-    'apps/web/app/auth/signin/page.tsx',
-    'apps/web/app/api/payments/route.ts',
-    'apps/web/components/site-header.tsx',
-    'docs/behavior/checkout.md',
-  ].map((path) => ({ path, type: 'blob' }));
-  return {
-    issues,
-    issue,
-    fetch: async (url) => {
-      const raw = url.match(/^https:\/\/raw\.githubusercontent\.com\/octo\/shop\/main\/(.*)$/);
-      const body = raw
-        ? ((files[decodeURIComponent(raw[1])] && JSON.stringify(files[decodeURIComponent(raw[1])])) ?? (raw[1].endsWith('checkout.md') ? spec : null))
-        : url.includes('/issues?')
-          ? issues
-          : url.includes('/pulls?')
-            ? pulls
-          : url.includes('/git/trees/')
-            ? { tree }
-            : { full_name: 'octo/shop', description: '', html_url: 'https://github.com/octo/shop', default_branch: 'main' };
-      return { ok: body != null, status: body == null ? 404 : 200, json: async () => body, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)) };
-    },
-  };
-}
 
 test('maps a GitHub repository: code is the land, issues the work, specs the laws', async () => {
   const { fetch: fake } = fakeShop();
@@ -257,9 +212,9 @@ test('edits to several items collect into one changeset and are accepted togethe
   const accepted = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`);
   assert.equal(accepted.status, 200);
   assert.equal(accepted.body.changeset.status, 'accepted');
-  assert.equal(accepted.body.changeset.sync, 'waiting', 'GitHub issues still have to receive it');
   const after = await map();
   const four2 = after.find((n) => n.title.startsWith('#4 '));
+  assert.equal(four2.sync, 'unsaved', 'GitHub receives it when it is saved');
   assert.match(four2.body, /never numbers/);
   assert.match(four2.body, /\n\n---\n📍 /, "the map's note stays");
   assert.equal(four2.status, 'needs_decision', 'an open question needs a decision');
@@ -296,7 +251,7 @@ test('an item that changed since editing began is a conflict, never overwritten'
   assert.match((await map()).find((n) => n.title.startsWith('#5 ')).body, /^Theirs/);
 });
 
-test("a refresh from GitHub keeps accepted edits that haven't synced yet", async () => {
+test("a refresh from GitHub keeps accepted edits that aren't on GitHub yet", async () => {
   const { shop, call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'Coupon field broken', markdown: 'Fixed wording.' });
@@ -307,13 +262,9 @@ test("a refresh from GitHub keeps accepted edits that haven't synced yet", async
   const nodes = await map();
   assert.match(nodes.find((n) => n.title.startsWith('#3 ')).body, /^Fixed wording\./, 'GitHub unchanged: our edit stays on the map');
   assert.match(nodes.find((n) => n.title.startsWith('#5 ')).body, /^Theirs/, 'GitHub moved on: theirs shows, and ours waits for a person');
-  const [kept] = (await call('GET', `/api/projects/${pid}/changesets`)).body.changesets;
   assert.deepEqual(
-    kept.items.map((it) => [it.key, Boolean(it.conflict)]),
-    [
-      ['issue-3', false],
-      ['issue-5', true],
-    ],
+    [3, 5].map((n) => nodes.find((x) => x.title.startsWith(`#${n} `)).sync),
+    ['unsaved', 'conflict'],
   );
 });
 

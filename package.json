@@ -32,6 +32,8 @@
   },
   "devDependencies": {
     "@aws-sdk/client-dynamodb": "^3.1161.0",
+    "@aws-sdk/client-scheduler": "^3.1164.0",
+    "@aws-sdk/client-ssm": "^3.1164.0",
     "@aws-sdk/lib-dynamodb": "^3.1161.0",
     "@vitejs/plugin-react": "^6.2.1",
     "esbuild": "^0.28.2",

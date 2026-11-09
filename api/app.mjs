@@ -5,7 +5,10 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
-import { applyTo, conflictsOf, editableOf, findItem, keepPendingEdits, same } from './edits.mjs';
+import { applyTo, conflictsOf, editableOf, findItem, same } from './edits.mjs';
+import { keepPending, markEdited, saveNow } from './sync.mjs';
+import { createStores } from './stores/index.mjs';
+import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -16,7 +19,13 @@ class HttpError extends Error {
 
 const digest = (s) => createHash('sha256').update(String(s)).digest();
 
-export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console }) {
+/**
+ * @param {object} [o.sync] sync with each project's store (api/sync.mjs); without it, saved items wait in the outbox
+ * @param {object} [o.stores] each project's store (api/stores/index.mjs)
+ * @param {() => Promise<string>} [o.webhookSecret] the GitHub App's webhook secret
+ * @param {(projectId: string) => void} [o.onSaved] runs after a save: in AWS the table's stream wakes the worker instead
+ */
+export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, stores = createStores({ fetchImpl }), webhookSecret = null, onSaved = null }) {
   const expected = accessKey ? digest(accessKey) : null;
 
   function authorize(headers) {
@@ -158,8 +167,10 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       'DELETE',
       /^\/api\/projects\/([\w-]+)$/,
       async ({ params: [pid] }) => {
-        await loadProject(pid);
+        const { project } = await loadProject(pid);
         await model.projects.delete(pid);
+        const store = stores.forProject(project);
+        if (store) await model.links.unlink(store.key, pid);
         return { deleted: pid };
       },
     ],
@@ -210,7 +221,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           const known = new Set(nodes.map((n) => n.id));
           patch.links = patch.links.filter((l) => known.has(l.to) && l.to !== nid);
         }
-        const node = { ...current, ...patch, id: nid, updatedAt: new Date().toISOString() };
+        let node = { ...current, ...patch, id: nid, updatedAt: new Date().toISOString() };
+        // A change to what the store holds (its text or its state) waits for a save (SYNC-07).
+        if (['title', 'body', 'status'].some((k) => k in patch && patch[k] !== current[k])) node = markEdited(current, node, stores.forProject(project));
         await model.nodes.put(pid, [node]);
         const all = nodes.map((n) => (n.id === nid ? node : n));
         const updatedProject = await touchProject(project, all);
@@ -249,7 +262,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { nodes } = await loadProject(pid);
         const scope = nodes.find((n) => n.id === body?.scopeId) ?? nodes.find((n) => n.id === ROOT_ID);
         const now = new Date().toISOString();
-        const changeset = { id: newId(), scopeId: scope.id, scopeTitle: scope.title, status: 'open', sync: null, author: author(body?.author), items: [], createdAt: now, updatedAt: now };
+        const changeset = { id: newId(), scopeId: scope.id, scopeTitle: scope.title, status: 'open', author: author(body?.author), items: [], createdAt: now, updatedAt: now };
         await model.changesets.put(pid, changeset);
         return { changeset };
       },
@@ -296,13 +309,16 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project, nodes } = await loadProject(pid);
         const conflicts = conflictsOf(cs, nodes);
         if (conflicts.length) throw Object.assign(new HttpError(409, `Changed since you started editing: ${conflicts.map((c) => c.nodeTitle).join(', ')}`), { conflicts: conflicts.map((c) => c.key) });
-        const changed = cs.items.map((it) => applyTo(findItem(nodes, it.key), it.after, now));
+        // Accepting changes the map. Items from a store are then unsaved: nothing reaches the store until a save (SYNC-07).
+        const store = stores.forProject(project);
+        const changed = cs.items.map((it) => {
+          const before = findItem(nodes, it.key);
+          return markEdited(before, applyTo(before, it.after, now), store);
+        });
         await model.nodes.put(pid, changed);
         const byId = new Map(changed.map((n) => [n.id, n]));
         await touchProject(project, nodes.map((n) => byId.get(n.id) ?? n));
-        // Items mapped from GitHub still have to get there; ones made here are done.
-        const waiting = cs.items.some((it) => it.key.startsWith('issue-'));
-        Object.assign(cs, { status: 'accepted', sync: waiting ? 'waiting' : 'synced', acceptedAt: now, updatedAt: now });
+        Object.assign(cs, { status: 'accepted', acceptedAt: now, updatedAt: now });
         await model.changesets.put(pid, cs);
         return { changeset: cs, nodes: changed };
       },
@@ -354,6 +370,56 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       },
     ],
 
+    // ---- Sync with each project's store (#3) ----
+
+    [
+      'POST',
+      /^\/api\/github\/webhook$/,
+      // GitHub signs every delivery with the App's webhook secret; anything unsigned or wrongly signed is refused.
+      async ({ headers, rawBody, body }) => {
+        if (!sync || !webhookSecret) throw new HttpError(404, 'Webhooks are not set up here');
+        if (!signedByGitHub(rawBody, headers['x-hub-signature-256'], await webhookSecret())) throw new HttpError(401, 'Bad signature');
+        const delivery = eventsFromWebhook(String(headers['x-github-event'] ?? ''), body);
+        return delivery ? sync.onEvents(delivery.key, delivery.events) : { handled: false };
+      },
+      { public: true },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/save$/,
+      // Save: every unsaved item (or just body.keys) goes to the project's store as it is now. It decides nothing (SYNC-08).
+      async ({ params: [pid], body }) => {
+        const { project } = await loadProject(pid);
+        if (!stores.forProject(project)) throw new ValidationError('this project lives only in Overworld: there is no store to save to');
+        const keys = Array.isArray(body?.keys) ? body.keys.filter((k) => typeof k === 'string' && KEY.test(k)) : null;
+        const result = await saveNow({ model, stores }, pid, { keys });
+        if (result.saved.length) onSaved?.(pid);
+        return result;
+      },
+    ],
+
+    [
+      'GET',
+      /^\/api\/projects\/([\w-]+)\/sync$/,
+      // What is still on its way to the store, and what the last reconciliations fixed.
+      async ({ params: [pid] }) => {
+        if (!(await model.projects.get(pid))) throw new HttpError(404, 'Project not found');
+        return { enabled: Boolean(sync), jobs: await model.jobs.list(pid), reports: await model.audits.list(pid) };
+      },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/sync$/,
+      // Retry now, without waiting for the booked retry.
+      async ({ params: [pid] }) => {
+        if (!sync) throw new HttpError(409, 'Sync is not set up here');
+        if (!(await model.projects.get(pid))) throw new HttpError(404, 'Project not found');
+        return sync.drain(pid, { now: true });
+      },
+    ],
+
     ['POST', /^\/api\/import\/json$/, async ({ body }) => saveNewProject(fromImport(body), 'json'), { status: 201 }],
 
     [
@@ -361,7 +427,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/import\/github$/,
       async ({ body }) => {
         const data = await importGitHub({ repo: body?.repo, token: body?.token || undefined }, fetchImpl);
-        return saveNewProject(data, 'github', { githubRepo: data.title });
+        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle });
+        await model.links.link(stores.forProject(saved.project).key, saved.project.id);
+        return saved;
       },
       { status: 201 },
     ],
@@ -369,27 +437,28 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     [
       'POST',
       /^\/api\/projects\/([\w-]+)\/refresh$/,
-      // Map the repository again, in place: same project, same link, today's code and issues.
+      // Map the project from its store again, in place: same project, same link, today's code and items.
       async ({ params: [pid], body }) => {
         const { project } = await loadProject(pid);
-        if (!project.githubRepo) throw new ValidationError('only projects imported from GitHub can be refreshed');
-        const data = await importGitHub({ repo: project.githubRepo, token: body?.token || undefined }, fetchImpl);
-        const kept = keepPendingEdits(data.nodes, await model.changesets.list(pid), new Date().toISOString());
+        const store = stores.forProject(project);
+        if (!store) throw new ValidationError('only projects imported from a store can be refreshed');
+        const data = await store.mapAgain({ token: body?.token || undefined });
+        const kept = keepPending(data.nodes, await model.nodes.pending(pid), store);
         await model.nodes.replace(pid, kept.nodes);
-        for (const cs of kept.changed) await model.changesets.put(pid, cs);
-        const updated = await touchProject(project, kept.nodes);
+        const updated = await touchProject(project, kept.nodes, data.project);
+        await model.links.link(store.key, pid);
         return { project: updated, nodes: kept.nodes };
       },
     ],
   ];
 
-  return async function handle({ method, path, headers = {}, body = null }) {
+  return async function handle({ method, path, headers = {}, body = null, rawBody = null }) {
     try {
       for (const [m, re, fn, opts = {}] of routes) {
         const match = path.match(re);
         if (!match || m !== method) continue;
         if (!opts.public) authorize(headers);
-        const result = await fn({ params: match.slice(1), body, headers });
+        const result = await fn({ params: match.slice(1), body, headers, rawBody });
         return { status: opts.status ?? 200, body: result };
       }
       const pathKnown = routes.some(([, re]) => re.test(path));

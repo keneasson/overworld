@@ -1,10 +1,9 @@
 // Changesets, applied to the map. A changeset holds, for each item it touches, the item as it was
 // when editing began (`base`) and as the editor left it (`after`), both as { title, markdown }.
 //
-// Accepting one changes the map now. Reaching GitHub is the sync worker's job (see the changesets
-// issue); until then an accepted changeset waits, and a refresh from GitHub keeps its edits on the
-// map rather than wiping them. If GitHub has moved on from `base`, that item is a conflict, and a
-// person decides; nothing is overwritten.
+// Accepting one changes the map now. Its items reach GitHub only when they are saved (api/sync.mjs).
+// If the map has moved on from `base` since editing began, that item is a conflict, and a person
+// decides; nothing is overwritten.
 
 import { editableOf, issueOf, itemKeyOf, splitNote } from '../shared/issue-shape.js';
 import { openQuestions } from './engine/lifecycle.mjs';
@@ -34,28 +33,4 @@ export function conflictsOf(changeset, nodes) {
     const node = findItem(nodes, it.key);
     return !node || (!same(editableOf(node), it.base) && !same(editableOf(node), it.after));
   });
-}
-
-/**
- * After a refresh from GitHub: put back the edits of accepted changesets that haven't reached GitHub.
- * @returns {{ nodes: object[], changed: object[] }} changed are the changesets whose items gained a conflict
- */
-export function keepPendingEdits(nodes, changesets, now) {
-  const byKey = new Map(nodes.map((n) => [itemKeyOf(n), n]));
-  const changed = [];
-  for (const cs of changesets) {
-    if (cs.status !== 'accepted' || cs.sync !== 'waiting') continue;
-    let touched = false;
-    for (const it of cs.items) {
-      const node = byKey.get(it.key);
-      const current = node && editableOf(node);
-      if (current && same(current, it.base)) byKey.set(it.key, applyTo(node, it.after, now));
-      else if (!current || !same(current, it.after)) {
-        if (!it.conflict) touched = true;
-        it.conflict = true;
-      }
-    }
-    if (touched) changed.push(cs);
-  }
-  return { nodes: nodes.map((n) => byKey.get(itemKeyOf(n)) ?? n), changed };
 }

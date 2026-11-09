@@ -42,6 +42,37 @@ const md = (s) => s.replace(/[[\]*_`]/g, '\\$&');
  * @param {object[]} input.issues    { number, title, body, state, stateReason, url, labels, milestone, assignees, type, parent, prs: [{ number, files }] }
  * @param {object[]} input.pulls     open pull requests { number, title, body }
  */
+/** The id of an issue's node on the map. */
+export const issueNodeId = (number) => `issue-${number}`;
+
+/**
+ * What an issue says about itself, as a node's fields: everything but where it sits, its kind and its links.
+ * A full mapping and a webhook about one issue both use it, so they agree.
+ * @param {string} opts.note the 📍 note on why it sits where it does, kept as the map last wrote it
+ * @param {string[]} opts.placement tags the placement gave it ('placed-by-words', 'unplaced')
+ */
+export function issueFields(i, { lifecycle, note, placement = [], kind }) {
+  const priority = i.labels.map((l) => l.match(/^p([0-3])\b/i)?.[1]).find(Boolean);
+  // Milestones are about when, not where: they become the due date and a tag.
+  const tags = [...new Set([...i.labels, ...(i.milestone ? [i.milestone.title] : [])].map((l) => l.toLowerCase().slice(0, 40)))];
+  tags.push(...placement);
+  const state = lifecycleOf(i, lifecycle);
+  if (state.unclear) tags.push('status-unclear');
+  if (kind === 'story') tags.push('new-feature');
+  return {
+    title: `#${i.number} ${i.title.replace(/\s+/g, ' ').trim()}`.slice(0, 200),
+    summary: firstLine(i.body),
+    body: `${i.body.slice(0, 19400)}\n\n---\n📍 ${note}${state.unclear ? ` Status unclear: ${state.unclear}.` : ''}`,
+    status: state.status,
+    definition: state.definition,
+    tags: tags.slice(0, 20),
+    assignee: i.assignees[0] ?? '',
+    due: i.milestone?.dueOn ? i.milestone.dueOn.slice(0, 10) : '',
+    priority: priority ? `P${priority}` : '',
+    url: i.url,
+  };
+}
+
 export function buildProject({ repo, paths = [], manifests = new Map(), specs = [], issues = [], pulls = [], now = new Date().toISOString(), makeId = newId }) {
   const branch = repo.default_branch ?? 'main';
   const arch = mapArchitecture({ paths, manifests, mentions: issues.map((i) => `${i.title}\n${i.body}`) });
@@ -131,7 +162,8 @@ export function buildProject({ repo, paths = [], manifests = new Map(), specs = 
   };
   const nodes = [];
   const regionId = new Map([...arch.regions.keys()].map((k) => [k, makeId()]));
-  const issueId = new Map(issues.map((i) => [i.number, makeId()]));
+  // An issue's node is named by its number, so it keeps its place and id through every refresh, and a webhook can find it in one read.
+  const issueId = new Map(issues.map((i) => [i.number, issueNodeId(i.number)]));
   let unchartedId = null;
   const uncharted = () => {
     if (!unchartedId) {
@@ -195,31 +227,15 @@ export function buildProject({ repo, paths = [], manifests = new Map(), specs = 
       if (!target || ref.number === i.number || ref.number === nest?.parent || nesting.get(ref.number)?.parent === i.number) continue;
       if (!links.some((l) => l.to === target)) links.push({ to: target, type: ref.type, label: '' });
     }
-    const priority = i.labels.map((l) => l.match(/^p([0-3])\b/i)?.[1]).find(Boolean);
-    // Milestones are about when, not where: they become the due date and a tag.
-    const tags = [...new Set([...i.labels, ...(i.milestone ? [i.milestone.title] : [])].map((l) => l.toLowerCase().slice(0, 40)))];
-    if (placed?.guess) tags.push('placed-by-words');
-    if (!nest && !placed?.key) tags.push('unplaced');
-    const state = lifecycleOf(i, lifecycle);
-    if (state.unclear) tags.push('status-unclear');
+    const placement = [...(placed?.guess ? ['placed-by-words'] : []), ...(!nest && !placed?.key ? ['unplaced'] : [])];
     const kind = kindFor(i, childCount(i.number) > 0, !nest);
-    if (kind === 'story') tags.push('new-feature');
     nodes.push({
       ...base,
       id: issueId.get(i.number),
       parentId,
       order: i.number,
       kind,
-      title: `#${i.number} ${i.title.replace(/\s+/g, ' ').trim()}`.slice(0, 200),
-      summary: firstLine(i.body),
-      body: `${i.body.slice(0, 19400)}\n\n---\n📍 ${note.replace(/\n/g, ' ').slice(0, 500)}${state.unclear ? ` Status unclear: ${state.unclear}.` : ''}`,
-      status: state.status,
-      definition: state.definition,
-      tags: tags.slice(0, 20),
-      assignee: i.assignees[0] ?? '',
-      due: i.milestone?.dueOn ? i.milestone.dueOn.slice(0, 10) : '',
-      priority: priority ? `P${priority}` : '',
-      url: i.url,
+      ...issueFields(i, { lifecycle, note: note.replace(/\n/g, ' ').slice(0, 500), placement, kind }),
       links: links.slice(0, 50),
     });
   }
@@ -324,5 +340,5 @@ export function buildProject({ repo, paths = [], manifests = new Map(), specs = 
     url: repo.html_url,
   });
 
-  return { title: repo.full_name, summary: nodes[0].summary, nodes, stats: { ...stats, regions: arch.regions.size, behaviours } };
+  return { title: repo.full_name, summary: nodes[0].summary, nodes, strictLifecycle: lifecycle.strict, stats: { ...stats, regions: arch.regions.size, behaviours } };
 }
