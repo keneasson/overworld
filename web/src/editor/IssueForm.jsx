@@ -162,12 +162,12 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, o
         const anchor = { section: name };
         const raw = shape.sections.find((s) => s.name === name)?.raw ?? '';
         const labelId = `${ids.section}-${name.replace(/\W/g, '')}`;
-        const fog = name === 'Open questions' && hasOpenQuestions(texts[name] ?? '');
+        const asking = name === 'Open questions' && hasOpenQuestions(texts[name] ?? '');
         return (
-          <section key={name} className={`shape-section${fog ? ' fog' : ''}`}>
+          <section key={name} className={`shape-section${asking ? ' asking' : ''}`}>
             <div className="section-head">
               <h4 id={labelId}>{name}</h4>
-              {fog && <span className="pill pill-fog">Needs a decision</span>}
+              {asking && <span className="pill pill-question">? Needs a decision</span>}
               {!SECTIONS.includes(name) && <span className="tag">Not in the shape</span>}
               <CommentButton label={name} count={unresolved(anchor)} open={thread === anchorKey(anchor)} onClick={() => toggle(anchor)} />
             </div>

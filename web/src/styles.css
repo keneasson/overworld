@@ -1597,9 +1597,13 @@ button.danger.armed {
   flex-direction: column;
   gap: 6px;
 }
-.shape-section.fog {
+.shape-section.asking {
   padding-left: 10px;
-  border-left: 3px solid #8b5cf6;
+  border-left: 3px solid #d97706;
+}
+.pill-question {
+  background: #fef3c7;
+  color: #92400e;
 }
 .section-head {
   display: flex;

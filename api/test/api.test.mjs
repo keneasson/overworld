@@ -181,7 +181,7 @@ test('maps a GitHub repository: code is the land, issues the work, specs the law
   assert.equal(pay2.status, 'planned');
   assert.deepEqual(pay2.links, [{ to: byTitle('#3 ').id, type: 'depends', label: '' }]);
   assert.equal(byTitle('PAY-01').status, 'done');
-  assert.equal(byTitle('PAY-03').definition, 'vague', 'a decision still needed is fog');
+  assert.notEqual(byTitle('PAY-03').definition, 'vague', 'a decision still needed is a question, not Fog');
   // Every node is valid as stored.
   for (const n of nodes) assert.doesNotThrow(() => sanitizeNode(n), n.title);
   assert.match(nodes[0].body, /6 pages|5 pages|4 pages/);
@@ -262,8 +262,8 @@ test('edits to several items collect into one changeset and are accepted togethe
   const four2 = after.find((n) => n.title.startsWith('#4 '));
   assert.match(four2.body, /never numbers/);
   assert.match(four2.body, /\n\n---\n📍 /, "the map's note stays");
-  assert.equal(four2.status, 'needs_decision', 'an open question puts it in the Fog');
-  assert.equal(four2.definition, 'vague');
+  assert.equal(four2.status, 'needs_decision', 'an open question needs a decision');
+  assert.notEqual(four2.definition, 'vague', 'a question is not Fog');
   assert.equal(after.find((n) => n.title.startsWith('#3 ')).title, '#3 Coupon field rejects valid codes');
   assert.equal(after.length, before.length);
   assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`)).status, 409, 'accepted once');

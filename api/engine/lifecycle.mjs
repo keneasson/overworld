@@ -1,7 +1,7 @@
 // The lifecycle: where an issue stands, read deterministically from GitHub (see CONTRIBUTING.md).
 //
 //   Draft           open, status:draft             -> idea
-//   Needs decision  open, status:needs-decision    -> needs_decision, in the Fog
+//   Needs decision  open, status:needs-decision    -> needs_decision (a question badge, not Fog)
 //   Ready           open, status:ready             -> ready
 //   In progress     open, status:in-progress       -> in_progress
 //   Done            closed as completed            -> done
@@ -9,6 +9,7 @@
 //
 // Evidence beats labels: an open "## Open questions" section means a decision is needed, and an
 // open pull request that closes the issue means it is in progress, whatever the label says.
+// A question is quick to answer, so it never puts work in the Fog; Fog is behaviour nobody knows yet.
 // Repositories that use no status labels keep the older reading of labels and assignees.
 
 const STATUS_LABEL = /^status:\s*(draft|needs[- ]decision|ready|in[- ]progress)$/i;
@@ -45,9 +46,9 @@ export function lifecycleOf(issue, { strict = false, inProgress = new Set() } = 
   }
   const labels = issue.labels.map((l) => l.match(STATUS_LABEL)?.[1].toLowerCase().replace(/\s/, '-')).filter(Boolean);
   const unclear = !strict ? '' : labels.length === 0 ? 'it has no status label' : labels.length > 1 ? `it has ${labels.length} status labels` : '';
-  if (openQuestions(issue.body)) return { status: 'needs_decision', definition: 'vague', unclear };
+  if (openQuestions(issue.body)) return { status: 'needs_decision', definition: 'auto', unclear };
   if (inProgress.has(issue.number)) return { status: 'in_progress', definition: 'auto', unclear };
-  if (labels.length === 1) return { status: FROM_LABEL[labels[0]], definition: labels[0] === 'needs-decision' ? 'vague' : 'auto', unclear };
+  if (labels.length === 1) return { status: FROM_LABEL[labels[0]], definition: 'auto', unclear };
   return { status: legacyStatus(issue), definition: 'auto', unclear };
 }
 

@@ -14,7 +14,7 @@ export { editableOf, itemKeyOf };
 export const findItem = (nodes, key) => nodes.find((n) => itemKeyOf(n) === key) ?? null;
 export const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
 
-/** The node with an item's edits applied. An open question in the text puts it in the Fog, as on GitHub. */
+/** The node with an item's edits applied. An open question in the text means it needs a decision, as on GitHub. */
 export function applyTo(node, after, now) {
   const issue = issueOf(node);
   const out = {
@@ -24,7 +24,7 @@ export function applyTo(node, after, now) {
     summary: firstLine(after.markdown),
     updatedAt: now,
   };
-  if (openQuestions(after.markdown)) Object.assign(out, { status: 'needs_decision', definition: 'vague' });
+  if (openQuestions(after.markdown)) out.status = 'needs_decision';
   return out;
 }
 
