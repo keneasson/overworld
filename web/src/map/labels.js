@@ -93,14 +93,62 @@ export function markersOf(n, live) {
 /** What a marker means, for the legend and for screen readers. */
 export const markerLabel = (m) => (m.type === 'fire' && m.on === 'code' ? CODE_FIRE_LABEL : MARKER_LABEL[m.type]);
 
+// ---------- one layer of detail per zoom step (MARK-10) ----------
+
 /**
- * What an item shows at screen size `s` (the square root of its area on screen, in pixels):
- * { symbol, fill, title, lines, badges }. `badges` are its markers: its own for an item, rolled up for a region.
- * Small items get one line of title and no markers.
+ * What an item shows as it grows on screen (`from` is its screen size in pixels, the square root of its
+ * area): first that something is there, then what kind of thing it is, then its name, then its markers.
+ * After that come its items, when its land splits into theirs (see namesAt in renderer.js).
+ * Nothing appears before it can be read; this table is the whole rule.
+ */
+export const LADDER = [
+  { stage: 'there', from: 14 },
+  { stage: 'kind', from: 28 },
+  { stage: 'name', from: 48 },
+  { stage: 'markers', from: 95 },
+];
+const reached = (s, stage) => s >= LADDER.find((l) => l.stage === stage).from;
+
+/**
+ * What an item shows at screen size `s`: { symbol, fill, title, lines, badges }. Below the 'kind' step the
+ * symbol is null (a dot says something is there); below 'name' the title is empty; below 'markers' it has none.
+ * `badges` are its markers: its own for an item, rolled up for a region. The project's card always shows everything.
  */
 export function labelFor(n, s, live) {
-  const roomy = n.depth === 0 || s >= 95;
-  return { symbol: n.kind, fill: statusColor(n), title: shortTitle(n), lines: roomy ? 2 : 1, badges: roomy ? markersOf(n, live) : [] };
+  const at = n.depth === 0 ? Infinity : s;
+  const named = reached(at, 'name'), marked = reached(at, 'markers');
+  return {
+    symbol: reached(at, 'kind') ? n.kind : null,
+    fill: statusColor(n),
+    title: named ? shortTitle(n) : '',
+    lines: marked ? 2 : named ? 1 : 0,
+    badges: marked ? markersOf(n, live) : [],
+  };
+}
+
+// ---------- how much a place holds (MARK-09) ----------
+
+const filesIn = (n) => Number((n.body ?? '').match(/\*\*Code here\*\* \((\d+) files?\)/)?.[1] ?? 0);
+const holdings = new WeakMap();
+/**
+ * What a place holds, counted from what the map knows: { items, behaviours, questions, files, bugs }.
+ * A region holds everything inside it, so zooming in shares its holdings out without changing the total.
+ */
+export function holdingsOf(n) {
+  if (holdings.has(n)) return holdings.get(n);
+  const h = { items: n.depth > 0 ? 1 : 0, behaviours: n.kind === 'behavior' ? 1 : 0, questions: openQuestionCount(n), files: filesIn(n), bugs: n.kind === 'bug' ? 1 : 0 };
+  for (const c of n.children) for (const [key, v] of Object.entries(holdingsOf(c))) h[key] += v;
+  holdings.set(n, h);
+  return h;
+}
+
+/**
+ * How many houses a place gets on the map: three per item, behaviour, open question or bug, and one per two
+ * files of code. A new idea is open country with a few houses; a busy feature is a town.
+ */
+export function housesOf(n) {
+  const h = holdingsOf(n);
+  return 3 * (h.items + h.behaviours + h.questions + h.bugs) + Math.ceil(h.files / 2);
 }
 
 /** Every symbol, fill, badge and marker this map uses, for the legend (SYM-04): nothing that isn't on it. */

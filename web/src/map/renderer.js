@@ -10,7 +10,7 @@
 import { hsl, polygonContains } from 'd3';
 import { isInside, pathOf } from '../model/tree.js';
 import { LIGHT_COLORS } from './lenses.js';
-import { labelFor, shortTitle } from './labels.js';
+import { LADDER, housesOf, labelFor, shortTitle } from './labels.js';
 import { drawSymbol } from './symbols.js';
 import { rectsOverlap, smoothstep } from './geometry.js';
 
@@ -27,10 +27,12 @@ export function thresholds(width, height) {
 
 /**
  * Which regions are named at this view (MARK-01), and how strongly (0 to 1):
- *   labels      a region shows its name (with its symbol and markers) while its own land shows;
+ *   labels      a region shows its label while its own land shows; what the label holds grows one step
+ *               at a time with its size on screen (LADDER in labels.js: there, kind, name, markers);
  *   watermarks  once its children's land fades in, its name passes to big faint capitals across them,
  *               so no level between the project card and the island goes unnamed.
- * The selected region is always named, whatever its size.
+ * The last step of the ladder is the items themselves (MARK-10): a region's label has gone before its
+ * children's labels begin, so the two never overlap. The selected region is always named, whatever its size.
  */
 export function namesAt(scene, view, { selectedId = null, T = thresholds(view.width, view.height) } = {}) {
   const { tree, geo } = scene;
@@ -45,14 +47,16 @@ export function namesAt(scene, view, { selectedId = null, T = thresholds(view.wi
     const s = g.size * k;
     const sub = n.children.length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
     // The project's own name is the card in the sea, so it stays until its land is well under way.
-    const handover = n.depth === 0 ? (n.children.length ? smoothstep(T.yld * 0.88, T.yld, s) : 0) : sub;
-    const own = alpha * (1 - handover) * smoothstep(38, 62, s);
+    const handover = n.depth === 0 ? (n.children.length ? smoothstep(T.yld * 0.88, T.yld, s) : 0) : smoothstep(0.35, 0.65, sub);
+    const there = LADDER[0].from;
+    const own = alpha * (1 - handover) * smoothstep(there, there + 8, s);
     if (own > 0.02) labels.push({ n, g, s, alpha: own });
-    if (n.depth > 0 && sub > 0.02) {
-      const wm = alpha * sub * (1 - smoothstep(T.yld * 1.7, T.yld * 2.8, s));
+    if (n.depth > 0 && handover > 0.02) {
+      const wm = alpha * handover * (1 - smoothstep(T.yld * 1.7, T.yld * 2.8, s));
       if (wm > 0.02) watermarks.push({ n, g, s, alpha: wm });
     }
-    if (sub > 0.01) for (const c of n.children) walk(c, sub);
+    // Its items come in once its own label has gone (the project's card is in the sea, so its land is named at once).
+    if (sub > 0.01) for (const c of n.children) walk(c, n.depth === 0 ? sub : smoothstep(0.65, 1, sub));
   };
   walk(tree.root, 1);
   const selected = selectedId && tree.byId.get(selectedId);
@@ -130,6 +134,59 @@ function hatch(ctx, color) {
     hatchCache.set(color, c);
   }
   return ctx.createPattern(hatchCache.get(color), 'repeat');
+}
+
+// ---------- houses: how much a place holds (MARK-09) ----------
+
+// A small seeded random, so a place's houses stand in the same spots every time it is drawn.
+function seeded(text) {
+  let h = 2166136261;
+  for (const ch of text) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return () => {
+    h = (h + 0x6d2b79f5) | 0;
+    let t = Math.imul(h ^ (h >>> 15), 1 | h);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const MAX_HOUSES = 300;
+const lots = new WeakMap();
+/**
+ * Where a place's houses stand, in world coordinates: gathered round its centre like a town, the town
+ * spreading as it grows, and never in the sea or a neighbour's land.
+ */
+function lotsFor(n, g) {
+  const want = Math.min(MAX_HOUSES, housesOf(n));
+  const key = `${want}`;
+  const hit = lots.get(g);
+  if (hit?.key === key) return hit.points;
+  const rand = seeded(n.id);
+  const [cx, cy] = g.label;
+  const spread = g.labelR * Math.min(0.9, 0.3 + Math.sqrt(want) / 14);
+  const points = [];
+  for (let tries = 0; points.length < want && tries < want * 40; tries++) {
+    // Box–Muller: most houses near the centre, a few out in the country.
+    const r = spread * Math.sqrt(-2 * Math.log(1 - rand())) * 0.6, a = rand() * 2 * Math.PI;
+    const p = [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+    if (polygonContains(g.poly, p)) points.push(p);
+  }
+  lots.set(g, { key, points });
+  return points;
+}
+
+/**
+ * Busy places look like towns before anything in them can be read: one small house per thing the place holds.
+ * Faint, under the fog and every label, so symbols and markers stay on top.
+ */
+function drawHouses(ctx, towns, k, dark) {
+  ctx.fillStyle = dark ? '#c8d2f0' : '#4a4740';
+  for (const { n, g, w } of towns) {
+    const size = 3 / k;
+    ctx.globalAlpha = 0.36 * w;
+    for (const [hx, hy] of lotsFor(n, g)) ctx.fillRect(hx - size / 2, hy - size / 2, size, size);
+  }
+  ctx.globalAlpha = 1;
 }
 
 // ---------- fog ----------
@@ -255,7 +312,8 @@ function labelBlock(ctx, c, { k, theme, W, live }) {
   const { n, s, g } = c;
   const label = labelFor(n, s, live);
   const root = n.depth === 0;
-  const r = root ? 18 : s >= 330 ? 15 : s >= 150 ? 13 : 11;
+  // A dot says something is there; its symbol grows as there is room for one (MARK-10).
+  const r = root ? 18 : !label.symbol ? 4.5 : !label.title ? 9 : s >= 330 ? 15 : s >= 150 ? 13 : 11;
   const size = root ? Math.min(26, Math.max(19, s / 26)) : s >= 330 ? Math.min(17, Math.max(14, s / 26)) : s >= 150 ? 13.5 : s >= 95 ? 12 : 11;
   const font = `${root || s >= 150 ? 700 : 600} ${size}px ${FONT}`;
   const maxW = root ? Math.min(420, W * 0.7) : Math.max(60, Math.min(s >= 330 ? 260 : 190, g.labelR * k * 1.8));
@@ -266,7 +324,7 @@ function labelBlock(ctx, c, { k, theme, W, live }) {
   const badges = label.badges.map((b) => ({ ...b, w: 16 + (b.on ? 12 : 0) + (b.count > 1 ? ctx.measureText(String(b.count)).width + 3 : 0) + 6 }));
   const badgesW = badges.reduce((sum, b) => sum + b.w + 3, 0);
   const lh = Math.round(size * 1.25);
-  const head = 2 * r + 4;
+  const head = 2 * r + (lines.length ? 4 : 2);
   // The symbol stays centred over the title; badges hang off its right side, balanced by empty room on the left.
   const w = Math.max(titleW, 2 * r + 2 * (badgesW ? badgesW + 4 : 0)) + (root ? 32 : 0);
   const h = head + lines.length * lh + (root ? 20 : 0);
@@ -299,10 +357,10 @@ function drawBlock(ctx, block, rect, alpha, theme) {
   ctx.fillStyle = label.fill;
   ctx.fill();
   ctx.restore();
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = label.symbol ? 1.5 : 1.2;
   ctx.strokeStyle = theme.dark ? 'rgba(255,255,255,0.7)' : '#ffffff';
   ctx.stroke();
-  drawSymbol(ctx, label.symbol, cx, cy, r * 1.15, inkOn(label.fill));
+  if (label.symbol) drawSymbol(ctx, label.symbol, cx, cy, r * 1.15, inkOn(label.fill));
 
   let bx = cx + r + 4;
   const hits = [];
@@ -425,6 +483,7 @@ export function drawMap(ctx, scene, view, opts) {
   const drawn = [];
   let hatchPattern = null;
   const fogged = [];
+  const towns = [];
   const walk = (n, alpha) => {
     const g = geo.get(n.id);
     if (!inView(g.bbox)) return;
@@ -443,7 +502,9 @@ export function drawMap(ctx, scene, view, opts) {
       drawn.push({ n, g, alpha });
     }
     const sub = subOf(n, s);
-    // Fog belongs to what you can see: a region hands its cloud to its children as they fade in.
+    // Houses and fog belong to what you can see: a region hands them to its children as they fade in.
+    const here = alpha > 0.01 ? alpha * (1 - sub) : 0;
+    if (here > 0.02 && !thumbnail) towns.push({ n, g, w: here });
     const thick = lens.fog && alpha > 0.01 ? alpha * (1 - sub) * lens.fog(n) : 0;
     if (thick > 0.02) fogged.push({ g, s, w: thick });
     if (sub > 0.01) for (const c of n.children) walk(c, sub);
@@ -463,6 +524,7 @@ export function drawMap(ctx, scene, view, opts) {
     ctx.stroke(pathFor(g));
   }
   ctx.setLineDash([]);
+  if (towns.length) drawHouses(ctx, towns, k, theme.dark);
   if (fogged.length) drawFog(ctx, fogged, k, time, theme.dark);
 
   const hovered = hoverId && tree.byId.get(hoverId);
