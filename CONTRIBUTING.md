@@ -3,6 +3,38 @@
 Contributions are welcome, from people and from people working with coding agents. The bar is
 the same either way: craft, not slop. Read [VISION.md](VISION.md) first.
 
+## Standing decisions
+
+The maintainer's standing decisions, for people and agents alike. Each is a directive; the reasons
+are in the linked issue. Dated 2026-11-08 unless marked otherwise. Until Overworld can hold them
+itself (`remember` and `prime`, #4 MCP-08 and MCP-10), they live here ([AGENT-07](https://github.com/keneasson/overworld/issues/34)).
+
+**Product**
+
+1. **Prime Mandate.** Overworld is the interface between people and agents for defining behaviour, refining requirements and giving agents clear prompts. Judge every feature by whether it moves that conversation forward. (2026-11-07, [VISION.md](VISION.md))
+2. The map uses symbols, badges and roads. Long text goes in the place card, not on the canvas. ([#9](https://github.com/keneasson/overworld/issues/9), [#10](https://github.com/keneasson/overworld/issues/10))
+3. Zoom is the vehicle for refinement: select part of the map and say "let's refine this". ([#13](https://github.com/keneasson/overworld/issues/13) ADOPT-01)
+4. Behaviours are a human-readable version of the code: nothing less, nothing more. ([#18](https://github.com/keneasson/overworld/issues/18))
+5. Behaviours have no lifecycle states. The spec works like code: the spec is main, a refinement is a pull request, and adoption is the merge. State has two axes, derived from the facts: agreement (needs improvement, ready for adoption, adopted) and building (new, being coded, coded). ([#32](https://github.com/keneasson/overworld/issues/32), [#13](https://github.com/keneasson/overworld/issues/13))
+6. A person's yes, after working a behaviour through with an agent, adopts it. No second person is needed. Agents propose and revise; they never adopt alone. (2026-11-07, [#13](https://github.com/keneasson/overworld/issues/13))
+7. Terrain:
+   - Fog is behaviour nobody knows yet, written in *Behaviours* as `AREA-NN Not worked out yet: …`. ([#32](https://github.com/keneasson/overworld/issues/32) STATE-04)
+   - An open question is a "?" badge, never Fog. ([#10](https://github.com/keneasson/overworld/issues/10) SYM-03)
+   - Dead code is desert ([#22](https://github.com/keneasson/overworld/issues/22)); technical debt is wasteland ([#24](https://github.com/keneasson/overworld/issues/24)).
+   - "Out of scope" that still needs working out is Fog in disguise: move it into *Behaviours*.
+8. Overworld is where people and agents collaborate. GitHub is the permanent store, and it must still read as an ordinary tracker. A save is just a save: clicked or triggered, it decides nothing, and it writes each item's state in the store's own terms. ([#3](https://github.com/keneasson/overworld/issues/3) SYNC-07 to SYNC-11)
+9. Everything that saves goes through the store API: GitHub first, Jira later. ([#3](https://github.com/keneasson/overworld/issues/3) SYNC-14)
+10. Overworld is multi-tenant, sold per GitHub account and priced by the size of its projects in GB. Users bring their own AI tokens. Auth is tokens now, OAuth later. ([#4](https://github.com/keneasson/overworld/issues/4) MCP-07)
+11. The deterministic mapper stays free of AI and of paid dependencies. AI reading is a separate, metered feature. ([CLAUDE.md](CLAUDE.md))
+12. The Fog lens is a favourite. Keep it working. ([CLAUDE.md](CLAUDE.md))
+
+**Working rules**
+
+13. Test behaviour, never mechanics. No behaviour, no test. Keep the suite small and fast. ([#19](https://github.com/keneasson/overworld/issues/19))
+14. Name each test by its behaviour ID plus a short statement. A behaviour and its tests move together in one pull request. IDs never change and are never reused. ([#19](https://github.com/keneasson/overworld/issues/19), [#13](https://github.com/keneasson/overworld/issues/13) ADOPT-11)
+15. Handoffs between agents go in comments on the issue, not in chat between sessions, so the next agent finds them. ([#34](https://github.com/keneasson/overworld/issues/34) AGENT-03)
+16. A question from a peer is not a work order. Only the maintainer's own words approve. ([#34](https://github.com/keneasson/overworld/issues/34) AGENT-10)
+
 ## Issues have a strict shape
 
 Every issue uses this structure. It comes from the issue template, and agents rely on it:
