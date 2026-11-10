@@ -41,7 +41,8 @@ the AWS account and the repository. Run them from `Overworld/`, where `.conf/` l
 
 **1. AWS: the bootstrap stack.** If the account already has GitHub's OIDC provider
 (`aws iam list-open-id-connect-providers`), pass `CreateOidcProvider=false`. Leave `BudgetEmail`
-empty to skip the budget alert.
+empty to skip the budget alert. If `gh api repos/keneasson/overworld/actions/oidc/customization/sub` shows
+`use_immutable_subject: true`, pass the part of `sub_claim_prefix` after `repo:` as `GitHubRepoIds`.
 
 ```sh
 aws cloudformation deploy --region ca-central-1 \
@@ -49,7 +50,8 @@ aws cloudformation deploy --region ca-central-1 \
   --template-file infra/ci-bootstrap.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --tags app=projectmap \
-  --parameter-overrides CreateOidcProvider=true BudgetEmail=<your email> BudgetUsd=5
+  --parameter-overrides CreateOidcProvider=true BudgetEmail=<your email> BudgetUsd=5 \
+    GitHubRepoIds=<owner@id/repo@id, if the repository uses immutable OIDC subjects>
 ```
 
 **2. GitHub: the variables, from the stack's outputs.**

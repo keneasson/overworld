@@ -8,6 +8,10 @@ Parameters:
   GitHubRepo:
     Type: String
     Default: keneasson/overworld
+  GitHubRepoIds:
+    Type: String
+    Default: ''
+    Description: The repository as GitHub's immutable OIDC subjects name it (owner@id/repo@id), for repositories that use immutable subjects. Read it with gh api repos/<owner>/<repo>/actions/oidc/customization/sub. Empty if the repository uses plain names.
   CreateOidcProvider:
     Type: String
     Default: 'true'
@@ -24,6 +28,7 @@ Parameters:
 Conditions:
   MakeProvider: !Equals [!Ref CreateOidcProvider, 'true']
   HasBudget: !Not [!Equals [!Ref BudgetEmail, '']]
+  HasRepoIds: !Not [!Equals [!Ref GitHubRepoIds, '']]
 
 Resources:
   GitHubOidc:
@@ -108,6 +113,10 @@ Resources:
                   - !Sub repo:${GitHubRepo}:environment:production
                   - !Sub repo:${GitHubRepo}:environment:preview
                   - !Sub repo:${GitHubRepo}:ref:refs/heads/main
+                  # GitHub's immutable subjects name the repository by id, so a rename can't take over the role.
+                  - !If [HasRepoIds, !Sub 'repo:${GitHubRepoIds}:environment:production', !Ref AWS::NoValue]
+                  - !If [HasRepoIds, !Sub 'repo:${GitHubRepoIds}:environment:preview', !Ref AWS::NoValue]
+                  - !If [HasRepoIds, !Sub 'repo:${GitHubRepoIds}:ref:refs/heads/main', !Ref AWS::NoValue]
       Policies:
         - PolicyName: deploy-projectmap-stacks
           PolicyDocument:
