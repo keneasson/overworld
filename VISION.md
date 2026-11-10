@@ -4,6 +4,12 @@
 like. It starts with behaviours and requirements that are clearly expressed, and with a
 constant dialogue between the people and the agents building the product.
 
+## Prime Mandate
+
+Overworld is a communication interface between human and agent to define the behaviour of the
+application, refine business requirements, and feed clear prompts to agents to build the issues,
+tasks, code, documentation and tests. (The maintainer, 2026-11-07.)
+
 ## A product is chaos, defined
 
 A product is never finished. It evolves, throws out the old and builds the new. Facebook
