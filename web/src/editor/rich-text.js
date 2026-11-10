@@ -5,8 +5,8 @@
 import StarterKit from '@tiptap/starter-kit';
 import { MarkdownManager } from '@tiptap/markdown';
 
-// "## " starts a new section of the issue, so inside one the biggest heading is "### ".
-export const EXTENSIONS = [StarterKit.configure({ heading: { levels: [3, 4] }, link: { openOnClick: false, autolink: true } })];
+// "## " starts a section of the issue; "### " and smaller are headings inside one.
+export const EXTENSIONS = [StarterKit.configure({ heading: { levels: [2, 3, 4] }, link: { openOnClick: false, autolink: true } })];
 
 let manager = null;
 const md = () => (manager ??= new MarkdownManager({ extensions: EXTENSIONS }));

@@ -76,9 +76,11 @@ Issues follow a strict shape (see [CONTRIBUTING.md](CONTRIBUTING.md)): *Why*, *B
 *Acceptance*, *Out of scope* and *Open questions*. Choose **Edit** on an issue, or **Edit area**
 on anything with issues inside it, to open them side by side:
 
-- **Its own field per section.** Each section is a rich-text field. Behaviours are rows of ID,
-  *Given*, *When* and *Then*, and a new row gets the next free ID in the area. Sections you
-  don't touch are saved character for character, so the markdown on GitHub stays as it was.
+- **One document per item.** The title, then each section as a heading, edited like any document.
+  Select text for the formatting menu. In *Behaviours*, Enter at the end of one starts the next with
+  the next free ID in the area, and *Given*, *when* and *then* are picked out as you write. A
+  heading outside the shape or a behaviour without an ID is marked where it is, never blocked.
+  Sections you don't touch are saved character for character, so the markdown on GitHub stays as it was.
 - **One changeset.** Edits to every open item collect into the area's changeset, saved as you
   type. Accept it and the whole map changes at once; discard it and nothing does. If an item
   changed on GitHub since you started, accepting stops and says which one; nothing is
@@ -86,7 +88,7 @@ on anything with issues inside it, to open them side by side:
 - **Waiting for GitHub.** Writing to GitHub needs the GitHub App and the sync worker (a separate
   issue). Until then, accepted changesets wait in Overworld, and a refresh from GitHub keeps
   their edits on the map.
-- **Anchored comments.** Comment on one section or one behaviour (by its ID). The comment stays
+- **Anchored comments.** Comment on one section or one behaviour (by its ID), from the 💬 beside it. The comment stays
   with it when items are reordered or the map is refreshed, and shows in the item's details.
 
 On a phone, the editor shows one item at a time with a picker to switch between them.

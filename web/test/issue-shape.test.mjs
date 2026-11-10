@@ -15,6 +15,7 @@ import {
   writeIssue,
 } from '@shared/issue-shape.js';
 import { throughEditor } from '../src/editor/rich-text.js';
+import { fromDocument, toDocument } from '../src/editor/document.js';
 
 // Overworld's own roadmap, as GitHub returned it: real, well-formed issues.
 const ISSUES = JSON.parse(readFileSync(new URL('./fixtures/overworld-issues.json', import.meta.url)));
@@ -72,6 +73,19 @@ test('EDIT-01 a missing section that gains content goes where the shape puts it'
   assert.equal(out, TEMPLATE);
   const tail = writeIssue(parseIssue('## Why\n\nA reason.\n'), { 'Open questions': '- Which one?' });
   assert.equal(tail, '## Why\n\nA reason.\n\n## Open questions\n\n- Which one?\n');
+});
+
+test('EDIT-01 an issue opens as one document, and an edit in it changes only that section', () => {
+  for (const issue of [...ISSUES, { number: 0, body: TEMPLATE }]) {
+    const opened = throughEditor(toDocument(issue.body));
+    assert.equal(fromDocument(issue.body, opened, throughEditor(opened)), issue.body, `#${issue.number} is unchanged when nothing is edited`);
+    const edited = opened.replace('## Why\n\n', '## Why\n\nEDITED. ');
+    assert.equal(fromDocument(issue.body, opened, edited).replace('EDITED. ', ''), issue.body, `#${issue.number} keeps every other section exactly`);
+  }
+  const missing = TEMPLATE.replace('## Out of scope\n\n- Live cursors.\n\n', '');
+  const opened = throughEditor(toDocument(missing));
+  assert.ok(opened.includes('## Out of scope'), 'a missing section is there to be filled in');
+  assert.equal(fromDocument(missing, opened, opened.replace('## Out of scope', '## Out of scope\n\n- Live cursors.')), TEMPLATE);
 });
 
 test('EDIT-01 template hints are not content, and go once the section is written', () => {
