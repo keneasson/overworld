@@ -1,19 +1,19 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { select, zoom as d3zoom, zoomIdentity } from 'd3';
-import { drawMap, hitTest, nodeView, overviewView, thresholds, fitScale } from './renderer.js';
+import { drawMap, hitTest, markerAt, nodeView, overviewView, thresholds, fitScale } from './renderer.js';
 
 /**
  * The zoomable canvas. Pan/zoom state lives here (not in React) so frames are cheap;
  * the parent hears about focus changes and selection through callbacks.
  */
 export const MapView = forwardRef(function MapView(
-  { scene, lens, showLinks, selectedId, insets, initialView, onSelect, onFocus, onView },
+  { scene, lens, showLinks, selectedId, insets, initialView, onSelect, onMarker, onFocus, onView },
   ref,
 ) {
   const canvasRef = useRef(null);
   const st = useRef({ transform: zoomIdentity, w: 0, h: 0, dpr: 1, hoverId: null, info: null, frame: 0, ready: false });
   const props = useRef({});
-  props.current = { scene, lens, showLinks, selectedId, insets, onSelect, onFocus, onView };
+  props.current = { scene, lens, showLinks, selectedId, insets, onSelect, onMarker, onFocus, onView };
   const zoomRef = useRef(null);
 
   const view = () => {
@@ -162,7 +162,10 @@ export const MapView = forwardRef(function MapView(
       const sc = props.current.scene;
       if (!sc || e.defaultPrevented) return;
       const [px, py] = pointer(e);
-      props.current.onSelect?.(hitTest(sc, view(), s.info, px, py));
+      // A marker goes straight to what it counts (MARK-05); anywhere else selects what is under the pointer.
+      const marker = markerAt(s.info, px, py);
+      if (marker && props.current.onMarker) props.current.onMarker(marker);
+      else props.current.onSelect?.(hitTest(sc, view(), s.info, px, py));
     };
     const onKey = (e) => {
       const step = 80;

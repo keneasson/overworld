@@ -210,6 +210,22 @@ export function Legend({ lens, tree }) {
               </li>
             ))}
           </ul>
+          {used.markers.length > 0 && (
+            <>
+              <h4>Markers</h4>
+              <ul className="legend-symbols">
+                {used.markers.map((it) => (
+                  <li key={`${it.symbol}${it.on ?? ''}`}>
+                    <span className={`badge-chip ${it.symbol}${it.on ? ' wide' : ''}`}>
+                      {it.on && <MapSymbol name={it.on} size={11} />}
+                      <MapSymbol name={it.symbol} size={11} />
+                    </span>
+                    {it.label}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
           {used.badges.length > 0 && (
             <>
               <h4>Badges</h4>

@@ -3,7 +3,7 @@
 // symbol by our own name ('bug', 'pull', …) and gets an SVG path for a 24×24 box, which the canvas
 // draws with Path2D and the legend draws as an <svg>.
 
-import { BookOpen, Bot, Bug, CircleHelp, Flag, GitPullRequest, Landmark, Map as MapIcon, MessageCircle, Puzzle, ScrollText, SquareCheck } from 'lucide';
+import { BookOpen, Bot, Bug, CircleHelp, Cloud, CodeXml, Flag, Flame, GitPullRequest, Landmark, Map as MapIcon, MessageCircle, Puzzle, ScrollText, SquareCheck } from 'lucide';
 
 const SOURCES = {
   // What kind of work an item is.
@@ -20,6 +20,10 @@ const SOURCES = {
   agent: Bot,
   comment: MessageCircle,
   question: CircleHelp,
+  // Markers: what a place holds (#46).
+  fire: Flame,
+  fog: Cloud,
+  code: CodeXml,
 };
 
 export const SYMBOL_NAMES = Object.keys(SOURCES);
