@@ -11,7 +11,7 @@ itself (`remember` and `prime`, #4 MCP-08 and MCP-10), they live here ([AGENT-07
 
 **Product**
 
-1. **Prime Mandate.** Overworld is the interface between people and agents for defining behaviour, refining requirements and giving agents clear prompts. Judge every feature by whether it moves that conversation forward. (2026-11-07, [VISION.md](VISION.md))
+1. **Prime Mandate.** Overworld is the interface between people and agents for defining behaviour, refining requirements and giving agents clear prompts. Judge every feature by whether it moves that conversation forward. (2026-11-07, [VISION.md](VISION.md#prime-mandate))
 2. The map uses symbols, badges and roads. Long text goes in the place card, not on the canvas. ([#9](https://github.com/keneasson/overworld/issues/9), [#10](https://github.com/keneasson/overworld/issues/10))
 3. Zoom is the vehicle for refinement: select part of the map and say "let's refine this". ([#13](https://github.com/keneasson/overworld/issues/13) ADOPT-01)
 4. Behaviours are a human-readable version of the code: nothing less, nothing more. ([#18](https://github.com/keneasson/overworld/issues/18))
@@ -24,8 +24,8 @@ itself (`remember` and `prime`, #4 MCP-08 and MCP-10), they live here ([AGENT-07
    - "Out of scope" that still needs working out is Fog in disguise: move it into *Behaviours*.
 8. Overworld is where people and agents collaborate. GitHub is the permanent store, and it must still read as an ordinary tracker. A save is just a save: clicked or triggered, it decides nothing, and it writes each item's state in the store's own terms. ([#3](https://github.com/keneasson/overworld/issues/3) SYNC-07 to SYNC-11)
 9. Everything that saves goes through the store API: GitHub first, Jira later. ([#3](https://github.com/keneasson/overworld/issues/3) SYNC-14)
-10. Overworld is multi-tenant, sold per GitHub account and priced by the size of its projects in GB. Users bring their own AI tokens. Auth is tokens now, OAuth later. ([#4](https://github.com/keneasson/overworld/issues/4) MCP-07)
-11. The deterministic mapper stays free of AI and of paid dependencies. AI reading is a separate, metered feature. ([CLAUDE.md](CLAUDE.md))
+10. Overworld is multi-tenant, sold per GitHub account and priced by the size of its projects in GB. Users bring their own AI tokens. (Maintainer, 2026-11-08; no issue yet.) Auth is tokens now, OAuth later. ([#4](https://github.com/keneasson/overworld/issues/4) MCP-07)
+11. The deterministic mapper uses no AI. AI reading is a separate feature. ([CLAUDE.md](CLAUDE.md))
 12. The Fog lens is a favourite. Keep it working. ([CLAUDE.md](CLAUDE.md))
 
 **Working rules**
@@ -55,6 +55,8 @@ this deterministically; see `api/engine/lifecycle.mjs`.
 
 ## Lifecycle
 
+Being replaced by [#32](https://github.com/keneasson/overworld/issues/32); until it's decided, the status labels below still apply.
+
 Every open issue carries exactly one `status:` label.
 
 | State | On GitHub | Who moves it |
@@ -75,7 +77,7 @@ issue's open questions and move the issue to `status:needs-decision`. Don't gues
 - Name the behaviour IDs the change satisfies, and the tests that prove them.
 - Every test proves a behaviour, and is named by its ID plus a short, clear statement:
   `test('EDIT-01 each section opens as its own field')`. The issue holds the full behaviour.
-  A test that names no behaviour is given one (proposed in its issue, then ratified) or deleted.
+  A test that names no behaviour is given one (proposed in its issue, then adopted) or deleted.
 - Test what the product does, never how it does it, so a refactor that keeps the behaviour keeps
   the test passing. If there's no behaviour to prove, there's no test.
 - A behaviour and its tests change in the same pull request, and the ID never changes, even if the
