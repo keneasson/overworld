@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { demoProject } from '../../api/seed.mjs';
 import { buildTree } from '../src/model/tree.js';
-import { labelFor, markersOf, symbolsInUse } from '../src/map/labels.js';
+import { LADDER, holdingsOf, housesOf, labelFor, markersOf, symbolsInUse } from '../src/map/labels.js';
 import { buildScene } from '../src/map/scene.js';
 import { fitScale, hitTest, markerAt, namesAt, thresholds } from '../src/map/renderer.js';
 
@@ -120,4 +120,65 @@ test('MARK-05 choosing a marker goes straight to the item it stands for', () => 
   assert.equal(hitTest(scene, view, info, 230, 110), target, 'the pointer lands on the item, not the region');
   assert.equal(markerAt(info, 150, 140), null, 'beside the marker is the region itself');
   assert.equal(hitTest(scene, view, info, 150, 140), region.id);
+});
+
+test('MARK-09 how much a place holds shows as density: a busy feature is a town, a new idea is open country', () => {
+  const asks = (id, parentId, extra) => item(id, parentId, { body: `${CLEAR.body}\n\n## Open questions\n- One?\n- Two?`, ...extra });
+  const tree = buildTree([
+    root,
+    item('idea', 'root', { kind: 'feature' }),
+    item('busy', 'root', { kind: 'feature', body: '**Code here** (40 files):\n\n- [a.js](https://github.com/o/r/blob/main/a.js)' }),
+    asks('b1', 'busy'),
+    asks('b2', 'busy'),
+    item('b3', 'busy', { kind: 'bug', status: 'in_progress' }),
+    item('b4', 'busy', { kind: 'behavior' }),
+    item('b5', 'busy', { kind: 'behavior' }),
+  ]);
+  const idea = tree.byId.get('idea'), busy = tree.byId.get('busy');
+  assert.deepEqual(holdingsOf(busy), { items: 6, behaviours: 2, questions: 4, files: 40, bugs: 1 }, 'counted from what the map knows, code files included');
+  assert.ok(housesOf(busy) >= 5 * housesOf(idea), `a town (${housesOf(busy)} houses) against open country (${housesOf(idea)})`);
+  assert.ok(housesOf(idea) > 0, 'something is there');
+  const quiet = buildTree([root, item('q', 'root')]).byId.get('q');
+  const asked = buildTree([root, asks('q', 'root')]).byId.get('q');
+  assert.ok(housesOf(asked) > housesOf(quiet), 'open questions add to a place');
+  // Zooming in shares a place's houses out among what is inside it; the town doesn't grow or shrink.
+  const own = housesOf(buildTree([root, { ...item('busy', 'root', { kind: 'feature' }), body: '**Code here** (40 files):' }]).byId.get('busy'));
+  assert.equal(housesOf(busy), own + busy.children.reduce((sum, c) => sum + housesOf(c), 0));
+  assert.equal(housesOf(tree.root), housesOf(idea) + housesOf(busy), 'the whole map holds what its places hold');
+});
+
+test('MARK-10 zooming in adds one layer of detail at a time: there, kind, name, markers, then the items', () => {
+  const tree = buildTree([root, item('epic', 'root'), item('asks', 'epic', { body: `${CLEAR.body}\n\n## Open questions\n- Why?` })]);
+  const n = tree.byId.get('asks');
+  const layers = (s) => {
+    const l = labelFor(n, s);
+    return [s >= LADDER[0].from, Boolean(l.symbol), Boolean(l.title), l.badges.length > 0];
+  };
+  let seen = 0;
+  for (let s = 1; s <= 600; s++) {
+    const shown = layers(s);
+    const count = shown.filter(Boolean).length;
+    assert.ok(count === seen || count === seen + 1, `one layer at a time (size ${s})`);
+    assert.deepEqual(shown, shown.map((_, i) => i < count), `in order: there, kind, name, markers (size ${s})`);
+    seen = count;
+  }
+  assert.equal(seen, 4);
+
+  // The last layer is the items: a region's label is gone before its items' labels begin, so they never stack.
+  const scene = buildScene(demoProject().nodes, 'demo', null, 'organic');
+  const W = 1200, H = 800;
+  const k0 = fitScale(W, H, scene.world) * 0.8;
+  const { cx, cy } = scene.world;
+  let handovers = 0;
+  for (let k = k0; k < k0 * 40; k *= 1.08) {
+    const { labels } = namesAt(scene, { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H });
+    const shown = new Set(labels.map((l) => l.n.id));
+    for (const l of labels) {
+      if (!l.n.depth) continue;
+      const stacked = l.n.children.filter((c) => shown.has(c.id));
+      assert.deepEqual(stacked.map((c) => c.title), [], `${l.n.title} and its items are never labelled together (zoom ${k.toFixed(2)})`);
+      if (l.n.children.length && l.alpha < 0.9) handovers++;
+    }
+  }
+  assert.ok(handovers > 0, 'regions do hand over as the zoom passes them');
 });

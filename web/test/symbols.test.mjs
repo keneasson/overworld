@@ -22,8 +22,9 @@ test('SYM-01 SYM-06 at every zoom an item shows at most its symbol, short title 
     for (const s of SIZES) {
       const label = labelFor(n, s);
       assert.deepEqual(Object.keys(label).sort(), ['badges', 'fill', 'lines', 'symbol', 'title']);
-      assert.equal(label.symbol, n.kind);
-      assert.ok(n.title.endsWith(label.title) && label.title.length, 'the title, without its issue number');
+      // Small items hold back their symbol and title until they can be read (MARK-10).
+      assert.ok(label.symbol === n.kind || label.symbol === null);
+      assert.ok(n.title.endsWith(label.title) && (label.title.length || s < 95), 'the title, without its issue number');
       assert.ok(label.lines <= 2);
       assert.ok(!JSON.stringify(label).includes(n.summary || '\u0000'), 'the summary is for the place card');
     }
