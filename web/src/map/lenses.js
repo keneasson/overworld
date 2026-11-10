@@ -94,6 +94,8 @@ const OWNER_COLORS = ['#a9cdf5', '#f7c59f', '#b6e0b0', '#e9b6e3', '#f5e19c', '#a
 const pct = (v) => `${Math.round(v * 100)}%`;
 // How charted a region is: its own definition for leaves, the share of clear items (amplified) for containers.
 const charted = (n) => (n.children.length ? Math.max(0, 1 - (1.8 * n.stats.poorlyDefined) / n.stats.items) : Math.min(1, n.stats.def));
+/** How thick the fog over an item is, 0 to 1: full over uncharted work, none once it is mostly charted. */
+export const fogOver = (n) => (n.stats.vague ? 1 : Math.min(1, Math.max(0, (1 - charted(n)) * 1.5 - 0.15)));
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function childSummary(n) {
@@ -177,7 +179,7 @@ export const LENSES = [
     blurb: 'Uncharted territory: items missing a summary, details, acceptance criteria or an estimate.',
     theme: LIGHT,
     fill: (n) => fog(charted(n)),
-    hatch: (n) => n.stats.vague,
+    fog: fogOver,
     stat: (n) =>
       n.stats.vague
         ? `Uncharted · ${pct(n.stats.def)} defined`
@@ -190,7 +192,7 @@ export const LENSES = [
     legend: () => [
       { color: fog(1), label: 'Well defined' },
       { color: fog(0.55), label: 'Partly defined' },
-      { color: fog(0), label: 'Uncharted', hatch: true },
+      { color: fog(0), label: 'Uncharted, under fog', fog: true },
     ],
   },
   {

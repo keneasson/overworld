@@ -1080,6 +1080,9 @@ button.danger.armed {
   border-radius: 50%;
   box-shadow: 0 0 0 1.5px #fff, 0 0 0 2.5px rgba(0, 0, 0, 0.15);
 }
+.swatch.fog {
+  background-image: radial-gradient(circle at 30% 40%, rgba(255, 255, 255, 0.95) 0 28%, transparent 60%), radial-gradient(circle at 72% 62%, rgba(255, 255, 255, 0.85) 0 24%, transparent 58%) !important;
+}
 .swatch.hatch {
   background-image: repeating-linear-gradient(135deg, rgba(60, 64, 67, 0.35) 0 1.5px, transparent 1.5px 5px) !important;
 }

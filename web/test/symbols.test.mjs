@@ -31,7 +31,7 @@ test('SYM-01 SYM-06 at every zoom an item shows at most its symbol, short title 
   assert.equal(labelFor(buildTree([root, item('s', 'root', { title: '#7 Save' })]).byId.get('s'), 400).title, 'Save');
 });
 
-test('SYM-02 a symbol is filled by its status, and the Fog lens still marks poorly defined work', () => {
+test('SYM-02 FOG-01 a symbol is filled by its status, and the Fog lens puts poorly defined work under fog', () => {
   const tree = buildTree([
     root,
     item('epic', 'root', { body: LONG, summary: 'An epic with a summary' }),
@@ -46,7 +46,7 @@ test('SYM-02 a symbol is filled by its status, and the Fog lens still marks poor
   assert.equal(labelFor(tree.byId.get('epic'), 400).fill, statusColor(b), 'a region shows what most of its work is in');
 
   const fog = LENS_BY_ID.definition;
-  assert.ok(fog.hatch(c) && !fog.hatch(b), 'uncharted land is hatched');
+  assert.ok(fog.fog(c) === 1 && fog.fog(b) === 0, 'uncharted land is under fog, charted land is clear');
   assert.notEqual(fog.fill(c), fog.fill(b));
   assert.ok(fog.matches(c) && !fog.matches(b));
 });
