@@ -21,6 +21,8 @@ export const MapView = forwardRef(function MapView(
     return { x: s.transform.x, y: s.transform.y, k: s.transform.k, width: s.w, height: s.h, dpr: s.dpr };
   };
 
+  const still = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+
   const schedule = () => {
     const s = st.current;
     if (s.frame) return;
@@ -38,7 +40,9 @@ export const MapView = forwardRef(function MapView(
     const ctx = canvas.getContext('2d');
     const ins = p.insets ?? {};
     const center = [(ins.left ?? 0) + (s.w - (ins.left ?? 0)) / 2, (ins.top ?? 0) + (s.h - (ins.top ?? 0) - (ins.bottom ?? 0)) / 2];
-    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, hoverId: s.hoverId, showLinks: p.showLinks, center, insets: ins });
+    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, hoverId: s.hoverId, showLinks: p.showLinks, center, insets: ins, time: still() ? 0 : performance.now() / 1000 });
+    // Fog drifts: while any is on screen, redraw a few times a second. Nothing moves for people who ask for less motion.
+    if (s.info?.drifting && !still() && !s.drift) s.drift = setTimeout(() => ((s.drift = 0), schedule()), 50);
     if (s.info && s.info.focusId !== s.lastFocus) {
       s.lastFocus = s.info.focusId;
       p.onFocus?.(s.info.focusId);
@@ -188,6 +192,7 @@ export const MapView = forwardRef(function MapView(
       canvas.removeEventListener('click', onClick);
       canvas.removeEventListener('keydown', onKey);
       cancelAnimationFrame(s.frame);
+      clearTimeout(s.drift);
       s.frame = 0;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

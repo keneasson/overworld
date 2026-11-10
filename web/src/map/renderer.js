@@ -93,6 +93,78 @@ function hatch(ctx, color) {
   return ctx.createPattern(hatchCache.get(color), 'repeat');
 }
 
+// ---------- fog ----------
+// Uncharted work is under cloud: soft, seamless cloud tiles in two layers that drift at different speeds,
+// so the fog reads as weather moving over the land. Drawn over fills and borders, under every label and pin.
+const fogTiles = new Map();
+function fogTile(dark, seed) {
+  const key = `${dark}|${seed}`;
+  if (!fogTiles.has(key)) {
+    const S = 512;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    let r = seed;
+    const rand = () => (r = (r * 9301 + 49297) % 233280) / 233280;
+    const tone = dark ? '205,214,228' : '255,255,255';
+    const shade = dark ? '40,46,58' : '118,128,146';
+    for (let i = 0; i < 30; i++) {
+      const x = rand() * S;
+      const y = rand() * S;
+      const rad = S * (0.09 + rand() * 0.2);
+      const a = 0.6 + rand() * 0.4;
+      // Every blob is drawn wrapped around the edges, so the tile repeats without a seam.
+      for (const dx of [-S, 0, S])
+        for (const dy of [-S, 0, S]) {
+          const cx = x + dx;
+          const cy = y + dy;
+          if (cx + rad < 0 || cx - rad > S || cy + rad < 0 || cy - rad > S) continue;
+          // A shadowed underside, then the lit top: what makes a soft blob read as cloud.
+          for (const [ox, oy, rgb, aa] of [
+            [0.22, 0.3, shade, a * 0.7],
+            [0, 0, tone, a],
+          ]) {
+            const px = cx + ox * rad;
+            const py = cy + oy * rad;
+            const gr = g.createRadialGradient(px, py, 0, px, py, rad);
+            gr.addColorStop(0, `rgba(${rgb},${aa})`);
+            gr.addColorStop(0.55, `rgba(${rgb},${aa * 0.45})`);
+            gr.addColorStop(1, `rgba(${rgb},0)`);
+            g.fillStyle = gr;
+            g.fillRect(px - rad, py - rad, rad * 2, rad * 2);
+          }
+        }
+    }
+    fogTiles.set(key, c);
+  }
+  return fogTiles.get(key);
+}
+// Screen pixels per second: slow enough to notice only when you look.
+const FOG_LAYERS = [
+  { seed: 11, scale: 1, vx: 11, vy: 3.5, alpha: 1 },
+  { seed: 71, scale: 2.4, vx: -6, vy: 2, alpha: 0.9 },
+];
+
+function drawFog(ctx, items, k, t, dark) {
+  // A veil under the clouds, so even a gap between them still reads as fog.
+  ctx.fillStyle = dark ? '#8d99ab' : '#eef1f5';
+  for (const { g, w } of items) {
+    ctx.globalAlpha = Math.min(1, w * 0.62);
+    ctx.fill(pathFor(g));
+  }
+  for (const layer of FOG_LAYERS) {
+    const p = ctx.createPattern(fogTile(dark, layer.seed), 'repeat');
+    ctx.fillStyle = p;
+    for (const { g, w, s } of items) {
+      // Clouds shrink with the region on screen, so a small region zoomed out still shows whole clouds, not a tint.
+      const f = Math.min(1, Math.max(0.18, s / 900)) * layer.scale;
+      p.setTransform(new DOMMatrix().translate((t * layer.vx * f) / k, (t * layer.vy * f) / k).scale(f / k));
+      ctx.globalAlpha = Math.min(1, w * layer.alpha);
+      ctx.fill(pathFor(g));
+    }
+  }
+}
+
 // ---------- text helpers ----------
 
 const wrapCache = new Map();
@@ -265,7 +337,7 @@ function drawPin(ctx, x, y) {
 export function drawMap(ctx, scene, view, opts) {
   const { tree, geo } = scene;
   const { x, y, k, width: W, height: H, dpr } = view;
-  const { lens, selectedId = null, hoverId = null, showLinks = false, thumbnail = false, live } = opts;
+  const { lens, selectedId = null, hoverId = null, showLinks = false, thumbnail = false, live, time = 0 } = opts;
   const theme = lens.theme;
   const T = opts.T ?? thresholds(W, H);
   const sizeOf = (n) => geo.get(n.id).size * k;
@@ -307,6 +379,7 @@ export function drawMap(ctx, scene, view, opts) {
   const labelCands = [];
   const watermarks = [];
   let hatchPattern = null;
+  const fogged = [];
   const walk = (n, alpha, parentYield) => {
     const g = geo.get(n.id);
     if (!inView(g.bbox)) return;
@@ -326,6 +399,9 @@ export function drawMap(ctx, scene, view, opts) {
     }
     const sub = subOf(n, s);
     const yld = yieldOf(n, s);
+    // Fog belongs to what you can see: a region hands its cloud to its children as they fade in.
+    const thick = lens.fog && alpha > 0.01 ? alpha * (1 - sub) * lens.fog(n) : 0;
+    if (thick > 0.02) fogged.push({ g, s, w: thick });
     if (!thumbnail) {
       const own = (1 - yieldOut(n, s)) * parentYield * smoothstep(38, 62, s);
       if (own > 0.02) labelCands.push({ n, g, s, alpha: own });
@@ -350,6 +426,7 @@ export function drawMap(ctx, scene, view, opts) {
     ctx.stroke(pathFor(g));
   }
   ctx.setLineDash([]);
+  if (fogged.length) drawFog(ctx, fogged, k, time, theme.dark);
 
   const hovered = hoverId && tree.byId.get(hoverId);
   if (hovered && !thumbnail) {
@@ -610,7 +687,7 @@ export function drawMap(ctx, scene, view, opts) {
     focus = cur;
     cur = cur.children.find((ch) => polygonContains(geo.get(ch.id).poly, cw));
   }
-  return { labels, focusId: focus?.id ?? null };
+  return { labels, focusId: focus?.id ?? null, drifting: fogged.length > 0 };
 }
 
 /**
