@@ -79,6 +79,9 @@ export function buildProject({ repo, paths = [], manifests = new Map(), specs = 
   const locate = makeLocator(arch);
   const nesting = nestByReferences(issues);
   const lifecycle = { strict: usesLifecycle(issues), inProgress: closedByOpenPrs(pulls) };
+  // The pull requests that close each issue: merged ones GitHub reports, and open ones that say "Closes #N".
+  const pullsOf = new Map(issues.map((i) => [i.number, new Set((i.prs ?? []).map((p) => p.number))]));
+  for (const pr of pulls) for (const n of closedByOpenPrs([pr])) pullsOf.get(n)?.add(pr.number);
   const kids = new Map();
   for (const [child, { parent }] of nesting) kids.set(parent, [...(kids.get(parent) ?? []), child]);
 
@@ -237,6 +240,7 @@ export function buildProject({ repo, paths = [], manifests = new Map(), specs = 
       kind,
       ...issueFields(i, { lifecycle, note: note.replace(/\n/g, ' ').slice(0, 500), placement, kind }),
       links: links.slice(0, 50),
+      pulls: [...pullsOf.get(i.number)].sort((a, b) => a - b),
     });
   }
 

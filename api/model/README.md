@@ -23,6 +23,14 @@ model.
 | Write budget | `PROJECT#<id>` | `LEASE#budget` | | |
 | Reconciliation report | `PROJECT#<id>` | `AUDIT#<at>` | | |
 | Store link | `STORE#<store key>` | `PROJECT#<id>` | | |
+| Agent | `PROJECT#<id>` | `AGENT#<agentId>` | | |
+| Agent token | `TOKEN#<sha256 of the token>` | `TOKEN` | | |
+| Claim | `PROJECT#<id>` | `CLAIM#<behaviourId>` | | |
+| Handoff note | `PROJECT#<id>` | `HANDOFF#<itemKey>#<at>#<id>` | | |
+| Remembered fact | `PROJECT#<id>` | `FACT#<at>#<id>` | | |
+| Agent action | `PROJECT#<id>` | `ACTION#<at>#<id>` | `ACTIONS#<id>#<agentId>` | `<at>` |
+| Request key | `PROJECT#<id>` | `KEY#<agentId>#<requestKey>` | | |
+| Call count | `PROJECT#<id>` | `LIMIT#<agentId>#<minute>` | | |
 
 A project and its nodes share a partition, and sort last in it (`NODE#…`, then `PROJECT`), so one
 query reads a whole map and nothing else. A new entity in the partition must sort before `NODE#`. Changesets and
@@ -40,6 +48,14 @@ webhook about one issue reads and writes one item. Store links are the one thing
 partition: they let an event from a store (a GitHub webhook, say) find the projects that live there
 without a scan. A store's key names it, e.g. `github:owner/name`. A link left behind by a deleted
 project is removed the next time an event finds it.
+
+Agents that use a project through MCP (#4) keep their records in its partition too, all sorting before `NODE#`:
+who they are, their claims (one per behaviour, so a claim is one conditional write), handoff notes (by item, so
+`context()` reads one item's notes), remembered facts, and what each changed. Actions carry GSI1 keys, so one agent's
+work lists without reading anyone else's. Request keys, call counts and actions carry `expiresAt`, the table's TTL
+(a day, two minutes and 90 days), so DynamoDB removes them for free; a read still checks `expiresAt`, because TTL
+deletes late. A token is found by its hash in one GetItem, outside any partition, so deleting a project deletes its
+agents' tokens first. The token itself is never stored.
 
 ## Access patterns
 
@@ -72,6 +88,20 @@ project is removed the next time an event finds it.
 | Keep a report, and drop those past the last 30 | `audits.put(projectId, report)` | Query, then batched put and deletes |
 | Projects that live in a store (its events) | `links.projectsOf(key)` | Query `PK = STORE#<key>` |
 | Link or unlink a project and its store | `links.link(key, projectId)`, `links.unlink(key, projectId)` | PutItem, DeleteItem |
+| A project's agents | `agents.list(projectId)` | Query `begins_with(SK, AGENT#)` |
+| One agent | `agents.get(projectId, id)` | GetItem |
+| Make an agent and its token | `agents.create(projectId, agent, tokenHash)` | Conditional PutItem (the id is free), then PutItem |
+| Save an agent (its last handoff, its revocation) | `agents.put(projectId, agent)` | PutItem |
+| Who a token belongs to | `agents.byToken(tokenHash)` | GetItem `TOKEN#<hash>` |
+| Revoke a token, or every token of a project | `agents.revokeToken(hash)`, `agents.revokeAll(projectId)` | DeleteItem; Query `AGENT#`, then batched deletes |
+| A project's claims | `claims.list(projectId)` | Query `begins_with(SK, CLAIM#)` |
+| Claim behaviours, all or none | `claims.take(projectId, claims, { owner, now })` | TransactWriteItems, each put conditional on nobody else holding it |
+| Release a claim (a handoff, or an expiry) | `claims.release(projectId, behaviour, { owner, until })` | Conditional DeleteItem |
+| One item's handoff notes | `handoffs.list(projectId, itemKey)`, `handoffs.put` | Query `begins_with(SK, HANDOFF#<itemKey>#)`; PutItem |
+| What a project remembers | `facts.list(projectId)`, `facts.put`, `facts.delete` | Query `begins_with(SK, FACT#)`; PutItem; DeleteItem |
+| Record a change by an agent; one agent's changes | `actions.put(projectId, action)`, `actions.list(projectId, agentId)` | PutItem; Query GSI1 `ACTIONS#<id>#<agentId>`, descending |
+| A change's request key: start, read, finish, forget | `requests.start` / `get` / `finish` / `forget` | Conditional PutItem; GetItem; PutItem; DeleteItem |
+| Count an agent's call this minute | `limits.count(projectId, agentId, minute, limit)` | UpdateItem `ADD`, conditional on the limit |
 
 ## Adding a feature
 

@@ -9,11 +9,16 @@ import { flags } from './access-patterns/flags.mjs';
 import { changesets } from './access-patterns/changesets.mjs';
 import { comments } from './access-patterns/comments.mjs';
 import { audits, budgets, jobs, leases, links } from './access-patterns/sync.mjs';
+import { actions, agents, claims, facts, handoffs, limits, requests } from './access-patterns/agents.mjs';
 
 export async function createModel(env = process.env) {
   return modelFor(await createTable(env));
 }
 
 export function modelFor(table) {
-  return { projects: projects(table), nodes: nodes(table), flags: flags(table), changesets: changesets(table), comments: comments(table), jobs: jobs(table), leases: leases(table), budgets: budgets(table), audits: audits(table), links: links(table) };
+  return {
+    projects: projects(table), nodes: nodes(table), flags: flags(table), changesets: changesets(table), comments: comments(table),
+    jobs: jobs(table), leases: leases(table), budgets: budgets(table), audits: audits(table), links: links(table),
+    agents: agents(table), claims: claims(table), handoffs: handoffs(table), facts: facts(table), actions: actions(table), requests: requests(table), limits: limits(table),
+  };
 }

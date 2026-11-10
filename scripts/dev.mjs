@@ -45,7 +45,7 @@ const server = await createServer({
           }
           const headers = Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k.toLowerCase(), String(v)]));
           const out = await api({ method: req.method, path: req.url.split('?')[0], headers, body });
-          res.writeHead(out.status, { 'content-type': 'application/json' }).end(JSON.stringify(out.body));
+          res.writeHead(out.status, { 'content-type': 'application/json' }).end(out.body == null ? '' : JSON.stringify(out.body));
         });
       },
     },

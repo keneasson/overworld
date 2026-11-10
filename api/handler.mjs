@@ -62,6 +62,6 @@ function json(statusCode, data) {
   return {
     statusCode,
     headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...SECURITY_HEADERS },
-    body: JSON.stringify(data),
+    body: data == null ? '' : JSON.stringify(data),
   };
 }
