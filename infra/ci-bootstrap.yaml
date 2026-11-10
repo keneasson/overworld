@@ -135,7 +135,7 @@ Resources:
                 Action: 'lambda:*'
                 Resource: [!Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:projectmap*']
               - Effect: Allow
-                Action: ['dynamodb:CreateTable', 'dynamodb:UpdateTable', 'dynamodb:DescribeTable', 'dynamodb:DescribeContinuousBackups', 'dynamodb:DescribeTimeToLive', 'dynamodb:ListTagsOfResource', 'dynamodb:TagResource', 'dynamodb:UntagResource']
+                Action: ['dynamodb:CreateTable', 'dynamodb:UpdateTable', 'dynamodb:DescribeTable', 'dynamodb:DescribeContinuousBackups', 'dynamodb:DescribeTimeToLive', 'dynamodb:UpdateTimeToLive', 'dynamodb:ListTagsOfResource', 'dynamodb:TagResource', 'dynamodb:UntagResource']
                 Resource: [!Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/projectmap*']
               # Only a preview's table can be deleted. Production's survives anything CI does.
               - Effect: Allow
