@@ -7,13 +7,13 @@ import { drawMap, hitTest, nodeView, overviewView, thresholds, fitScale } from '
  * the parent hears about focus changes and selection through callbacks.
  */
 export const MapView = forwardRef(function MapView(
-  { scene, lens, showLinks, selectedId, insets, initialView, onSelect, onHover, onFocus, onView },
+  { scene, lens, showLinks, selectedId, insets, initialView, onSelect, onFocus, onView },
   ref,
 ) {
   const canvasRef = useRef(null);
   const st = useRef({ transform: zoomIdentity, w: 0, h: 0, dpr: 1, hoverId: null, info: null, frame: 0, ready: false });
   const props = useRef({});
-  props.current = { scene, lens, showLinks, selectedId, insets, onSelect, onHover, onFocus, onView };
+  props.current = { scene, lens, showLinks, selectedId, insets, onSelect, onFocus, onView };
   const zoomRef = useRef(null);
 
   const view = () => {
@@ -142,18 +142,16 @@ export const MapView = forwardRef(function MapView(
       const sc = props.current.scene;
       if (!sc) return;
       const [px, py] = pointer(e);
+      // Hover only outlines what a click here would open (SYM-08); it shows nothing else.
       const id = hitTest(sc, view(), s.info, px, py);
-      const labelled = s.info?.labels.some((l) => l.id === id && l.alpha > 0.5);
       if (id !== s.hoverId) {
         s.hoverId = id;
         schedule();
       }
-      props.current.onHover?.(id && !labelled ? { id, x: e.clientX, y: e.clientY } : null);
       canvas.style.cursor = id ? 'pointer' : 'grab';
     };
     const onLeave = () => {
       s.hoverId = null;
-      props.current.onHover?.(null);
       schedule();
     };
     const onClick = (e) => {

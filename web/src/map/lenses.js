@@ -80,6 +80,10 @@ function lifecycleOfRegion(n) {
   const open = OPEN.filter((s) => states[s]).sort((a, b) => states[b] - states[a])[0];
   return open ?? (states.done ? 'done' : n.status === 'rejected' || states.rejected ? 'rejected' : 'done');
 }
+/** The lifecycle colour an item's symbol is filled with (#10 SYM-02): its own state, or for a region what most of its work waits on. */
+export const statusColor = (n) => (n.children.length ? LIFECYCLE_COLOR[lifecycleOfRegion(n)] : LIFECYCLE_COLOR[n.status]) ?? LIFECYCLE_COLOR.planned;
+export const statusKey = (n) => (n.children.length ? lifecycleOfRegion(n) : LIFECYCLE_COLOR[n.status] ? n.status : 'planned');
+export const STATUS_FILLS = LIFECYCLE.map(([key, color, label]) => ({ key, color, label }));
 const lifecycleSummary = (states) =>
   LIFECYCLE.filter(([s]) => states[s])
     .map(([s, , l]) => `${states[s]} ${l.replace(' (ruin)', '').toLowerCase()}`)

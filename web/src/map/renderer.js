@@ -7,10 +7,11 @@
 // So the amount of text on screen stays roughly constant while the subject
 // shifts from macro (areas) to micro (a single task's acceptance criteria).
 
-import { polygonContains } from 'd3';
-import { KIND_LABEL, STATUS_LABEL } from '@shared/schema.js';
-import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
+import { hsl, polygonContains } from 'd3';
+import { isInside, pathOf } from '../model/tree.js';
 import { LIGHT_COLORS } from './lenses.js';
+import { labelFor, shortTitle } from './labels.js';
+import { drawSymbol } from './symbols.js';
 import { rectsOverlap, smoothstep } from './geometry.js';
 
 export const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif';
@@ -134,113 +135,31 @@ function ellipsize(ctx, text, maxW) {
   return `${text.slice(0, lo).trimEnd()}…`;
 }
 
-const plainCache = new Map();
-function plainBody(n) {
-  const key = `${n.id}|${n.updatedAt}|${n.body?.length}`;
-  if (plainCache.has(key)) return plainCache.get(key);
-  const out = (n.body ?? '')
-    .split('\n')
-    .map((l) =>
-      l
-        .replace(/^\s*[-*] \[[xX]\]\s*/, '☑ ')
-        .replace(/^\s*[-*] \[ \]\s*/, '☐ ')
-        .replace(/^\s*[-*]\s+/, '• ')
-        .replace(/^#+\s*/, '')
-        .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-        .replace(/[*_`]/g, '')
-        .trim(),
-    )
-    .filter(Boolean);
-  plainCache.set(key, out);
-  return out;
-}
+// ---------- labels: a symbol, a short title and badges (#10) ----------
 
-const fmtDate = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+// A light fill gets a dark outline, a dark one a white outline.
+const inkOn = (fill) => (hsl(fill).l > 0.72 ? '#3c4043' : '#ffffff');
 
-// ---------- labels ----------
-
-function labelBlock(ctx, c, { lens, k, T, theme, W }) {
+function labelBlock(ctx, c, { k, theme, W, live }) {
   const { n, s, g } = c;
-  const leaf = !n.children.length;
-  const rows = [];
-  const text = (t, size, weight, color, maxW, maxLines = 1, extra = {}) => {
-    const font = `${weight} ${size}px ${FONT}`;
-    ctx.letterSpacing = extra.spacing ? `${extra.spacing}px` : '0px';
-    const lines = wrap(ctx, extra.caps ? t.toUpperCase() : t, font, maxW, maxLines);
-    ctx.font = font;
-    for (const line of lines) {
-      rows.push({ text: line, font, color, h: Math.round(size * 1.28), spacing: extra.spacing ?? 0, w: ctx.measureText(line).width });
-    }
-    ctx.letterSpacing = '0px';
-  };
-  const pill = (label, color, size = 11) => {
-    ctx.font = `600 ${size}px ${FONT}`;
-    rows.push({ pill: true, text: label, color, font: ctx.font, h: size + 11, w: ctx.measureText(label).width + 18 });
-  };
-  const gap = (h) => rows.push({ h });
-
-  let panel = false;
-  if (n.depth === 0) {
-    const maxW = Math.min(480, W * 0.78, Math.max(220, g.labelR * k * 1.7));
-    text('Project', 11, 600, theme.muted, maxW, 1, { caps: true, spacing: 1.6 });
-    gap(2);
-    text(n.title, Math.min(30, Math.max(20, s / 22)), 700, theme.text, maxW, 2);
-    if (n.summary) {
-      gap(4);
-      text(n.summary, 14, 400, theme.muted, maxW, 3);
-    }
-    gap(8);
-    const h = n.stats.health;
-    pill(h === 'on_track' || h === 'done' || h === 'not_started' ? `● ${HEALTH_LABEL[h]}` : `● Not on target — ${HEALTH_LABEL[h].toLowerCase()}`, HEALTH_COLOR[h], 13);
-    gap(6);
-    text(lens.stat(n), 13, 500, theme.text, maxW, 2);
-    const meta = [n.due && `Due ${fmtDate(n.due)}`, `${n.stats.items - 1} items`].filter(Boolean).join(' · ');
-    text(meta, 12, 400, theme.muted, maxW, 1);
-    panel = true;
-  } else if (s >= 330) {
-    const maxW = Math.max(120, Math.min(300, g.labelR * k * 1.75));
-    text(`${KIND_LABEL[n.kind]}${n.priority ? ` · ${n.priority}` : ''}`, 10.5, 600, theme.muted, maxW, 1, { caps: true, spacing: 1.2 });
-    gap(1);
-    text(n.title, Math.min(20, Math.max(15, s / 24)), 700, theme.text, maxW, 2);
-    if (n.summary) text(n.summary, 12.5, 400, theme.muted, maxW, leaf ? 3 : 2);
-    gap(5);
-    pill(HEALTH_LABEL[n.stats.health], HEALTH_COLOR[n.stats.health]);
-    gap(3);
-    text(lens.stat(n), 12, 500, theme.text, maxW, 2);
-    if (leaf && s >= T.vmin * 0.62) {
-      const detailW = Math.max(maxW, Math.min(420, g.labelR * k * 1.6));
-      const meta = [STATUS_LABEL[n.status], n.assignee && `@${n.assignee}`, n.estimate != null && `${n.estimate} pts`, n.due && `due ${fmtDate(n.due)}`]
-        .filter(Boolean)
-        .join(' · ');
-      gap(4);
-      text(meta, 12, 500, theme.muted, detailW, 1);
-      const body = plainBody(n);
-      if (body.length) {
-        gap(6);
-        for (const line of body.slice(0, 14)) text(line, 12.5, 400, theme.text, detailW, 3);
-      } else {
-        gap(6);
-        text('No details yet — this item is uncharted.', 12.5, 400, theme.muted, detailW, 1);
-      }
-      if (n.tags?.length) {
-        gap(4);
-        text(n.tags.map((t) => `#${t}`).join('  '), 11.5, 500, theme.muted, detailW, 2);
-      }
-      panel = true;
-    }
-  } else if (s >= 150) {
-    const maxW = Math.max(90, Math.min(210, g.labelR * k * 1.8));
-    text(n.title, 13.5, 600, theme.text, maxW, 2);
-    text(lens.stat(n), 11, 500, theme.muted, maxW, 1);
-  } else {
-    const maxW = Math.max(60, Math.min(150, g.labelR * k * 1.9));
-    text(n.title, s >= 95 ? 12 : 11, 600, theme.text, maxW, s >= 95 ? 2 : 1);
-  }
-
-  const w = Math.max(...rows.map((r) => r.w ?? 0)) + (panel ? 32 : 0);
-  const h = rows.reduce((sum, r) => sum + r.h, 0) + (panel ? 24 : 0);
-  return { rows, w, h, panel };
+  const label = labelFor(n, s, live);
+  const root = n.depth === 0;
+  const r = root ? 18 : s >= 330 ? 15 : s >= 150 ? 13 : 11;
+  const size = root ? Math.min(26, Math.max(19, s / 26)) : s >= 330 ? Math.min(17, Math.max(14, s / 26)) : s >= 150 ? 13.5 : s >= 95 ? 12 : 11;
+  const font = `${root || s >= 150 ? 700 : 600} ${size}px ${FONT}`;
+  const maxW = root ? Math.min(420, W * 0.7) : Math.max(60, Math.min(s >= 330 ? 260 : 190, g.labelR * k * 1.8));
+  const lines = wrap(ctx, label.title, font, maxW, label.lines);
+  ctx.font = font;
+  const titleW = Math.max(0, ...lines.map((l) => ctx.measureText(l).width));
+  ctx.font = `700 10.5px ${FONT}`;
+  const badges = label.badges.map((b) => ({ ...b, w: 16 + (b.count > 1 ? ctx.measureText(String(b.count)).width + 3 : 0) + 6 }));
+  const badgesW = badges.reduce((sum, b) => sum + b.w + 3, 0);
+  const lh = Math.round(size * 1.25);
+  const head = 2 * r + 4;
+  // The symbol stays centred over the title; badges hang off its right side, balanced by empty room on the left.
+  const w = Math.max(titleW, 2 * r + 2 * (badgesW ? badgesW + 4 : 0)) + (root ? 32 : 0);
+  const h = head + lines.length * lh + (root ? 20 : 0);
+  return { label, r, lines, font, lh, head, badges, w, h, panel: root };
 }
 
 function drawBlock(ctx, block, rect, alpha, theme) {
@@ -257,36 +176,63 @@ function drawBlock(ctx, block, rect, alpha, theme) {
     ctx.restore();
   }
   const cx = rect.x + rect.w / 2;
-  let y = rect.y + (block.panel ? 12 : 0);
+  const top = rect.y + (block.panel ? 10 : 0);
+  const cy = top + block.r + 1;
+  const { label, r } = block;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.22)';
+  ctx.shadowBlur = 4;
+  ctx.shadowOffsetY = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = label.fill;
+  ctx.fill();
+  ctx.restore();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = theme.dark ? 'rgba(255,255,255,0.7)' : '#ffffff';
+  ctx.stroke();
+  drawSymbol(ctx, label.symbol, cx, cy, r * 1.15, inkOn(label.fill));
+
+  let bx = cx + r + 4;
+  for (const b of block.badges) {
+    const by = cy - r * 0.35;
+    ctx.beginPath();
+    ctx.roundRect(bx, by - 8, b.w, 16, 8);
+    ctx.fillStyle = theme.dark ? '#1f2a44' : '#ffffff';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = theme.dark ? '#5d6f9e' : '#9aa0a6';
+    ctx.stroke();
+    drawSymbol(ctx, b.type, bx + 3 + 5.5, by, 11, BADGE_INK[b.type]);
+    if (b.count > 1) {
+      ctx.font = `700 10.5px ${FONT}`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = theme.text;
+      ctx.fillText(String(b.count), bx + 16, by + 0.5);
+    }
+    bx += b.w + 3;
+  }
+
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
-  for (const r of block.rows) {
-    if (r.pill) {
-      const pw = r.w, ph = r.h - 4;
-      ctx.fillStyle = r.color;
-      ctx.beginPath();
-      ctx.roundRect(cx - pw / 2, y + 2, pw, ph, ph / 2);
-      ctx.fill();
-      ctx.font = r.font;
-      ctx.fillStyle = '#fff';
-      ctx.fillText(r.text, cx, y + 2 + ph / 2 + 0.5);
-    } else if (r.text) {
-      ctx.font = r.font;
-      ctx.letterSpacing = r.spacing ? `${r.spacing}px` : '0px';
-      if (!block.panel) {
-        ctx.strokeStyle = theme.halo;
-        ctx.lineWidth = 3.5;
-        ctx.strokeText(r.text, cx, y + r.h / 2);
-      }
-      ctx.fillStyle = r.color;
-      ctx.fillText(r.text, cx, y + r.h / 2);
-      ctx.letterSpacing = '0px';
+  ctx.font = block.font;
+  let y = top + block.head;
+  for (const line of block.lines) {
+    if (!block.panel) {
+      ctx.strokeStyle = theme.halo;
+      ctx.lineWidth = 3.5;
+      ctx.strokeText(line, cx, y + block.lh / 2);
     }
-    y += r.h;
+    ctx.fillStyle = theme.text;
+    ctx.fillText(line, cx, y + block.lh / 2);
+    y += block.lh;
   }
   ctx.globalAlpha = 1;
 }
+
+const BADGE_INK = { pull: '#8250df', agent: '#1a73e8', comment: '#e8710a', question: '#8b5cf6' };
 
 function drawPin(ctx, x, y) {
   ctx.save();
@@ -319,7 +265,7 @@ function drawPin(ctx, x, y) {
 export function drawMap(ctx, scene, view, opts) {
   const { tree, geo } = scene;
   const { x, y, k, width: W, height: H, dpr } = view;
-  const { lens, selectedId = null, hoverId = null, showLinks = false, thumbnail = false } = opts;
+  const { lens, selectedId = null, hoverId = null, showLinks = false, thumbnail = false, live } = opts;
   const theme = lens.theme;
   const T = opts.T ?? thresholds(W, H);
   const sizeOf = (n) => geo.get(n.id).size * k;
@@ -466,7 +412,7 @@ export function drawMap(ctx, scene, view, opts) {
     ctx.globalAlpha = wm.alpha * 0.4;
     ctx.fillStyle = theme.muted;
     const wmFont = ctx.font;
-    const lines = wrap(ctx, wm.n.title.toUpperCase(), wmFont, Math.min(W * 0.8, wm.g.labelR * k * 1.6), 2);
+    const lines = wrap(ctx, shortTitle(wm.n).toUpperCase(), wmFont, Math.min(W * 0.8, wm.g.labelR * k * 1.6), 2);
     ctx.font = wmFont;
     const ww = Math.max(...lines.map((l) => ctx.measureText(l).width));
     const box = { x: sx - ww / 2, y: sy - (lines.length * size * 1.2) / 2, w: ww, h: lines.length * size * 1.2 };
@@ -518,23 +464,9 @@ export function drawMap(ctx, scene, view, opts) {
 
   // Routes: links aggregated to whatever is visible at this zoom level.
   if (showLinks) {
-    const agg = new Map();
     const sel = selected;
-    for (const n of tree.list) {
-      for (const l of n.links) {
-        const target = tree.byId.get(l.to);
-        if (!target) continue;
-        const a = rep(n), b = rep(target);
-        if (a === b || isInside(a, b) || isInside(b, a)) continue;
-        const key = `${a.id}>${b.id}:${l.type}`;
-        const e = agg.get(key) ?? { a, b, type: l.type, count: 0, hot: false };
-        e.count++;
-        if (sel && (isInside(n, sel) || isInside(target, sel))) e.hot = true;
-        agg.set(key, e);
-      }
-    }
     const colors = theme.dark ? LINK_COLOR_NIGHT : LINK_COLOR;
-    for (const e of agg.values()) {
+    for (const e of roads(tree, rep, sel)) {
       const p0 = toScreen(geo.get(e.a.id).label);
       const p1 = toScreen(geo.get(e.b.id).label);
       const minX = Math.min(p0[0], p1[0]), maxX = Math.max(p0[0], p1[0]);
@@ -655,7 +587,7 @@ export function drawMap(ctx, scene, view, opts) {
   for (const c of labelCands) {
     let p = toScreen(c.g.label);
     if (!onScreen(p, c.n.depth ? 300 : Math.max(W, H))) continue;
-    const block = labelBlock(ctx, c, { lens, k, T, theme, W });
+    const block = labelBlock(ctx, c, { k, theme, W, live });
     if (c.n.depth === 0) p = cartouche(p, block);
     const rect = { x: p[0] - block.w / 2, y: p[1] - block.h / 2, w: block.w, h: block.h };
     if (c.n !== selected && placed.some((r) => rectsOverlap(r, rect, 3))) continue;
@@ -681,22 +613,53 @@ export function drawMap(ctx, scene, view, opts) {
   return { labels, focusId: focus?.id ?? null };
 }
 
-/** What is under a screen point: a visible label first, then the visible region. */
+/**
+ * The roads on screen (SYM-05): every link drawn between the visible stand-ins of its two ends, merged
+ * when several links join the same two places. `visible(n)` is what stands for n at this zoom.
+ * @returns {{ a, b, type, count, hot }[]}  hot when the link touches the selection
+ */
+export function roads(tree, visible, selected) {
+  const agg = new Map();
+  for (const n of tree.list) {
+    for (const l of n.links) {
+      const target = tree.byId.get(l.to);
+      if (!target) continue;
+      const a = visible(n), b = visible(target);
+      if (a === b || isInside(a, b) || isInside(b, a)) continue;
+      const key = `${a.id}>${b.id}:${l.type}`;
+      const e = agg.get(key) ?? { a, b, type: l.type, count: 0, hot: false };
+      e.count++;
+      if (selected && (isInside(n, selected) || isInside(target, selected))) e.hot = true;
+      agg.set(key, e);
+    }
+  }
+  return [...agg.values()];
+}
+
+/**
+ * What a pointer at a screen point lands on (SYM-08): the innermost item there. A visible label counts as
+ * its item; where a label overlaps land whose items are drawn deeper, the deeper item wins. Hover and
+ * click both ask this, so what lights up is what opens.
+ */
 export function hitTest(scene, view, info, sx, sy) {
-  for (let i = (info?.labels.length ?? 0) - 1; i >= 0; i--) {
+  let byLabel = null;
+  for (let i = (info?.labels.length ?? 0) - 1; i >= 0 && !byLabel; i--) {
     const l = info.labels[i];
-    if (l.alpha >= 0.5 && sx >= l.rect.x && sx <= l.rect.x + l.rect.w && sy >= l.rect.y && sy <= l.rect.y + l.rect.h) return l.id;
+    if (l.alpha >= 0.5 && sx >= l.rect.x && sx <= l.rect.x + l.rect.w && sy >= l.rect.y && sy <= l.rect.y + l.rect.h) byLabel = scene.tree.byId.get(l.id) ?? null;
   }
   const { tree, geo, land } = scene;
   const { x, y, k, width: W, height: H } = view;
   const T = thresholds(W, H);
   const p = [(sx - x) / k, (sy - y) / k];
-  if (!land.some((ring) => polygonContains(ring, p))) return null;
-  let cur = tree.root;
-  while (cur.children.length && geo.get(cur.id).size * k >= T.sub * 1.02) {
-    const next = cur.children.find((c) => polygonContains(geo.get(c.id).poly, p));
-    if (!next) break;
-    cur = next;
+  let byLand = null;
+  if (land.some((ring) => polygonContains(ring, p))) {
+    byLand = tree.root;
+    while (byLand.children.length && geo.get(byLand.id).size * k >= T.sub * 1.02) {
+      const next = byLand.children.find((c) => polygonContains(geo.get(c.id).poly, p));
+      if (!next) break;
+      byLand = next;
+    }
   }
-  return cur.id;
+  const hit = byLabel && (!byLand || byLabel.depth >= byLand.depth) ? byLabel : byLand;
+  return hit?.id ?? null;
 }

@@ -4,7 +4,7 @@ import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
 import { MapView } from './map/MapView.jsx';
 import { LENS_BY_ID } from './map/lenses.js';
-import { Breadcrumbs, Chips, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts, Tooltip } from './components/Chrome.jsx';
+import { Breadcrumbs, Chips, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
 import { Details, Results } from './components/Panel.jsx';
 import { Editor } from './components/Editor.jsx';
 // The rich-text editor is big; load it the first time someone edits.
@@ -56,7 +56,6 @@ export function App() {
   const [resultsOpen, setResultsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [focusId, setFocusId] = useState(null);
-  const [hover, setHover] = useState(null);
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [sheetFull, setSheetFull] = useState(false);
@@ -373,7 +372,6 @@ export function App() {
           insets={insets}
           initialView={initial.view}
           onSelect={onMapSelect}
-          onHover={mobile ? undefined : setHover}
           onFocus={setFocusId}
           onView={onView}
         />
@@ -450,7 +448,6 @@ export function App() {
         </div>
       )}
       {scene && <MapControls onZoom={(f) => mapRef.current?.zoomBy(f)} onOverview={() => mapRef.current?.overview()} />}
-      {tree && hover && <Tooltip hover={hover} tree={tree} lens={lens} />}
       {hint && tree && (
         <Hint
           onDismiss={() => {
