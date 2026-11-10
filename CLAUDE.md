@@ -21,7 +21,7 @@ npm run deploy   # builds, bundles, sam deploy; prints the URL and runs a health
   - The app never scans the table.
 - `api/sync.mjs`: sync with each project's store (#3): saving (`saveNow`, the one path every save trigger calls), the outbox worker, store events and the nightly reconciliation. It reaches a store only through the store API in `api/stores/index.mjs` (SYNC-14), and never imports anything store-specific.
 - `api/stores/github/`: GitHub as a store. `state.mjs` is the one place that says how an item's state is written on GitHub (labels, open or closed); `app.mjs` writes as the GitHub App; `index.mjs` is the store and turns webhooks into store events. `api/aws.mjs` holds what sync needs from AWS (SSM, Scheduler), and `api/handler.mjs` routes the stream and schedules to it.
-- `api/engine/`: the deterministic repository mapper. It uses no AI, so the same repository always gives the same map. AI reading will be a separate, metered feature.
+- `api/engine/`: the deterministic repository mapper. It uses no AI, so the same repository always gives the same map. AI is a separate, optional feature (Overworld Intelligence, #36). For now it runs only on the customer's own AI provider.
 - `shared/`: the schema and validation used by both sides. `shared/brand.js` holds the product name.
 - `web/`: React plus a Canvas 2D renderer. Rollups are computed in `web/src/model/tree.js`.
 - `scripts/migrations/`: changes to deployed data, numbered and run by hand. Each one backs up the table first.
