@@ -1931,3 +1931,26 @@ button.danger.armed {
     color: #f6aea9;
   }
 }
+
+/* Where an item stands with GitHub (SYNC-11). */
+.sync-unsaved {
+  background: #fef3c7;
+  color: #92400e;
+}
+.sync-saving {
+  background: #e0f2fe;
+  color: #075985;
+}
+.sync-conflict,
+.sync-failed {
+  background: #fce8e6;
+  color: #c5221f;
+  font-weight: 700;
+}
+.sync-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+}

@@ -527,6 +527,13 @@ export function App() {
               const byId = new Map(nodes.map((n) => [n.id, n]));
               replaceNodes((ns) => ns.map((n) => byId.get(n.id) ?? n));
             }}
+            reloadNodes={async () => {
+              const pid = data.project.id;
+              const d = await api.getProject(pid);
+              if (latest.current.projectId !== pid) return null;
+              replaceNodes(() => d.nodes);
+              return d.nodes;
+            }}
           />
         </Suspense>
       )}

@@ -55,6 +55,7 @@ export const api = {
   putChangesetItem: (pid, cid, item) => request('PUT', `/api/projects/${pid}/changesets/${cid}/items`, item),
   acceptChangeset: (pid, cid) => request('POST', `/api/projects/${pid}/changesets/${cid}/accept`),
   discardChangeset: (pid, cid) => request('POST', `/api/projects/${pid}/changesets/${cid}/discard`),
+  save: (pid, keys) => request('POST', `/api/projects/${pid}/save`, keys ? { keys } : {}),
   itemComments: (pid, itemKey) => request('GET', `/api/projects/${pid}/comments/${itemKey}`),
   addComment: (pid, comment) => request('POST', `/api/projects/${pid}/comments`, comment),
   resolveComment: (pid, c, resolved) => request('PATCH', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}`, { resolved }),

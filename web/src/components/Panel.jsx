@@ -6,6 +6,7 @@ import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
 import { issueOf, itemKeyOf } from '@shared/issue-shape.js';
 import { editableItems } from '../editor/items.js';
+import { syncBadge } from '../model/sync.js';
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
@@ -25,6 +26,17 @@ export function HealthPill({ health, large }) {
       {HEALTH_LABEL[health]}
     </span>
   );
+}
+
+/** Where an item stands with GitHub (SYNC-11): nothing when it is in line. */
+export function SyncBadge({ node, compact = false }) {
+  const b = syncBadge(node);
+  if (b && compact) return <span className={`sync-dot sync-${b.state}`} title={`${b.label}: ${b.hint}`} role="img" aria-label={b.label} />;
+  return b ? (
+    <span className={`tag sync-${b.state}`} title={b.hint}>
+      {b.label}
+    </span>
+  ) : null;
 }
 
 export function KindBadge({ kind }) {
@@ -89,6 +101,7 @@ export function Details({ node, tree, lens, comments = [], onPick, onFly, onEdit
         <HealthPill health={s.health} />
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
         {s.vague && <span className="pill pill-fog">Poorly defined</span>}
+        <SyncBadge node={node} />
       </div>
 
       <div className="actions">

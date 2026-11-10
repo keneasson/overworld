@@ -2,20 +2,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { editableOf, issueOf, itemKeyOf } from '@shared/issue-shape.js';
 import { api, storage } from '../api.js';
 import { isInside } from '../model/tree.js';
-import { StatusDot } from '../components/Panel.jsx';
+import { StatusDot, SyncBadge } from '../components/Panel.jsx';
+import { toSave } from '../model/sync.js';
 import { Icon } from '../components/Icon.jsx';
 import { IssueForm } from './IssueForm.jsx';
 import { editableItems } from './items.js';
 
 const NAME = 'projectmap.name';
 const SAVE_AFTER_MS = 700;
+const SYNC_POLL_MS = 2000; // while a save is on its way to GitHub
+const SYNC_POLL_TRIES = 20;
 const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
 
 /**
  * Edit several items of one area side by side. Every edit goes into the area's open changeset,
- * which is saved as you type and accepted or discarded as one.
+ * which is kept as you type and accepted or discarded as one. Accepting changes the map; only Save
+ * sends anything to GitHub (SYNC-07), and Save decides nothing (SYNC-08).
  */
-export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setComments, loadComments, onAccepted, onClose, toast, fail, mobile }) {
+export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setComments, loadComments, onAccepted, reloadNodes, onClose, toast, fail, mobile }) {
   const scope = tree.byId.get(scopeId) ?? tree.root;
   const items = useMemo(() => editableItems(tree, scope), [tree, scope]);
   const byKey = useMemo(() => new Map(items.map((n) => [itemKeyOf(n), n])), [items]);
@@ -25,7 +29,6 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
     return keys.slice(0, mobile ? 1 : 3);
   });
   const [changeset, setChangeset] = useState(null);
-  const [waiting, setWaiting] = useState([]);
   const [drafts, setDrafts] = useState(() => new Map());
   const [generation, setGeneration] = useState(0); // remounts the forms after a discard
   const [conflicts, setConflicts] = useState(() => new Set());
@@ -37,7 +40,7 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
   const pending = useRef(new Map());
   const csPromise = useRef(null);
 
-  // Pick up where the area was left: its open changeset, and what is waiting to reach GitHub.
+  // Pick up where the area was left: its open changeset.
   useEffect(() => {
     let cancelled = false;
     api
@@ -51,7 +54,6 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
           setDrafts(new Map(open.items.map((it) => [it.key, it.after])));
           setOpenKeys((ks) => [...new Set([...ks, ...open.items.map((it) => it.key).filter((k) => byKey.has(k))])]);
         }
-        setWaiting(changesets.filter((c) => c.status === 'accepted' && c.sync === 'waiting'));
         setLoaded(true);
       })
       .catch(fail);
@@ -114,11 +116,33 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
       const cs = await csPromise.current;
       const res = await api.acceptChangeset(projectId, cs.id);
       onAccepted(res.nodes);
-      toast(`Accepted ${res.changeset.items.length} edit${res.changeset.items.length === 1 ? '' : 's'}${res.changeset.sync === 'waiting' ? '. They wait here until GitHub sync is set up.' : ''}`);
+      const n = res.changeset.items.length;
+      toast(`Accepted ${n} edit${n === 1 ? '' : 's'}. Save to send ${n === 1 ? 'it' : 'them'} to GitHub.`);
       reset();
-      setWaiting((w) => (res.changeset.sync === 'waiting' ? [...w, res.changeset] : w));
     } catch (err) {
       if (err.status === 409 && err.conflicts) setConflicts(new Set(err.conflicts));
+      fail(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Save (SYNC-08): every unsaved item in the area goes to GitHub as it is now. Then watch until it has arrived.
+  const polls = useRef(null);
+  useEffect(() => () => clearTimeout(polls.current), []);
+  async function saveToGithub() {
+    setBusy(true);
+    try {
+      const { saved } = await api.save(projectId, unsaved);
+      toast(saved.length ? `Saving ${saved.length} to GitHub` : 'Nothing to save');
+      let tries = 0;
+      const poll = async () => {
+        const nodes = await reloadNodes();
+        const still = nodes?.some((n) => saved.includes(itemKeyOf(n)) && n.sync === 'saving');
+        if (still && ++tries < SYNC_POLL_TRIES) polls.current = setTimeout(poll, SYNC_POLL_MS);
+      };
+      if (saved.length) await poll();
+    } catch (err) {
       fail(err);
     } finally {
       setBusy(false);
@@ -182,6 +206,8 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
     return d && !same(d, editableOf(n));
   });
   const editedKeys = new Set(edited.map(itemKeyOf));
+  const unsaved = toSave(items);
+  const onItsWay = items.filter((n) => n.sync === 'saving').length;
   const toggle = (key) => setOpenKeys((ks) => (mobile ? [key] : ks.includes(key) ? ks.filter((k) => k !== key) : [...ks, key]));
   // Every behaviour already written in the area, drafts included, so new IDs never collide.
   const areaTexts = useMemo(() => tree.list.filter((n) => isInside(n, scope)).map((n) => drafts.get(itemKeyOf(n))?.markdown ?? n.body ?? ''), [tree, scope, drafts]);
@@ -199,7 +225,7 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
         </div>
         <span className="area-status" aria-live="polite">
           {status}
-          {waiting.length > 0 && ` · ${waiting.length} accepted, waiting for GitHub`}
+          {onItsWay > 0 && ` · ${onItsWay} on its way to GitHub`}
         </span>
         <label className="area-name">
           <span>You</span>
@@ -218,6 +244,9 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
         </button>
         <button type="button" className="primary" onClick={accept} disabled={busy || !edited.length}>
           <Icon name="check" size={18} /> Accept {edited.length || ''}
+        </button>
+        <button type="button" onClick={saveToGithub} disabled={busy || edited.length > 0 || !unsaved.length} title={edited.length ? 'Accept or discard your edits first' : 'Send accepted changes to GitHub'}>
+          Save {unsaved.length || ''} to GitHub
         </button>
       </header>
 
@@ -248,6 +277,7 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
                       <input type="checkbox" checked={openKeys.includes(key)} onChange={() => toggle(key)} />
                       <StatusDot status={n.status} />
                       <span>{n.title}</span>
+                      <SyncBadge node={n} compact />
                     </label>
                   </li>
                 );
@@ -270,6 +300,7 @@ export function AreaEditor({ projectId, tree, scopeId, startKey, comments, setCo
                       <StatusDot status={node.status} />
                       <span className="column-title">{issue ? `#${issue.number}` : node.title}</span>
                       {editedKeys.has(key) && <span className="tag tag-strong">Edited</span>}
+                      <SyncBadge node={node} />
                       <span className="spacer" />
                       {node.url && (
                         <a className="icon-btn small" href={node.url} target="_blank" rel="noopener noreferrer" aria-label="Open the source">
