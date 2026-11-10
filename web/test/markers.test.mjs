@@ -19,9 +19,9 @@ test('MARK-01 every region big enough is named at every zoom, and the selected r
   const { cx, cy } = scene.world;
   for (let k = k0; k < k0 * 40; k *= 1.25) {
     const view = { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H };
-    const { labels, watermarks } = namesAt(scene, view);
+    const { labels } = namesAt(scene, view);
     const named = new Map();
-    for (const l of [...labels, ...watermarks]) named.set(l.n.id, (named.get(l.n.id) ?? 0) + l.alpha);
+    for (const l of labels) named.set(l.n.id, (named.get(l.n.id) ?? 0) + l.alpha);
     const size = (n) => scene.geo.get(n.id).size * k;
     for (const n of scene.tree.list) {
       if (!n.depth) continue;
@@ -31,8 +31,7 @@ test('MARK-01 every region big enough is named at every zoom, and the selected r
       const [x0, y0, x1, y1] = scene.geo.get(n.id).bbox;
       const centre = [((x0 + x1) / 2) * k + view.x, ((y0 + y1) / 2) * k + view.y];
       const onScreen = centre[0] > 0 && centre[0] < W && centre[1] > 0 && centre[1] < H;
-      // Big enough to hold its name, and not so big that it is the land the whole screen is inside.
-      if (drawn && onScreen && size(n) >= 62 && size(n) <= T.yld * 1.7) {
+      if (drawn && onScreen && size(n) >= 62) {
         assert.ok((named.get(n.id) ?? 0) >= 0.5, `${n.title} is named at zoom ${k.toFixed(2)}`);
       }
     }
@@ -42,15 +41,6 @@ test('MARK-01 every region big enough is named at every zoom, and the selected r
   const view = { x: W / 2 - cx * k0, y: H / 2 - cy * k0, k: k0, width: W, height: H };
   assert.equal(namesAt(scene, view).labels.find((l) => l.n === tiny), undefined, 'too small to be named on its own');
   assert.equal(namesAt(scene, view, { selectedId: tiny.id }).labels.find((l) => l.n === tiny)?.alpha, 1, 'named once selected');
-  // A region whose name is handing over to its children's is named in full once selected.
-  let fading = null;
-  for (let k = k0; !fading && k < k0 * 40; k *= 1.1) {
-    const v = { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H };
-    const l = namesAt(scene, v).labels.find((c) => c.n.depth > 0 && c.alpha > 0.1 && c.alpha < 0.9);
-    if (l) fading = { v, id: l.n.id };
-  }
-  assert.ok(fading, 'some zoom hands a name over');
-  assert.equal(namesAt(scene, fading.v, { selectedId: fading.id }).labels.find((l) => l.n.id === fading.id).alpha, 1);
 });
 
 test('MARK-02 MARK-03 an item shows what it holds as markers, and combined markers say so', () => {
@@ -163,22 +153,37 @@ test('MARK-10 zooming in adds one layer of detail at a time: there, kind, name, 
     seen = count;
   }
   assert.equal(seen, 4);
+});
 
-  // The last layer is the items: a region's label is gone before its items' labels begin, so they never stack.
+test('MARK-13 zooming in only adds: a region keeps its pin beside its items, and each marker is counted once', () => {
   const scene = buildScene(demoProject().nodes, 'demo', null, 'organic');
   const W = 1200, H = 800;
   const k0 = fitScale(W, H, scene.world) * 0.8;
   const { cx, cy } = scene.world;
-  let handovers = 0;
+  const at = (k) => ({ x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H });
+  const inside = (n, v) => {
+    const [px, py] = scene.geo.get(n.id).label;
+    const sx = px * v.k + v.x, sy = py * v.k + v.y;
+    return sx > 0 && sx < W && sy > 0 && sy < H;
+  };
+  let before = new Map(), together = 0;
   for (let k = k0; k < k0 * 40; k *= 1.08) {
-    const { labels } = namesAt(scene, { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H });
-    const shown = new Set(labels.map((l) => l.n.id));
-    for (const l of labels) {
-      if (!l.n.depth) continue;
-      const stacked = l.n.children.filter((c) => shown.has(c.id));
-      assert.deepEqual(stacked.map((c) => c.title), [], `${l.n.title} and its items are never labelled together (zoom ${k.toFixed(2)})`);
-      if (l.n.children.length && l.alpha < 0.9) handovers++;
+    const v = at(k);
+    const { labels } = namesAt(scene, v);
+    const now = new Map(labels.filter((l) => l.n.depth > 0).map((l) => [l.n.id, l]));
+    for (const [id, l] of before) {
+      if (l.alpha < 0.9 || !inside(l.n, v)) continue;
+      assert.ok((now.get(id)?.alpha ?? 0) >= 0.9, `${l.n.title} stays named while it is on screen (zoom ${k.toFixed(2)})`);
     }
+    for (const l of now.values()) if (l.n.children.some((c) => now.has(c.id))) together++;
+    before = now;
   }
-  assert.ok(handovers > 0, 'regions do hand over as the zoom passes them');
+  assert.ok(together > 0, 'a region and its items are named together');
+
+  // Beside its named items a region shows only what is its own, so a question is never counted twice.
+  const asks = `${CLEAR.body}\n\n## Open questions\n- Which store?`;
+  const tree = buildTree([root, item('epic', 'root', { body: asks }), item('task', 'epic', { body: asks })]);
+  const epic = tree.byId.get('epic');
+  assert.deepEqual(types(labelFor(epic, 200).badges), { question: 2 }, 'alone, it rolls up what it holds');
+  assert.deepEqual(types(labelFor(epic, 200, undefined, true).badges), { question: 1 }, 'beside its items, only its own');
 });
