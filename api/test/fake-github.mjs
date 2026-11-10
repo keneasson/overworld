@@ -27,13 +27,16 @@ export function fakeShop() {
     'apps/web/components/site-header.tsx',
     'docs/behavior/checkout.md',
   ].map((path) => ({ path, type: 'blob' }));
+  const docs = {}; // more files' text, by path: a test adds them, with their paths in `tree`
   return {
     issues,
     issue,
+    tree,
+    docs,
     fetch: async (url) => {
       const raw = url.match(/^https:\/\/raw\.githubusercontent\.com\/octo\/shop\/main\/(.*)$/);
       const body = raw
-        ? ((files[decodeURIComponent(raw[1])] && JSON.stringify(files[decodeURIComponent(raw[1])])) ?? (raw[1].endsWith('checkout.md') ? spec : null))
+        ? (docs[decodeURIComponent(raw[1])] ?? (files[decodeURIComponent(raw[1])] && JSON.stringify(files[decodeURIComponent(raw[1])])) ?? (raw[1].endsWith('checkout.md') ? spec : null))
         : url.includes('/issues?')
           ? issues
           : url.includes('/pulls?')

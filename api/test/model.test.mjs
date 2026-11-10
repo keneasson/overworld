@@ -33,21 +33,30 @@ async function setup() {
     assert.ok(res.status < 500, `${method} ${path}: ${res.status}`);
     return res;
   };
-  return { table, seen, shop, call };
+  const mcp = async (token, name, args = {}) => {
+    const res = await api({ method: 'POST', path: '/api/mcp', body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, headers: { authorization: `Bearer ${token}` } });
+    assert.ok(!res.body.result?.isError, `${name}: ${res.body.result?.content?.[0]?.text}`);
+    return res.body.result.structuredContent;
+  };
+  return { table, seen, shop, call, mcp };
 }
 
-/** A project with everything a project can hold: nodes, a changeset and a comment. */
-async function fullProject(call) {
+/** A project with everything a project can hold: nodes, a changeset, a comment, and an agent's records. */
+async function fullProject(call, mcp) {
   const { project, nodes } = (await call('POST', '/api/import/github', { repo: 'octo/shop' })).body;
   const pid = project.id;
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: nodes[0].id })).body.changeset;
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think about the vibe', markdown: 'Ours.' });
   await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.' });
-  return { pid, nodes, cs };
+  const { token } = (await call('POST', `/api/projects/${pid}/agents`, { name: 'Builder' })).body;
+  await call('POST', `/api/projects/${pid}/facts`, { text: 'Keep it small.' });
+  await mcp(token, 'ask', { place: 'issue-4', question: 'Which card provider?', request_key: 'q1' });
+  await mcp(token, 'context', { issue: 'issue-4' });
+  return { pid, nodes, cs, token };
 }
 
 test('DATA-01 no request the API serves scans the table', async () => {
-  const { seen, shop, call } = await setup();
+  const { seen, shop, call, mcp } = await setup();
   const demo = (await call('GET', '/api/projects')).body.projects[0].id;
   const blank = (await call('POST', '/api/projects', { title: 'Hand made' })).body.project.id;
   const { body: map } = await call('GET', `/api/projects/${demo}`);
@@ -55,7 +64,9 @@ test('DATA-01 no request the API serves scans the table', async () => {
   await call('PATCH', `/api/projects/${blank}/nodes/${area.id}`, { status: 'done' });
   await call('DELETE', `/api/projects/${blank}/nodes/${area.id}`);
   await call('POST', '/api/import/json', map);
-  const { pid, cs } = await fullProject(call);
+  const { pid, cs, token } = await fullProject(call, mcp);
+  for (const tool of ['prime', 'zoom', 'next_work']) await mcp(token, tool);
+  await call('GET', `/api/projects/${pid}/claims`);
   const c = (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-3', text: 'Hm.' })).body.comment;
   await call('PATCH', `/api/projects/${pid}/comments/issue-3/${c.id}`, { resolved: true });
   await call('DELETE', `/api/projects/${pid}/comments/issue-3/${c.id}`);
@@ -72,9 +83,9 @@ test('DATA-01 no request the API serves scans the table', async () => {
 });
 
 test('DATA-02 opening a map reads the project and its nodes in one query, and nothing else', async () => {
-  const { seen, call } = await setup();
-  const { pid } = await fullProject(call);
-  await fullProject(call);
+  const { seen, call, mcp } = await setup();
+  const { pid } = await fullProject(call, mcp);
+  await fullProject(call, mcp);
   seen.queries = [];
   const { body } = await call('GET', `/api/projects/${pid}`);
   assert.equal(seen.queries.length, 1, 'one query');
@@ -85,16 +96,16 @@ test('DATA-02 opening a map reads the project and its nodes in one query, and no
 });
 
 test('DATA-03 deleting a project removes its partition and touches nothing else', async () => {
-  const { table, call } = await setup();
+  const { table, call, mcp } = await setup();
   await call('GET', '/api/projects');
-  const { pid } = await fullProject(call);
-  await fullProject(call);
+  const { pid } = await fullProject(call, mcp);
+  await fullProject(call, mcp);
   const before = await table.scan();
   const partition = before.find((it) => it.entity === 'project' && it.id === pid).PK;
-  assert.ok(new Set(before.filter((it) => it.PK === partition).map((it) => it.entity)).size === 4, 'it held nodes, a changeset and a comment');
+  assert.deepEqual(new Set(before.filter((it) => it.PK === partition).map((it) => it.entity)), new Set(['project', 'node', 'changeset', 'comment', 'agent', 'fact', 'action', 'request', 'limit']), "it held its map, a changeset, a comment, and an agent's records");
   await call('DELETE', `/api/projects/${pid}`);
   const after = await table.scan();
   assert.equal(after.filter((it) => it.PK === partition).length, 0, 'everything in its partition is gone');
-  const ours = (it) => it.PK === partition || (it.entity === 'store-link' && it.projectId === pid);
-  assert.deepEqual(after, before.filter((it) => !ours(it)), 'its store links go too, and everything else is as it was');
+  const ours = (it) => it.PK === partition || (['store-link', 'token'].includes(it.entity) && it.projectId === pid);
+  assert.deepEqual(after, before.filter((it) => !ours(it)), "its store links and its agents' tokens go too, and everything else is as it was");
 });

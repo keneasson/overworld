@@ -75,7 +75,18 @@ export async function importGitHub({ repo, token }, fetchImpl = fetch) {
 
   // Open pull requests saying "Closes #N" put issue N in progress. One page is plenty for most repositories.
   const pulls = await rest(`/repos/${owner}/${name}/pulls?state=open&per_page=100`).catch(() => []);
-  return buildProject({ repo: info, paths, manifests, specs, issues, pulls: (Array.isArray(pulls) ? pulls : []).map((p) => ({ number: p.number, title: p.title, body: p.body ?? '' })) });
+  const built = buildProject({ repo: info, paths, manifests, specs, issues, pulls: (Array.isArray(pulls) ? pulls : []).map((p) => ({ number: p.number, title: p.title, body: p.body ?? '' })) });
+  return { ...built, guide: await guideFor(paths, raw) };
+}
+
+const GUIDES = ['CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md'];
+
+/** What an agent should read first (MCP-08): the guides the repository has, and CONTRIBUTING.md's "Standing decisions". */
+async function guideFor(paths, raw) {
+  const conventions = GUIDES.filter((g) => paths.includes(g));
+  const contributing = conventions.includes('CONTRIBUTING.md') ? await raw('CONTRIBUTING.md').catch(() => null) : null;
+  const m = (contributing ?? '').match(/^##[ \t]+Standing decisions[ \t]*\n([\s\S]*?)(?=^##[ \t]|(?![\s\S]))/im);
+  return { conventions, standingDecisions: m ? m[1].trim().slice(0, 12000) : '' };
 }
 
 /** An issue as GitHub's REST API (and its webhooks) send it, in the shape the mapper reads. */

@@ -12,7 +12,14 @@
 //   transact({ puts, deletes })                      all or nothing, at most 100 items (the outbox)
 //   claim(key, { owner, until, now })                -> true if this owner now holds the lease: nobody did,
 //                                                    it ran out, or it was already this owner's
+//   create(item)                                     -> true if it was put, false if an item with its key exists
+//   count(key, { limit, expiresAt })                 -> the count after adding one, or null if it already reached `limit`
+//   claimAll(items, { owner, now })                  -> true if this owner now holds every item (each has `until`), all or none:
+//                                                    nobody held one, its hold ran out, or it was already this owner's
+//   release(key, { owner, until })                   -> true if it was deleted: it was this owner's (and held until `until`)
 //   scan()                                           every item; for migrations and backups only
+//
+// `expiresAt` (seconds since 1970) is the table's TTL: DynamoDB deletes such items some time after, so a read still checks it.
 
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -26,7 +33,7 @@ export function createTable(env = process.env) {
 
 export async function dynamoTable(tableName, { region } = {}) {
   const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
-  const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, QueryCommand, BatchWriteCommand, ScanCommand, TransactWriteCommand } = await import('@aws-sdk/lib-dynamodb');
+  const { DynamoDBDocumentClient, GetCommand, PutCommand, DeleteCommand, QueryCommand, BatchWriteCommand, ScanCommand, TransactWriteCommand, UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
   const db = DynamoDBDocumentClient.from(new DynamoDBClient(region ? { region } : {}), {
     marshallOptions: { removeUndefinedValues: true, convertEmptyValues: false },
   });
@@ -98,6 +105,73 @@ export async function dynamoTable(tableName, { region } = {}) {
         throw err;
       }
     },
+    async create(item) {
+      try {
+        await db.send(new PutCommand({ TableName: tableName, Item: item, ConditionExpression: 'attribute_not_exists(PK)' }));
+        return true;
+      } catch (err) {
+        if (err.name === 'ConditionalCheckFailedException') return false;
+        throw err;
+      }
+    },
+    async count(key, { limit, expiresAt }) {
+      try {
+        const res = await db.send(
+          new UpdateCommand({
+            TableName: tableName,
+            Key: key,
+            UpdateExpression: 'ADD #n :one SET #exp = :exp, #entity = :entity',
+            ConditionExpression: 'attribute_not_exists(#n) OR #n < :limit',
+            ExpressionAttributeNames: { '#n': 'n', '#exp': 'expiresAt', '#entity': 'entity' },
+            ExpressionAttributeValues: { ':one': 1, ':limit': limit, ':exp': expiresAt, ':entity': 'limit' },
+            ReturnValues: 'UPDATED_NEW',
+          }),
+        );
+        return res.Attributes.n;
+      } catch (err) {
+        if (err.name === 'ConditionalCheckFailedException') return null;
+        throw err;
+      }
+    },
+    async claimAll(items, { owner, now }) {
+      if (items.length > 100) throw new Error('A transaction holds at most 100 items');
+      try {
+        await db.send(
+          new TransactWriteCommand({
+            TransactItems: items.map((Item) => ({
+              Put: {
+                TableName: tableName,
+                Item: { ...Item, owner },
+                ConditionExpression: 'attribute_not_exists(PK) OR #until < :now OR #owner = :owner',
+                ExpressionAttributeNames: { '#until': 'until', '#owner': 'owner' },
+                ExpressionAttributeValues: { ':now': now, ':owner': owner },
+              },
+            })),
+          }),
+        );
+        return true;
+      } catch (err) {
+        if (err.name === 'TransactionCanceledException') return false;
+        throw err;
+      }
+    },
+    async release(key, { owner, until }) {
+      try {
+        await db.send(
+          new DeleteCommand({
+            TableName: tableName,
+            Key: key,
+            ConditionExpression: until ? '#owner = :owner AND #until = :until' : '#owner = :owner',
+            ExpressionAttributeNames: until ? { '#owner': 'owner', '#until': 'until' } : { '#owner': 'owner' },
+            ExpressionAttributeValues: until ? { ':owner': owner, ':until': until } : { ':owner': owner },
+          }),
+        );
+        return true;
+      } catch (err) {
+        if (err.name === 'ConditionalCheckFailedException') return false;
+        throw err;
+      }
+    },
     async scan() {
       return all(ScanCommand, {});
     },
@@ -121,6 +195,9 @@ export function fileTable(path) {
     return items;
   }
   async function save() {
+    // Like the TTL in AWS, if sooner: expired items go.
+    const now = Date.now() / 1000;
+    for (const [k, it] of items) if (it.expiresAt && it.expiresAt <= now) items.delete(k);
     const snapshot = JSON.stringify({ items: [...items.values()] }, null, 1);
     writing = writing.then(async () => {
       await mkdir(dirname(path), { recursive: true });
@@ -172,6 +249,37 @@ export function fileTable(path) {
       const held = all.get(at(key));
       if (held && held.until >= now && held.owner !== owner) return false;
       all.set(at(key), { ...key, entity: 'lease', owner, until });
+      await save();
+      return true;
+    },
+    async create(item) {
+      const all = await load();
+      if (all.has(at(item))) return false;
+      all.set(at(item), clone(item));
+      await save();
+      return true;
+    },
+    async count(key, { limit, expiresAt }) {
+      const all = await load();
+      const held = all.get(at(key));
+      if ((held?.n ?? 0) >= limit) return null;
+      const n = (held?.n ?? 0) + 1;
+      all.set(at(key), { ...key, entity: 'limit', n, expiresAt });
+      await save();
+      return n;
+    },
+    async claimAll(list, { owner, now }) {
+      const all = await load();
+      if (list.some((it) => { const held = all.get(at(it)); return held && held.until >= now && held.owner !== owner; })) return false;
+      for (const it of list) all.set(at(it), clone({ ...it, owner }));
+      await save();
+      return true;
+    },
+    async release(key, { owner, until }) {
+      const all = await load();
+      const held = all.get(at(key));
+      if (!held || held.owner !== owner || (until && held.until !== until)) return false;
+      all.delete(at(key));
       await save();
       return true;
     },

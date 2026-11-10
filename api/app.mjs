@@ -9,6 +9,8 @@ import { applyTo, conflictsOf, editableOf, findItem, same } from './edits.mjs';
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
+import { createAgents } from './agents.mjs';
+import { createMcp } from './mcp.mjs';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -24,9 +26,12 @@ const digest = (s) => createHash('sha256').update(String(s)).digest();
  * @param {object} [o.stores] each project's store (api/stores/index.mjs)
  * @param {() => Promise<string>} [o.webhookSecret] the GitHub App's webhook secret
  * @param {(projectId: string) => void} [o.onSaved] runs after a save: in AWS the table's stream wakes the worker instead
+ * @param {() => number} [o.clock] the time, in milliseconds: agents' claims and limits run on it
+ * @param {number} [o.agentCallsPerMinute] each agent's limit on MCP tool calls
  */
-export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, stores = createStores({ fetchImpl }), webhookSecret = null, onSaved = null }) {
+export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, stores = createStores({ fetchImpl }), webhookSecret = null, onSaved = null, clock = Date.now, agentCallsPerMinute }) {
   const expected = accessKey ? digest(accessKey) : null;
+  const agents = createAgents({ model, clock, callsPerMinute: agentCallsPerMinute });
 
   function authorize(headers) {
     if (!expected) return;
@@ -168,6 +173,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/projects\/([\w-]+)$/,
       async ({ params: [pid] }) => {
         const { project } = await loadProject(pid);
+        await model.agents.revokeAll(pid);
         await model.projects.delete(pid);
         const store = stores.forProject(project);
         if (store) await model.links.unlink(store.key, pid);
@@ -427,7 +433,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/import\/github$/,
       async ({ body }) => {
         const data = await importGitHub({ repo: body?.repo, token: body?.token || undefined }, fetchImpl);
-        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle });
+        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle, guide: data.guide });
         await model.links.link(stores.forProject(saved.project).key, saved.project.id);
         return saved;
       },
@@ -450,14 +456,82 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         return { project: updated, nodes: kept.nodes };
       },
     ],
+
+    // ---- Agents (#4): people make and revoke their tokens, and see what they claimed, changed and remembered ----
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/agents$/, async ({ params: [pid] }) => {
+      await loadProjectHead(pid);
+      return { agents: (await model.agents.list(pid)).map(({ tokenHash, ...a }) => a) };
+    }],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/agents$/,
+      // The token is shown this once; only its hash is kept (MCP-07).
+      async ({ params: [pid], body }) => {
+        await loadProjectHead(pid);
+        return agents.issueToken(pid, body?.name);
+      },
+      { status: 201 },
+    ],
+
+    [
+      'DELETE',
+      /^\/api\/projects\/([\w-]+)\/agents\/([\w-]+)$/,
+      async ({ params: [pid, aid] }) => {
+        const agent = await agents.revoke(pid, aid);
+        if (!agent) throw new HttpError(404, 'Agent not found');
+        return { agent };
+      },
+    ],
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/agents\/([\w-]+)\/actions$/, async ({ params: [pid, aid] }) => ({ actions: await model.actions.list(pid, aid) })],
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/claims$/, async ({ params: [pid] }) => {
+      await loadProjectHead(pid);
+      return { claims: [...(await agents.liveClaims(pid)).live.values()] };
+    }],
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/facts$/, async ({ params: [pid] }) => ({ facts: await model.facts.list(pid) })],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/facts$/,
+      async ({ params: [pid], body }) => {
+        await loadProjectHead(pid);
+        return { fact: await agents.remember(pid, { name: author(body?.author) }, body?.text) };
+      },
+      { status: 201 },
+    ],
+
+    [
+      'DELETE',
+      /^\/api\/projects\/([\w-]+)\/facts\/([\w:.-]+)\/([\w-]+)$/,
+      async ({ params: [pid, at, id] }) => {
+        await model.facts.delete(pid, { at, id });
+        return { deleted: id };
+      },
+    ],
   ];
 
-  return async function handle({ method, path, headers = {}, body = null, rawBody = null }) {
+  // The MCP server signs agents in with their own tokens, and reaches the routes above as a trusted caller.
+  const mcp = createMcp({ model, agents, log, call: (method, path, body) => handle({ method, path, body, trusted: true }) });
+
+  async function loadProjectHead(pid) {
+    const project = await model.projects.get(pid);
+    if (!project) throw new HttpError(404, 'Project not found');
+    return project;
+  }
+
+  return handle;
+
+  async function handle({ method, path, headers = {}, body = null, rawBody = null, trusted = false }) {
     try {
+      if (path === '/api/mcp') return await mcp({ method, headers, body });
       for (const [m, re, fn, opts = {}] of routes) {
         const match = path.match(re);
         if (!match || m !== method) continue;
-        if (!opts.public) authorize(headers);
+        if (!opts.public && !trusted) authorize(headers);
         const result = await fn({ params: match.slice(1), body, headers, rawBody });
         return { status: opts.status ?? 200, body: result };
       }
@@ -468,5 +542,5 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       if (status >= 500) log.error?.(err);
       return { status, body: { error: status >= 500 ? 'Internal error' : err.message, ...(err.conflicts ? { conflicts: err.conflicts } : {}) } };
     }
-  };
+  }
 }

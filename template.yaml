@@ -55,6 +55,10 @@ Resources:
             - { AttributeName: GSI1PK, KeyType: HASH }
             - { AttributeName: GSI1SK, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
+      # Agents' request keys, call counts and action log (#4) carry expiresAt, so DynamoDB deletes them, free, when they run out.
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
       # A newly saved item (the outbox, #3) wakes the worker through the stream; reading it costs nothing while idle.
       StreamSpecification:
         StreamViewType: NEW_IMAGE
