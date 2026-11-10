@@ -41,26 +41,81 @@ export function badgesOf(n, live = {}) {
   return BADGES.filter((b) => counts[b] > 0).map((type) => ({ type, count: counts[type] }));
 }
 
+// ---------- markers: what a place holds (#46) ----------
+
+// In the order they sit beside a symbol: what needs someone first.
+export const MARKERS = ['fire', 'fog', 'question', 'pull', 'agent', 'comment'];
+export const MARKER_LABEL = { fire: 'Open bug', fog: 'Fog: behaviour nobody has defined yet', ...BADGE_LABEL };
+const CODE_FIRE_LABEL = 'Code with an open bug';
+const PRIORITY = { P0: 0, P1: 1, P2: 2, P3: 3 };
+const settled = (n) => n.status === 'done' || n.status === 'rejected';
+const isCode = (n) => n.tags?.includes('code');
+
+/** What one item holds itself, by marker type: { fire: 1, question: 2, … }. */
+function ownCounts(n, live) {
+  const counts = Object.fromEntries(badgesOf(n, live).map((b) => [b.type, b.count]));
+  if (n.kind === 'bug' && !settled(n)) counts.fire = 1;
+  // Fog is work nobody has defined yet: an unsettled leaf that is poorly defined. Land mapped from the code is not work.
+  if (!n.children.length && n.stats?.vague && !settled(n) && !isCode(n)) counts.fog = 1;
+  return counts;
+}
+
+const rollups = new WeakMap();
+/**
+ * What an item holds (MARK-02), and for a region everything inside it rolled up into one marker per kind
+ * with a count (MARK-04): [{ type, count, target, on }]. `target` is the item choosing the marker goes to
+ * (the most urgent bug, else the first in map order); `on` is 'code' when an open bug sits in code (MARK-03).
+ */
+export function markersOf(n, live) {
+  if (!live && rollups.has(n)) return rollups.get(n);
+  const totals = new Map();
+  const add = (type, count, item) => {
+    const t = totals.get(type);
+    if (!t) totals.set(type, { type, count, target: item.id, rank: PRIORITY[item.priority] ?? 9 });
+    else {
+      t.count += count;
+      const rank = PRIORITY[item.priority] ?? 9;
+      if (type === 'fire' && rank < t.rank) Object.assign(t, { target: item.id, rank });
+    }
+  };
+  (function visit(m) {
+    for (const [type, count] of Object.entries(ownCounts(m, live))) add(type, count, m);
+    for (const c of m.children) visit(c);
+  })(n);
+  const out = MARKERS.filter((t) => totals.has(t)).map((t) => {
+    const { rank, ...m } = totals.get(t);
+    return t === 'fire' && isCode(n) ? { ...m, on: 'code' } : m;
+  });
+  if (!live) rollups.set(n, out);
+  return out;
+}
+
+/** What a marker means, for the legend and for screen readers. */
+export const markerLabel = (m) => (m.type === 'fire' && m.on === 'code' ? CODE_FIRE_LABEL : MARKER_LABEL[m.type]);
+
 /**
  * What an item shows at screen size `s` (the square root of its area on screen, in pixels):
- * { symbol, fill, title, lines, badges }. Small items get one line of title and no badges.
+ * { symbol, fill, title, lines, badges }. `badges` are its markers: its own for an item, rolled up for a region.
+ * Small items get one line of title and no markers.
  */
 export function labelFor(n, s, live) {
   const roomy = n.depth === 0 || s >= 95;
-  return { symbol: n.kind, fill: statusColor(n), title: shortTitle(n), lines: roomy ? 2 : 1, badges: roomy ? badgesOf(n, live) : [] };
+  return { symbol: n.kind, fill: statusColor(n), title: shortTitle(n), lines: roomy ? 2 : 1, badges: roomy ? markersOf(n, live) : [] };
 }
 
-/** Every symbol, fill and badge this map uses, for the legend (SYM-04): nothing that isn't on it. */
+/** Every symbol, fill, badge and marker this map uses, for the legend (SYM-04): nothing that isn't on it. */
 export function symbolsInUse(tree, live) {
-  const kinds = new Set(), fills = new Set(), badges = new Set();
+  const kinds = new Set(), fills = new Set(), badges = new Set(), markers = new Map();
   for (const n of tree.list) {
     kinds.add(n.kind);
     fills.add(statusKey(n));
     for (const b of badgesOf(n, live)) badges.add(b.type);
+    for (const m of markersOf(n, live)) if (!BADGES.includes(m.type)) markers.set(`${m.type}${m.on ?? ''}`, m);
   }
   return {
     kinds: Object.keys(KIND_SYMBOL_LABEL).filter((k) => kinds.has(k)).map((k) => ({ symbol: k, label: KIND_SYMBOL_LABEL[k] })),
     fills: STATUS_FILLS.filter((f) => fills.has(f.key)).map(({ color, label }) => ({ color, label })),
     badges: BADGES.filter((b) => badges.has(b)).map((b) => ({ symbol: b, label: BADGE_LABEL[b] })),
+    markers: [...markers.values()].sort((a, b) => MARKERS.indexOf(a.type) - MARKERS.indexOf(b.type) || (a.on ? 1 : 0) - (b.on ? 1 : 0)).map((m) => ({ symbol: m.type, on: m.on, label: markerLabel(m) })),
   };
 }

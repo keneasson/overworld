@@ -1060,6 +1060,21 @@ button.danger.armed {
 .badge-chip.question {
   color: #8b5cf6;
 }
+.badge-chip.fire {
+  color: #d93025;
+}
+.badge-chip.fog {
+  color: #5f6b7a;
+}
+.badge-chip.wide {
+  width: 34px;
+  display: inline-flex;
+  justify-content: center;
+  gap: 1px;
+}
+.badge-chip.wide svg:first-child {
+  color: var(--muted);
+}
 .legend li {
   display: flex;
   align-items: center;

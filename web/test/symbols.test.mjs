@@ -65,7 +65,7 @@ test('SYM-03 badges show pull requests, agents, comments and open questions, and
   ]);
   assert.deepEqual(badgesOf(tree.byId.get('b')), [{ type: 'question', count: 2 }], 'a "?" badge with the count');
   assert.deepEqual(badgesOf(tree.byId.get('c')), [], 'a done item has no open pull request');
-  assert.deepEqual(labelFor(tree.byId.get('b'), 400).badges, badgesOf(tree.byId.get('b')));
+  assert.ok(labelFor(tree.byId.get('b'), 400).badges.some((m) => m.type === 'question' && m.count === 2), 'the label carries the badge');
   assert.deepEqual(badgesOf(buildTree([root, item('d', 'root', { body: '## Open questions\nNone.' })]).byId.get('d')), []);
 
   // The same items without the questions: every lens paints the land the same.

@@ -25,6 +25,45 @@ export function thresholds(width, height) {
   return { vmin, yld, sub: yld * 0.42 };
 }
 
+/**
+ * Which regions are named at this view (MARK-01), and how strongly (0 to 1):
+ *   labels      a region shows its name (with its symbol and markers) while its own land shows;
+ *   watermarks  once its children's land fades in, its name passes to big faint capitals across them,
+ *               so no level between the project card and the island goes unnamed.
+ * The selected region is always named, whatever its size.
+ */
+export function namesAt(scene, view, { selectedId = null, T = thresholds(view.width, view.height) } = {}) {
+  const { tree, geo } = scene;
+  const { x, y, k, width: W, height: H } = view;
+  const vp = [-x / k, -y / k, (W - x) / k, (H - y) / k];
+  const inView = (bb) => bb[2] >= vp[0] && bb[0] <= vp[2] && bb[3] >= vp[1] && bb[1] <= vp[3];
+  const labels = [];
+  const watermarks = [];
+  const walk = (n, alpha) => {
+    const g = geo.get(n.id);
+    if (!inView(g.bbox)) return;
+    const s = g.size * k;
+    const sub = n.children.length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
+    // The project's own name is the card in the sea, so it stays until its land is well under way.
+    const handover = n.depth === 0 ? (n.children.length ? smoothstep(T.yld * 0.88, T.yld, s) : 0) : sub;
+    const own = alpha * (1 - handover) * smoothstep(38, 62, s);
+    if (own > 0.02) labels.push({ n, g, s, alpha: own });
+    if (n.depth > 0 && sub > 0.02) {
+      const wm = alpha * sub * (1 - smoothstep(T.yld * 1.7, T.yld * 2.8, s));
+      if (wm > 0.02) watermarks.push({ n, g, s, alpha: wm });
+    }
+    if (sub > 0.01) for (const c of n.children) walk(c, sub);
+  };
+  walk(tree.root, 1);
+  const selected = selectedId && tree.byId.get(selectedId);
+  if (selected && inView(geo.get(selected.id).bbox)) {
+    const at = labels.find((l) => l.n === selected);
+    if (at) at.alpha = 1;
+    else labels.push({ n: selected, g: geo.get(selected.id), s: Math.max(62, geo.get(selected.id).size * k), alpha: 1 });
+  }
+  return { labels, watermarks };
+}
+
 /** The zoom at which all the land fits the viewport. */
 export function fitScale(width, height, world) {
   return Math.min(width / world.w, height / world.h) * 0.92;
@@ -224,7 +263,7 @@ function labelBlock(ctx, c, { k, theme, W, live }) {
   ctx.font = font;
   const titleW = Math.max(0, ...lines.map((l) => ctx.measureText(l).width));
   ctx.font = `700 10.5px ${FONT}`;
-  const badges = label.badges.map((b) => ({ ...b, w: 16 + (b.count > 1 ? ctx.measureText(String(b.count)).width + 3 : 0) + 6 }));
+  const badges = label.badges.map((b) => ({ ...b, w: 16 + (b.on ? 12 : 0) + (b.count > 1 ? ctx.measureText(String(b.count)).width + 3 : 0) + 6 }));
   const badgesW = badges.reduce((sum, b) => sum + b.w + 3, 0);
   const lh = Math.round(size * 1.25);
   const head = 2 * r + 4;
@@ -266,6 +305,7 @@ function drawBlock(ctx, block, rect, alpha, theme) {
   drawSymbol(ctx, label.symbol, cx, cy, r * 1.15, inkOn(label.fill));
 
   let bx = cx + r + 4;
+  const hits = [];
   for (const b of block.badges) {
     const by = cy - r * 0.35;
     ctx.beginPath();
@@ -275,13 +315,20 @@ function drawBlock(ctx, block, rect, alpha, theme) {
     ctx.lineWidth = 1;
     ctx.strokeStyle = theme.dark ? '#5d6f9e' : '#9aa0a6';
     ctx.stroke();
-    drawSymbol(ctx, b.type, bx + 3 + 5.5, by, 11, BADGE_INK[b.type]);
+    // Markers that combine say so (MARK-03): code with a fire is code with an open bug.
+    let ix = bx + 3 + 5.5;
+    if (b.on) {
+      drawSymbol(ctx, b.on, ix, by, 11, theme.muted);
+      ix += 12;
+    }
+    drawSymbol(ctx, b.type, ix, by, 11, BADGE_INK[b.type]);
+    if (b.target) hits.push({ target: b.target, type: b.type, rect: { x: bx, y: by - 8, w: b.w, h: 16 } });
     if (b.count > 1) {
       ctx.font = `700 10.5px ${FONT}`;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = theme.text;
-      ctx.fillText(String(b.count), bx + 16, by + 0.5);
+      ctx.fillText(String(b.count), ix + 10.5, by + 0.5);
     }
     bx += b.w + 3;
   }
@@ -302,9 +349,10 @@ function drawBlock(ctx, block, rect, alpha, theme) {
     y += block.lh;
   }
   ctx.globalAlpha = 1;
+  return hits;
 }
 
-const BADGE_INK = { pull: '#8250df', agent: '#1a73e8', comment: '#e8710a', question: '#8b5cf6' };
+const BADGE_INK = { fire: '#d93025', fog: '#5f6b7a', pull: '#8250df', agent: '#1a73e8', comment: '#e8710a', question: '#8b5cf6' };
 
 function drawPin(ctx, x, y) {
   ctx.save();
@@ -346,7 +394,6 @@ export function drawMap(ctx, scene, view, opts) {
   const inView = (bb) => bb[2] >= vp[0] && bb[0] <= vp[2] && bb[3] >= vp[1] && bb[1] <= vp[3];
   const subOf = (n, s = sizeOf(n)) => (n.children.length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0);
   // A parent's label fades out completely before its children's labels fade in, so text never stacks.
-  const yieldOut = (n, s = sizeOf(n)) => (n.children.length ? smoothstep(T.yld * 0.88, T.yld * 1.0, s) : 0);
   const yieldOf = (n, s = sizeOf(n)) => (n.children.length ? smoothstep(T.yld * 0.95, T.yld * 1.1, s) : 0);
 
   // Ocean with a little bathymetry (shallow water) around every coast.
@@ -376,11 +423,9 @@ export function drawMap(ctx, scene, view, opts) {
   ctx.save();
   ctx.clip(coastPath);
   const drawn = [];
-  const labelCands = [];
-  const watermarks = [];
   let hatchPattern = null;
   const fogged = [];
-  const walk = (n, alpha, parentYield) => {
+  const walk = (n, alpha) => {
     const g = geo.get(n.id);
     if (!inView(g.bbox)) return;
     const s = g.size * k;
@@ -398,21 +443,13 @@ export function drawMap(ctx, scene, view, opts) {
       drawn.push({ n, g, alpha });
     }
     const sub = subOf(n, s);
-    const yld = yieldOf(n, s);
     // Fog belongs to what you can see: a region hands its cloud to its children as they fade in.
     const thick = lens.fog && alpha > 0.01 ? alpha * (1 - sub) * lens.fog(n) : 0;
     if (thick > 0.02) fogged.push({ g, s, w: thick });
-    if (!thumbnail) {
-      const own = (1 - yieldOut(n, s)) * parentYield * smoothstep(38, 62, s);
-      if (own > 0.02) labelCands.push({ n, g, s, alpha: own });
-      if (yld > 0.02 && n.depth > 0) {
-        const wm = yld * (1 - smoothstep(T.yld * 1.7, T.yld * 2.8, s)) * parentYield;
-        if (wm > 0.02) watermarks.push({ n, g, s, alpha: wm });
-      }
-    }
-    if (sub > 0.01) for (const c of n.children) walk(c, sub, yld);
+    if (sub > 0.01) for (const c of n.children) walk(c, sub);
   };
-  walk(tree.root, 1, 1);
+  walk(tree.root, 1);
+  const { labels: labelCands, watermarks } = thumbnail ? { labels: [], watermarks: [] } : namesAt(scene, view, { selectedId, T });
 
   // Borders: deepest first so country lines sit on top of province lines.
   drawn.sort((a, b) => b.n.depth - a.n.depth);
@@ -669,8 +706,8 @@ export function drawMap(ctx, scene, view, opts) {
     const rect = { x: p[0] - block.w / 2, y: p[1] - block.h / 2, w: block.w, h: block.h };
     if (c.n !== selected && placed.some((r) => rectsOverlap(r, rect, 3))) continue;
     if (c.alpha >= 0.3) placed.push(rect);
-    drawBlock(ctx, block, rect, c.alpha, theme);
-    labels.push({ id: c.n.id, rect, alpha: c.alpha });
+    const markers = drawBlock(ctx, block, rect, c.alpha, theme);
+    labels.push({ id: c.n.id, rect, alpha: c.alpha, markers });
   }
 
   if (selected) {
@@ -714,11 +751,27 @@ export function roads(tree, visible, selected) {
 }
 
 /**
+ * The item a marker under a screen point stands for (MARK-05), or null: choosing a marker goes straight to
+ * the item it counts (for a rolled-up cluster, the most urgent of them).
+ */
+export function markerAt(info, sx, sy) {
+  for (let i = (info?.labels.length ?? 0) - 1; i >= 0; i--) {
+    const l = info.labels[i];
+    if (l.alpha < 0.5) continue;
+    const m = l.markers?.find(({ rect: r }) => sx >= r.x && sx <= r.x + r.w && sy >= r.y && sy <= r.y + r.h);
+    if (m) return m.target;
+  }
+  return null;
+}
+
+/**
  * What a pointer at a screen point lands on (SYM-08): the innermost item there. A visible label counts as
  * its item; where a label overlaps land whose items are drawn deeper, the deeper item wins. Hover and
  * click both ask this, so what lights up is what opens.
  */
 export function hitTest(scene, view, info, sx, sy) {
+  const marker = markerAt(info, sx, sy);
+  if (marker) return marker;
   let byLabel = null;
   for (let i = (info?.labels.length ?? 0) - 1; i >= 0 && !byLabel; i--) {
     const l = info.labels[i];

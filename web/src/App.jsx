@@ -372,6 +372,7 @@ export function App() {
           insets={insets}
           initialView={initial.view}
           onSelect={onMapSelect}
+          onMarker={pick}
           onFocus={setFocusId}
           onView={onView}
         />
