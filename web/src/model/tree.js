@@ -14,7 +14,8 @@ export function definitionScore(n, hasKids) {
   if (n.definition === 'clear') return 1;
   if (n.definition === 'vague') return 0.15;
   const summary = (n.summary ?? '').trim().length >= 8;
-  const body = (n.body ?? '').trim();
+  // Open questions are a badge, never terrain (#10 SYM-03): writing one down doesn't make an item look better defined.
+  const body = (n.body ?? '').replace(/^##\s+Open questions\s*$[\s\S]*?(?=^##\s|^---\s*$|(?![\s\S]))/im, '').trim();
   if (hasKids || CONTAINER.has(n.kind)) {
     return (summary ? 0.4 : 0) + (body.length >= 40 ? 0.2 : 0) + (hasKids ? 0.4 : 0);
   }

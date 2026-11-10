@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { KIND_LABEL } from '@shared/schema.js';
 import { LENSES } from '../map/lenses.js';
 import { PROJECTIONS } from '../map/layout.js';
 import { renderThumbnail } from '../map/scene.js';
+import { symbolsInUse } from '../map/labels.js';
+import { symbolPath } from '../map/symbols.js';
 import { pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
 import { KindBadge } from './Panel.jsx';
@@ -160,9 +161,19 @@ export function Breadcrumbs({ tree, focusId, onFly }) {
   );
 }
 
+function MapSymbol({ name, size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={symbolPath(name)} />
+    </svg>
+  );
+}
+
+// The key to the land (the lens's colours) and to every symbol, fill and badge this map uses (SYM-04).
 export function Legend({ lens, tree }) {
   const [open, setOpen] = useState(() => !matchMedia('(max-width: 720px)').matches);
   const items = lens.legend(tree);
+  const used = useMemo(() => symbolsInUse(tree), [tree]);
   return (
     <div className={`legend${open ? '' : ' closed'}`}>
       <button className="legend-head" onClick={() => setOpen(!open)} aria-expanded={open}>
@@ -170,14 +181,51 @@ export function Legend({ lens, tree }) {
         <Icon name={open ? 'down' : 'up'} size={16} />
       </button>
       {open && (
-        <ul>
-          {items.map((it) => (
-            <li key={it.label}>
-              <span className={`swatch${it.dot ? ' dot' : ''}${it.hatch ? ' hatch' : ''}`} style={{ background: it.color }} />
-              {it.label}
-            </li>
-          ))}
-        </ul>
+        <div className="legend-body">
+          <ul>
+            {items.map((it) => (
+              <li key={it.label}>
+                <span className={`swatch${it.dot ? ' dot' : ''}${it.hatch ? ' hatch' : ''}`} style={{ background: it.color }} />
+                {it.label}
+              </li>
+            ))}
+          </ul>
+          <h4>Symbols</h4>
+          <ul className="legend-symbols">
+            {used.kinds.map((it) => (
+              <li key={it.symbol}>
+                <span className="symbol-chip">
+                  <MapSymbol name={it.symbol} size={12} />
+                </span>
+                {it.label}
+              </li>
+            ))}
+          </ul>
+          <h4>Fill: where it stands</h4>
+          <ul className="legend-symbols">
+            {used.fills.map((it) => (
+              <li key={it.label}>
+                <span className="swatch dot" style={{ background: it.color }} />
+                {it.label}
+              </li>
+            ))}
+          </ul>
+          {used.badges.length > 0 && (
+            <>
+              <h4>Badges</h4>
+              <ul className="legend-symbols">
+                {used.badges.map((it) => (
+                  <li key={it.symbol}>
+                    <span className={`badge-chip ${it.symbol}`}>
+                      <MapSymbol name={it.symbol} size={11} />
+                    </span>
+                    {it.label}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
       )}
     </div>
   );
@@ -260,20 +308,6 @@ export function MapControls({ onZoom, onOverview }) {
           <Icon name="minus" />
         </button>
       </div>
-    </div>
-  );
-}
-
-export function Tooltip({ hover, tree, lens }) {
-  if (!hover) return null;
-  const n = tree.byId.get(hover.id);
-  if (!n) return null;
-  const left = Math.min(hover.x + 14, window.innerWidth - 260);
-  return (
-    <div className="tooltip" style={{ left, top: hover.y + 14 }} role="tooltip">
-      <div className="tt-kind">{KIND_LABEL[n.kind]}</div>
-      <div className="tt-title">{n.title}</div>
-      <div className="tt-stat">{lens.stat(n)}</div>
     </div>
   );
 }
