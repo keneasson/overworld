@@ -401,7 +401,7 @@ export function drawMap(ctx, scene, view, opts) {
     const yld = yieldOf(n, s);
     // Fog belongs to what you can see: a region hands its cloud to its children as they fade in.
     const thick = lens.fog && alpha > 0.01 ? alpha * (1 - sub) * lens.fog(n) : 0;
-    if (thick > 0.02) fogged.push({ g, s, w: Math.sqrt(thick) });
+    if (thick > 0.02) fogged.push({ g, s, w: thick });
     if (!thumbnail) {
       const own = (1 - yieldOut(n, s)) * parentYield * smoothstep(38, 62, s);
       if (own > 0.02) labelCands.push({ n, g, s, alpha: own });

@@ -47,6 +47,8 @@ test('SYM-02 FOG-01 a symbol is filled by its status, and the Fog lens puts poor
 
   const fog = LENS_BY_ID.definition;
   assert.ok(fog.fog(c) === 1 && fog.fog(b) === 0, 'uncharted land is under fog, charted land is clear');
+  const region = (fog.fog(a) + fog.fog(b) + fog.fog(c)) / 3;
+  assert.ok(Math.abs(fog.fog(tree.byId.get('epic')) - region) < 1e-9, 'a region holds the fog of what is inside it, so zooming in never changes how much there is');
   assert.notEqual(fog.fill(c), fog.fill(b));
   assert.ok(fog.matches(c) && !fog.matches(b));
 });

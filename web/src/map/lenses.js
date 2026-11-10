@@ -92,10 +92,28 @@ const lifecycleSummary = (states) =>
 const OWNER_COLORS = ['#a9cdf5', '#f7c59f', '#b6e0b0', '#e9b6e3', '#f5e19c', '#a7e0dc', '#d3c0f0', '#f4b0b0', '#c9d99a', '#b9c7d6'];
 
 const pct = (v) => `${Math.round(v * 100)}%`;
-// How charted a region is: its own definition for leaves, the share of clear items (amplified) for containers.
-const charted = (n) => (n.children.length ? Math.max(0, 1 - (1.8 * n.stats.poorlyDefined) / n.stats.items) : Math.min(1, n.stats.def));
-/** How thick the fog over an item is, 0 to 1: full over uncharted work, none once it is mostly charted. */
-export const fogOver = (n) => (n.stats.vague ? 1 : Math.min(1, Math.max(0, (1 - charted(n)) * 1.5 - 0.15)));
+/**
+ * How thick the fog over an item is, 0 to 1: full over uncharted work, none once it is well defined.
+ * A region's fog is the average of what is inside it, weighted by size, so zooming in shows where the fog is
+ * without changing how much there is.
+ */
+const fogCache = new WeakMap();
+export function fogOver(n) {
+  if (fogCache.has(n)) return fogCache.get(n);
+  let f;
+  if (n.children.length) {
+    let sum = 0;
+    let weight = 0;
+    for (const c of n.children) {
+      const w = Math.max(1, c.stats.items);
+      sum += fogOver(c) * w;
+      weight += w;
+    }
+    f = sum / weight;
+  } else f = n.stats.vague ? 1 : Math.sqrt(Math.min(1, Math.max(0, (1 - Math.min(1, n.stats.def)) * 1.5 - 0.15)));
+  fogCache.set(n, f);
+  return f;
+}
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function childSummary(n) {
@@ -178,7 +196,7 @@ export const LENSES = [
     icon: '🌫️',
     blurb: 'Uncharted territory: items missing a summary, details, acceptance criteria or an estimate.',
     theme: LIGHT,
-    fill: (n) => fog(charted(n)),
+    fill: (n) => fog(1 - fogOver(n)),
     fog: fogOver,
     stat: (n) =>
       n.stats.vague
