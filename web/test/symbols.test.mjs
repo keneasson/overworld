@@ -136,7 +136,7 @@ test('SYM-07 symbols come from one module of ours, so the icon library can be re
   );
 });
 
-test('SYM-08 hover and click land on the innermost item under the pointer', () => {
+test('SYM-08 MARK-13 hover and click land on the pin under the pointer, else the innermost item', () => {
   const scene = buildScene(demoProject().nodes, 'demo', null, 'organic');
   const W = 1200, H = 800;
   const area = scene.tree.root.children.find((n) => n.children.length > 1);
@@ -147,7 +147,7 @@ test('SYM-08 hover and click land on the innermost item under the pointer', () =
   const [cx, cy] = polygonCentroid(scene.geo.get(child.id).poly);
   const view = { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H };
   const over = (id) => ({ labels: [{ id, alpha: 1, rect: { x: W / 2 - 60, y: H / 2 - 20, w: 120, h: 40 } }] });
-  assert.equal(hitTest(scene, view, over(area.id), W / 2, H / 2), child.id, "the area's label over its child's land: the child");
+  assert.equal(hitTest(scene, view, over(area.id), W / 2, H / 2), area.id, "the area's pin over its child's land: the pin you pointed at (MARK-13)");
   assert.equal(hitTest(scene, view, over(child.id), W / 2, H / 2), child.id);
   assert.equal(hitTest(scene, view, { labels: [] }, W / 2, H / 2), child.id, 'on the land alone');
 });

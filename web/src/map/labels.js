@@ -98,7 +98,7 @@ export const markerLabel = (m) => (m.type === 'fire' && m.on === 'code' ? CODE_F
 /**
  * What an item shows as it grows on screen (`from` is its screen size in pixels, the square root of its
  * area): first that something is there, then what kind of thing it is, then its name, then its markers.
- * After that come its items, when its land splits into theirs (see namesAt in renderer.js).
+ * After that come its items, named beside it when its land splits into theirs (see namesAt in renderer.js).
  * Nothing appears before it can be read; this table is the whole rule.
  */
 export const LADDER = [
@@ -110,11 +110,21 @@ export const LADDER = [
 const reached = (s, stage) => s >= LADDER.find((l) => l.stage === stage).from;
 
 /**
+ * What an item holds itself, without what is inside it: the markers a region shows once its items are named
+ * beside it, so each marker on screen is counted once (MARK-13).
+ */
+export function ownMarkersOf(n, live) {
+  const counts = ownCounts(n, live);
+  return MARKERS.filter((t) => counts[t]).map((type) => ({ type, count: counts[type], target: n.id, ...(type === 'fire' && isCode(n) ? { on: 'code' } : {}) }));
+}
+
+/**
  * What an item shows at screen size `s`: { symbol, fill, title, lines, badges }. Below the 'kind' step the
  * symbol is null (a dot says something is there); below 'name' the title is empty; below 'markers' it has none.
- * `badges` are its markers: its own for an item, rolled up for a region. The project's card always shows everything.
+ * `badges` are its markers: its own for an item, rolled up for a region until its items are named beside it (`holds`).
+ * The project's card always shows everything.
  */
-export function labelFor(n, s, live) {
+export function labelFor(n, s, live, holds = false) {
   const at = n.depth === 0 ? Infinity : s;
   const named = reached(at, 'name'), marked = reached(at, 'markers');
   return {
@@ -122,7 +132,7 @@ export function labelFor(n, s, live) {
     fill: statusColor(n),
     title: named ? shortTitle(n) : '',
     lines: marked ? 2 : named ? 1 : 0,
-    badges: marked ? markersOf(n, live) : [],
+    badges: !marked ? [] : holds ? ownMarkersOf(n, live) : markersOf(n, live),
   };
 }
 

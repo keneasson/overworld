@@ -1,16 +1,15 @@
 // Canvas renderer with semantic zoom.
 //
 // Every node has a screen size s = sqrt(area) * zoom. Two thresholds drive the map:
-//   sub   — when a node is this big its children's borders and colours appear
-//   yield — when a node is this big its own label steps aside (becoming a faint
-//           watermark, like a country name) and its children's labels take over.
-// So the amount of text on screen stays roughly constant while the subject
-// shifts from macro (areas) to micro (a single task's acceptance criteria).
+//   sub   — when a node is this big its children's borders, colours and labels appear
+//   yield — when a node is this big its children count as what is on screen (roads, focus)
+// Zooming in only ever adds: a region keeps its label as its children's labels join it (MARK-13),
+// so the subject shifts from macro (areas) to micro (a single task) without anything vanishing.
 
 import { hsl, polygonContains } from 'd3';
 import { isInside, pathOf } from '../model/tree.js';
 import { LIGHT_COLORS } from './lenses.js';
-import { LADDER, housesOf, labelFor, shortTitle } from './labels.js';
+import { LADDER, housesOf, labelFor } from './labels.js';
 import { drawSymbol } from './symbols.js';
 import { rectsOverlap, smoothstep } from './geometry.js';
 
@@ -26,13 +25,12 @@ export function thresholds(width, height) {
 }
 
 /**
- * Which regions are named at this view (MARK-01), and how strongly (0 to 1):
- *   labels      a region shows its label while its own land shows; what the label holds grows one step
- *               at a time with its size on screen (LADDER in labels.js: there, kind, name, markers);
- *   watermarks  once its children's land fades in, its name passes to big faint capitals across them,
- *               so no level between the project card and the island goes unnamed.
- * The last step of the ladder is the items themselves (MARK-10): a region's label has gone before its
- * children's labels begin, so the two never overlap. The selected region is always named, whatever its size.
+ * Which regions are named at this view (MARK-01), and how strongly (0 to 1). A region shows its label once
+ * it is big enough, and what the label holds grows one step at a time with its size on screen (LADDER in
+ * labels.js: there, kind, name, markers). Like a city on a map, it keeps its pin as you zoom in: its items'
+ * labels join it rather than replace it, and only leaving the screen takes it away (MARK-13). `holds` is how far
+ * its items are named; from then on its markers count only what is its own, so nothing on screen is counted twice.
+ * The selected region is always named, whatever its size.
  */
 export function namesAt(scene, view, { selectedId = null, T = thresholds(view.width, view.height) } = {}) {
   const { tree, geo } = scene;
@@ -40,23 +38,17 @@ export function namesAt(scene, view, { selectedId = null, T = thresholds(view.wi
   const vp = [-x / k, -y / k, (W - x) / k, (H - y) / k];
   const inView = (bb) => bb[2] >= vp[0] && bb[0] <= vp[2] && bb[3] >= vp[1] && bb[1] <= vp[3];
   const labels = [];
-  const watermarks = [];
   const walk = (n, alpha) => {
     const g = geo.get(n.id);
     if (!inView(g.bbox)) return;
     const s = g.size * k;
     const sub = n.children.length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
-    // The project's own name is the card in the sea, so it stays until its land is well under way.
-    const handover = n.depth === 0 ? (n.children.length ? smoothstep(T.yld * 0.88, T.yld, s) : 0) : smoothstep(0.35, 0.65, sub);
+    // The project's own name is the card in the sea, so it steps aside once its land is well under way.
+    const handover = n.depth === 0 && n.children.length ? smoothstep(T.yld * 0.88, T.yld, s) : 0;
     const there = LADDER[0].from;
     const own = alpha * (1 - handover) * smoothstep(there, there + 8, s);
-    if (own > 0.02) labels.push({ n, g, s, alpha: own });
-    if (n.depth > 0 && handover > 0.02) {
-      const wm = alpha * handover * (1 - smoothstep(T.yld * 1.7, T.yld * 2.8, s));
-      if (wm > 0.02) watermarks.push({ n, g, s, alpha: wm });
-    }
-    // Its items come in once its own label has gone (the project's card is in the sea, so its land is named at once).
-    if (sub > 0.01) for (const c of n.children) walk(c, n.depth === 0 ? sub : smoothstep(0.65, 1, sub));
+    if (own > 0.02) labels.push({ n, g, s, alpha: own, holds: n.depth > 0 && sub > 0.5 });
+    if (sub > 0.01) for (const c of n.children) walk(c, sub);
   };
   walk(tree.root, 1);
   const selected = selectedId && tree.byId.get(selectedId);
@@ -65,7 +57,7 @@ export function namesAt(scene, view, { selectedId = null, T = thresholds(view.wi
     if (at) at.alpha = 1;
     else labels.push({ n: selected, g: geo.get(selected.id), s: Math.max(62, geo.get(selected.id).size * k), alpha: 1 });
   }
-  return { labels, watermarks };
+  return { labels };
 }
 
 /** The zoom at which all the land fits the viewport. */
@@ -310,7 +302,7 @@ const inkOn = (fill) => (hsl(fill).l > 0.72 ? '#3c4043' : '#ffffff');
 
 function labelBlock(ctx, c, { k, theme, W, live }) {
   const { n, s, g } = c;
-  const label = labelFor(n, s, live);
+  const label = labelFor(n, s, live, c.holds);
   const root = n.depth === 0;
   // A dot says something is there; its symbol grows as there is room for one (MARK-10).
   const r = root ? 18 : !label.symbol ? 4.5 : !label.title ? 9 : s >= 330 ? 15 : s >= 150 ? 13 : 11;
@@ -510,7 +502,7 @@ export function drawMap(ctx, scene, view, opts) {
     if (sub > 0.01) for (const c of n.children) walk(c, sub);
   };
   walk(tree.root, 1);
-  const { labels: labelCands, watermarks } = thumbnail ? { labels: [], watermarks: [] } : namesAt(scene, view, { selectedId, T });
+  const { labels: labelCands } = thumbnail ? { labels: [] } : namesAt(scene, view, { selectedId, T });
 
   // Borders: deepest first so country lines sit on top of province lines.
   drawn.sort((a, b) => b.n.depth - a.n.depth);
@@ -572,32 +564,6 @@ export function drawMap(ctx, scene, view, opts) {
     return r;
   };
   const onScreen = ([sx, sy], m = 40) => sx > -m && sx < W + m && sy > -m && sy < H + m;
-
-  // Watermarks: yielded parents fade into big spaced capitals, like country names.
-  // Deepest first; one never overprints another.
-  watermarks.sort((a, b) => b.n.depth - a.n.depth);
-  const wmPlaced = [];
-  for (const wm of watermarks) {
-    const [sx, sy] = toScreen(wm.g.label);
-    if (!onScreen([sx, sy], 200)) continue;
-    const size = Math.min(44, Math.max(15, wm.s / 18));
-    ctx.font = `700 ${size}px ${FONT}`;
-    ctx.letterSpacing = `${size * 0.14}px`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.globalAlpha = wm.alpha * 0.4;
-    ctx.fillStyle = theme.muted;
-    const wmFont = ctx.font;
-    const lines = wrap(ctx, shortTitle(wm.n).toUpperCase(), wmFont, Math.min(W * 0.8, wm.g.labelR * k * 1.6), 2);
-    ctx.font = wmFont;
-    const ww = Math.max(...lines.map((l) => ctx.measureText(l).width));
-    const box = { x: sx - ww / 2, y: sy - (lines.length * size * 1.2) / 2, w: ww, h: lines.length * size * 1.2 };
-    if (wmPlaced.some((r) => rectsOverlap(r, box, 8))) continue;
-    wmPlaced.push(box);
-    lines.forEach((l, i) => ctx.fillText(l, sx, sy + (i - (lines.length - 1) / 2) * size * 1.2));
-    ctx.letterSpacing = '0px';
-  }
-  ctx.globalAlpha = 1;
 
   // Sea captions name the continents, like ocean names on a map: above the coast, or
   // below it when a neighbour's name is in the way. A continent that is itself an item
@@ -765,8 +731,17 @@ export function drawMap(ctx, scene, view, opts) {
     if (!onScreen(p, c.n.depth ? 300 : Math.max(W, H))) continue;
     const block = labelBlock(ctx, c, { k, theme, W, live });
     if (c.n.depth === 0) p = cartouche(p, block);
-    const rect = { x: p[0] - block.w / 2, y: p[1] - block.h / 2, w: block.w, h: block.h };
-    if (c.n !== selected && placed.some((r) => rectsOverlap(r, rect, 3))) continue;
+    // A region whose items are named may step just above or below its spot to make room for theirs.
+    const spots = c.holds ? [0, -1, 1].map((d) => [p[0], p[1] + d * (block.h + 6)]) : [p];
+    let rect = null;
+    for (const [px, py] of spots) {
+      const r = { x: px - block.w / 2, y: py - block.h / 2, w: block.w, h: block.h };
+      if (c.n === selected || !placed.some((q) => rectsOverlap(q, r, 3))) {
+        rect = r;
+        break;
+      }
+    }
+    if (!rect) continue;
     if (c.alpha >= 0.3) placed.push(rect);
     const markers = drawBlock(ctx, block, rect, c.alpha, theme);
     labels.push({ id: c.n.id, rect, alpha: c.alpha, markers });
@@ -827,8 +802,8 @@ export function markerAt(info, sx, sy) {
 }
 
 /**
- * What a pointer at a screen point lands on (SYM-08): the innermost item there. A visible label counts as
- * its item; where a label overlaps land whose items are drawn deeper, the deeper item wins. Hover and
+ * What a pointer at a screen point lands on (SYM-08): a pin under it is that pin's item, since a region keeps
+ * its pin over its items' land (MARK-13); elsewhere it is the innermost item whose land is there. Hover and
  * click both ask this, so what lights up is what opens.
  */
 export function hitTest(scene, view, info, sx, sy) {
@@ -852,6 +827,5 @@ export function hitTest(scene, view, info, sx, sy) {
       byLand = next;
     }
   }
-  const hit = byLabel && (!byLand || byLabel.depth >= byLand.depth) ? byLabel : byLand;
-  return hit?.id ?? null;
+  return (byLabel ?? byLand)?.id ?? null;
 }
