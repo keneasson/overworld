@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react';
+import { Suspense, lazy, useMemo, useState } from 'react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
 import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
-import { issueOf, itemKeyOf } from '@shared/issue-shape.js';
-import { editableItems } from '../editor/items.js';
+import { editableOf, issueOf, itemKeyOf } from '@shared/issue-shape.js';
+import { isEditable } from '../editor/items.js';
+import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -66,15 +67,60 @@ function NodeRow({ node, onPick, sub }) {
 
 const pct = (v) => `${Math.round(v * 100)}%`;
 
-export function Details({ node, tree, lens, comments = [], onPick, onFly, onEdit, onEditText, onAdd, onClose, onCopyLink }) {
+// The document editor is big: it loads the first time an item with text opens.
+const IssueForm = lazy(() => import('../editor/IssueForm.jsx').then((m) => ({ default: m.IssueForm })));
+
+/** What the open changeset holds, and the three things to do with it: discard, accept, save to GitHub. */
+function EditBar({ editing }) {
+  const { edited, unsaved, saving, busy, onItsWay, changeset, name, setName, accept, discard, saveToGithub } = editing;
+  if (!edited.length && !unsaved.length && !saving && !onItsWay) return null;
+  const status = saving ? 'Saving…' : edited.length ? `${edited.length} edited, kept in this changeset` : `${unsaved.length} accepted, not on GitHub yet`;
+  return (
+    <div className="edit-bar" aria-live="polite">
+      <span className="edit-status">
+        {status}
+        {onItsWay > 0 && ` · ${onItsWay} on its way to GitHub`}
+      </span>
+      <input aria-label="Your name" className="edit-name" value={name} placeholder="Your name" maxLength={80} onChange={(e) => setName(e.target.value)} />
+      <div className="edit-actions">
+        <button type="button" onClick={discard} disabled={busy || (!changeset && !edited.length)}>
+          Discard
+        </button>
+        <button type="button" className="primary" onClick={accept} disabled={busy || !edited.length}>
+          <Icon name="check" size={16} /> Accept {edited.length || ''}
+        </button>
+        <button type="button" onClick={saveToGithub} disabled={busy || edited.length > 0 || !unsaved.length} title={edited.length ? 'Accept or discard your edits first' : 'Send accepted changes to GitHub'}>
+          Save {unsaved.length || ''} to GitHub
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One item, open beside the map, and edited where it is (#41 EDIT-09): its text is the document editor, its
+ * properties change in place (EDIT-11), and comments sit on what they are about. The panel only ever holds this
+ * one item (EDIT-13); its edits wait in the project's changeset when another is picked.
+ */
+export function Details({ node, tree, lens, comments = [], editing, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const s = node.stats;
   const key = itemKeyOf(node);
   const issue = issueOf(node);
-  const together = editableItems(tree, node).length;
-  const thread = comments.filter((c) => c.itemKey === key);
+  const editable = isEditable(tree, node);
   const path = pathOf(node).slice(0, -1);
   const incoming = tree.incoming.get(node.id) ?? [];
   const childKind = CHILD_KIND[node.kind] ?? 'task';
+  const isRoot = node.depth === 0;
+  // Every behaviour already written, drafts included, so a new behaviour's ID never collides.
+  const texts = useMemo(() => (editable ? tree.list.map((n) => editing.drafts.get(itemKeyOf(n))?.markdown ?? n.body ?? '') : []), [editable, tree, editing.drafts]);
+  const readOnly = (
+    <>
+      <h2 className="node-title">{node.title}</h2>
+      {node.body && <Markdown text={node.body} />}
+    </>
+  );
+
   return (
     <div className="details">
       <header className="panel-head">
@@ -95,9 +141,6 @@ export function Details({ node, tree, lens, comments = [], onPick, onFly, onEdit
         <span className="status-text">
           <StatusDot status={node.status} /> {STATUS_LABEL[node.status]}
         </span>
-      </div>
-      <h2 className="node-title">{node.title}</h2>
-      <div className="pill-row">
         <HealthPill health={s.health} />
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
         {s.vague && <span className="pill pill-fog">Poorly defined</span>}
@@ -111,20 +154,6 @@ export function Details({ node, tree, lens, comments = [], onPick, onFly, onEdit
           </span>
           Zoom to
         </button>
-        <button onClick={issue ? () => onEditText(node.id, key) : onEdit}>
-          <span className="action-icon">
-            <Icon name="edit" />
-          </span>
-          Edit
-        </button>
-        {(together > 1 || (!issue && together > 0)) && (
-          <button onClick={() => onEditText(node.id, null)}>
-            <span className="action-icon">
-              <Icon name="columns" />
-            </span>
-            {issue ? 'Edit area' : 'Edit text'}
-          </button>
-        )}
         <button onClick={() => onAdd(node.id, childKind)}>
           <span className="action-icon">
             <Icon name="plus" />
@@ -145,7 +174,41 @@ export function Details({ node, tree, lens, comments = [], onPick, onFly, onEdit
             Source
           </a>
         )}
+        {!isRoot && (
+          <button className={confirmDelete ? 'armed' : ''} onClick={() => (confirmDelete ? onDelete(node) : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
+            <span className="action-icon danger">
+              <Icon name="trash" />
+            </span>
+            {confirmDelete ? `Delete${node.children.length ? ` ${node.stats.items}` : ''}?` : 'Delete'}
+          </button>
+        )}
       </div>
+
+      <EditBar editing={editing} />
+      <div className="doc" onFocusCapture={onDocFocus}>
+        {editable ? (
+          <Suspense fallback={readOnly}>
+            <IssueForm
+              key={`${key}:${editing.generation}`}
+              value={editing.drafts.get(key) ?? editableOf(node)}
+              issueNumber={issue?.number}
+              areaTexts={texts}
+              comments={comments.filter((c) => c.itemKey === key)}
+              conflict={editing.conflicts.has(key)}
+              onChange={(after) => editing.change(key, after)}
+              onComment={(anchor, text) => editing.comment(key, anchor, text)}
+              onResolve={editing.resolve}
+            />
+          </Suspense>
+        ) : (
+          readOnly
+        )}
+      </div>
+
+      <section>
+        <h3>Properties</h3>
+        <Properties node={node} tree={tree} onPatch={onPatch} />
+      </section>
 
       {node.summary && <p className="summary">{node.summary}</p>}
 
@@ -183,74 +246,6 @@ export function Details({ node, tree, lens, comments = [], onPick, onFly, onEdit
         </div>
       </dl>
 
-      <dl className="meta">
-        {node.assignee && (
-          <div>
-            <dt>Owner</dt>
-            <dd>@{node.assignee}</dd>
-          </div>
-        )}
-        {node.estimate != null && (
-          <div>
-            <dt>Estimate</dt>
-            <dd>{node.estimate} pts</dd>
-          </div>
-        )}
-        {node.due && (
-          <div>
-            <dt>Due</dt>
-            <dd>{node.due}</dd>
-          </div>
-        )}
-        {node.tags?.length > 0 && (
-          <div>
-            <dt>Tags</dt>
-            <dd className="tags">
-              {node.tags.map((t) => (
-                <span key={t} className="tag">
-                  #{t}
-                </span>
-              ))}
-            </dd>
-          </div>
-        )}
-      </dl>
-
-      {node.body ? (
-        <section>
-          <h3>Details</h3>
-          <Markdown text={node.body} />
-        </section>
-      ) : (
-        <section className="empty-note">
-          <p>
-            No details yet. Add a description, acceptance criteria and an estimate to chart this territory.{' '}
-            <button className="link-btn" onClick={onEdit}>
-              Add details
-            </button>
-          </p>
-        </section>
-      )}
-
-      {thread.length > 0 && (
-        <section>
-          <h3>
-            Comments <span className="count">{thread.filter((c) => !c.resolved).length}</span>
-          </h3>
-          <ul className="comment-list">
-            {thread.map((c) => (
-              <li key={c.id} className={c.resolved ? 'resolved' : ''}>
-                <span className="anchor">{c.anchor.behaviour ?? c.anchor.section}</span>
-                <strong>{c.author}</strong> {c.text}
-              </li>
-            ))}
-          </ul>
-          <button className="link-btn" onClick={() => onEditText(node.id, key)}>
-            Reply in the editor
-          </button>
-        </section>
-      )}
-
       {node.children.length > 0 && (
         <section>
           <h3>
@@ -264,19 +259,35 @@ export function Details({ node, tree, lens, comments = [], onPick, onFly, onEdit
         </section>
       )}
 
-      {(node.links.length > 0 || incoming.length > 0) && (
+      {!isRoot && (
         <section>
           <h3>Connections</h3>
           <ul className="rows">
-            {node.links.map((l) => {
+            {node.links.map((l, i) => {
               const t = tree.byId.get(l.to);
-              return t && <NodeRow key={`o${l.type}${l.to}`} node={t} onPick={onPick} sub={`This ${LINK_LABEL[l.type]} it`} />;
+              return (
+                t && (
+                  <li key={`o${l.type}${l.to}`} className="row-with-action">
+                    <button className="row" onClick={() => onPick(t.id)}>
+                      <StatusDot status={t.status} />
+                      <span className="row-main">
+                        <span className="row-title">{t.title}</span>
+                        <span className="row-sub">This {LINK_LABEL[l.type]} it</span>
+                      </span>
+                    </button>
+                    <button className="icon-btn small" aria-label={`Remove the connection to ${t.title}`} onClick={() => onPatch({ links: node.links.filter((_, j) => j !== i) })}>
+                      <Icon name="close" size={16} />
+                    </button>
+                  </li>
+                )
+              );
             })}
             {incoming.map((l) => {
               const f = tree.byId.get(l.from);
               return f && <NodeRow key={`i${l.type}${l.from}`} node={f} onPick={onPick} sub={`It ${LINK_LABEL[l.type]} this`} />;
             })}
           </ul>
+          <AddLink node={node} tree={tree} onPatch={onPatch} />
         </section>
       )}
     </div>
