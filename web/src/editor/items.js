@@ -1,8 +1,7 @@
 import { issueOf } from '@shared/issue-shape.js';
-import { isInside } from '../model/tree.js';
 
-/** Items with text worth editing, inside `scope`: issues on a mapped repository, everything on a hand-made map. */
-export function editableItems(tree, scope) {
+/** Whether an item has text to edit: an issue on a mapped repository, anything but the project on a hand-made map. */
+export function isEditable(tree, n) {
   const mapped = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/.test(tree.root.url ?? '');
-  return tree.list.filter((n) => n.depth > 0 && isInside(n, scope) && (mapped ? issueOf(n) : true));
+  return n.depth > 0 && (mapped ? Boolean(issueOf(n)) : true);
 }

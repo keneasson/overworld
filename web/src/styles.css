@@ -305,6 +305,147 @@ button {
   overscroll-behavior: contain;
   padding: 8px 20px 24px;
 }
+/* The expand handle on the panel's edge (EDIT-10): drag to resize, click to widen or narrow. */
+.panel-grip {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 14px;
+  height: 64px;
+  margin-top: -32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px 0 0 7px;
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.panel-grip span {
+  width: 4px;
+  height: 36px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.panel-grip:hover span,
+.panel-grip:focus-visible span {
+  background: var(--accent);
+}
+/* What the changeset holds, kept in sight while the document scrolls. */
+.edit-bar {
+  position: sticky;
+  top: -8px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 4px -20px 8px;
+  padding: 8px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.edit-status {
+  flex: 1 1 auto;
+  color: var(--muted);
+}
+.edit-name {
+  width: 120px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 13px;
+}
+.edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.edit-actions button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
+}
+.edit-actions button.primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--surface);
+}
+.doc {
+  margin-bottom: 8px;
+}
+/* Properties, changed where they are (EDIT-11): a name and its control on one line. */
+.props {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prop {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.prop label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.prop input,
+.prop select {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 13.5px;
+}
+.prop input:hover,
+.prop select:hover {
+  border-color: var(--border);
+}
+.prop input:focus,
+.prop select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  background: var(--surface);
+}
+.prop-wide {
+  grid-template-columns: 1fr;
+}
+.props-more {
+  align-self: flex-start;
+  font-size: 12.5px;
+}
+.row-with-action {
+  display: flex;
+  align-items: center;
+}
+.actions > .armed {
+  color: var(--danger);
+}
+.actions > .armed .action-icon,
+.action-icon.danger {
+  color: var(--danger);
+}
+.actions > .armed .action-icon {
+  background: var(--danger);
+  color: #fff;
+}
+.link-add {
+  margin-top: 6px;
+}
 .panel-head {
   display: flex;
   align-items: flex-start;
@@ -661,41 +802,6 @@ section h3 {
   text-decoration: underline;
 }
 
-/* ---------- editor ---------- */
-.editor {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.grid2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.field label,
-.label-row label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-}
-.field small {
-  color: var(--muted);
-  font-size: 12px;
-}
-.label-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.field input,
-.field select,
-.field textarea,
 .link-add input,
 .link-add select,
 .inline-form input,
@@ -709,18 +815,7 @@ section h3 {
   background: var(--surface);
   font-size: 14px;
 }
-.field textarea {
-  resize: vertical;
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 13px;
-}
-.field input:focus,
-.field select:focus,
-.field textarea:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-  border-color: transparent;
-}
+
 /* Where on screen: a tiny screen with nine spots, plus "behind the screen". */
 .place-picker {
   display: flex;
@@ -777,46 +872,17 @@ section h3 {
   color: var(--accent);
   font-weight: 600;
 }
-.md-preview {
-  min-height: 120px;
-  padding: 10px 12px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-}
-.link-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.link-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 0;
-  font-size: 13px;
-}
+
 .link-add {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr) auto;
   gap: 6px;
 }
-.editor-actions {
-  position: sticky;
-  bottom: -24px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px -20px -24px;
-  padding: 12px 20px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-}
+
 .spacer {
   flex: 1;
 }
 button.primary,
-.editor-actions button,
 .button-row button,
 .inline-form button,
 .stack-form button,
@@ -1379,9 +1445,14 @@ button.danger.armed {
     z-index: 25;
   }
   .sheet-full .panel {
-    height: 88vh;
+    height: 92vh;
+  }
+  .edit-bar {
+    margin: 4px -16px 8px;
+    padding: 8px 16px;
   }
   .sheet-handle {
+    touch-action: none;
     display: grid;
     place-items: center;
     height: 22px;
@@ -1438,180 +1509,16 @@ button.danger.armed {
     flex-direction: column;
     align-items: stretch;
   }
-  .grid2 {
-    grid-template-columns: 1fr;
-  }
+
   .link-add {
     grid-template-columns: 1fr;
   }
-  .editor-actions {
-    margin: 8px -16px -24px;
-    padding: 12px 16px;
-  }
+
   .stats {
     grid-template-columns: repeat(3, 1fr);
   }
 }
 
-/* ---------- area editor: several items of an area, side by side ---------- */
-.area-editor {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface-2);
-  color: var(--text);
-}
-.area-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 16px 8px 8px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
-}
-.area-head button:not(.icon-btn) {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 36px;
-  padding: 0 16px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: var(--surface);
-  color: var(--accent);
-  font-weight: 500;
-  white-space: nowrap;
-}
-.area-head button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--surface);
-}
-.area-title {
-  min-width: 0;
-  flex: 1;
-}
-.area-title h2 {
-  margin: 0;
-  font-size: 17px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.area-status {
-  color: var(--muted);
-  font-size: 12.5px;
-  white-space: nowrap;
-}
-.area-name {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.area-name input {
-  width: 130px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-.area-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-}
-.area-rail {
-  flex: none;
-  width: 260px;
-  overflow: auto;
-  padding: 12px 8px 24px 12px;
-  border-right: 1px solid var(--border);
-  background: var(--surface);
-}
-.area-rail .eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-.area-rail ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.area-rail label {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 6px;
-  border-radius: 6px;
-  font-size: 13px;
-  cursor: pointer;
-}
-.area-rail label:hover {
-  background: var(--surface-2);
-}
-.area-rail label span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.area-rail label.edited span:last-child {
-  font-weight: 600;
-}
-.area-rail label.edited::after {
-  content: '';
-  flex: none;
-  width: 7px;
-  height: 7px;
-  margin-left: auto;
-  border-radius: 50%;
-  background: var(--accent);
-}
-.area-columns {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  gap: 12px;
-  overflow: auto;
-  padding: 12px;
-  scroll-snap-type: x proximity;
-}
-.area-column {
-  flex: 0 0 min(460px, 100%);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  overflow: auto;
-  padding: 0 16px 20px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  scroll-snap-align: start;
-}
-.area-column.edited {
-  border-color: var(--accent);
-}
-.column-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 -16px;
-  padding: 8px 8px 8px 16px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-.column-title {
-  font-weight: 600;
-}
 .issue-doc {
   position: relative;
   display: flex;
@@ -1854,71 +1761,6 @@ button.danger.armed {
   background: #fef7e0;
   color: #b06000;
   font: 600 11.5px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-}
-.area-switch {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-.area-switch label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-}
-.area-switch select {
-  flex: 1;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  font-size: 14px;
-}
-
-/* On a phone: one item at a time, picked from a list; the header wraps under the title. */
-.area-editor.mobile .area-head {
-  flex-wrap: wrap;
-  padding: 6px 12px 8px 4px;
-  gap: 6px 8px;
-}
-.area-editor.mobile .area-title {
-  flex: 1 1 calc(100% - 52px);
-}
-.area-editor.mobile .area-status {
-  flex: 1 1 100%;
-  order: 3;
-  padding-left: 8px;
-  white-space: normal;
-}
-.area-editor.mobile .area-name {
-  order: 4;
-  flex: 1 1 100%;
-  padding-left: 8px;
-}
-.area-editor.mobile .area-name input {
-  flex: 1;
-  width: auto;
-  min-width: 0;
-}
-.area-editor.mobile .area-head > button:not(.icon-btn) {
-  order: 5;
-  flex: 1;
-  justify-content: center;
-}
-.area-editor.mobile .area-body {
-  flex-direction: column;
-}
-.area-editor.mobile .area-columns {
-  padding: 0;
-}
-.area-editor.mobile .area-column {
-  flex: 1 1 100%;
-  border: 0;
-  border-radius: 0;
-  padding-bottom: calc(24px + env(safe-area-inset-bottom));
 }
 
 @media (prefers-color-scheme: dark) {

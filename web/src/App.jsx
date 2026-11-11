@@ -1,14 +1,13 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { itemKeyOf } from '@shared/issue-shape.js';
+import { KIND_LABEL } from '@shared/schema.js';
 import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
 import { MapView } from './map/MapView.jsx';
 import { LENS_BY_ID } from './map/lenses.js';
 import { Breadcrumbs, Chips, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
 import { Details, Results } from './components/Panel.jsx';
-import { Editor } from './components/Editor.jsx';
-// The rich-text editor is big; load it the first time someone edits.
-const AreaEditor = lazy(() => import('./editor/AreaEditor.jsx').then((m) => ({ default: m.AreaEditor })));
+import { useItemEditing } from './editor/useItemEditing.js';
 import { Drawer, Unlock } from './components/Drawer.jsx';
 import { Icon } from './components/Icon.jsx';
 
@@ -23,6 +22,19 @@ function readHash() {
     proj: p.get('proj'),
     view: v?.length === 3 && v.every(Number.isFinite) ? { cx: v[0], cy: v[1], k: v[2] } : null,
   };
+}
+
+const PANEL_KEY = 'projectmap.panelWidth';
+const PANEL_MIN = 400;
+const maxWidth = () => Math.max(PANEL_MIN, window.innerWidth - 220);
+const wideWidth = () => Math.min(900, maxWidth());
+function readWidth() {
+  try {
+    const w = Number(localStorage.getItem(PANEL_KEY));
+    return w >= PANEL_MIN ? Math.min(w, maxWidth()) : PANEL_MIN;
+  } catch {
+    return PANEL_MIN;
+  }
 }
 
 function useMedia(query) {
@@ -50,8 +62,6 @@ export function App() {
     return p === 'organic' ? 'organic' : 'site';
   });
   const [selectedId, setSelectedId] = useState(initial.n);
-  const [editing, setEditing] = useState(null); // { id } | { create: { parentId, kind } }
-  const [areaEdit, setAreaEdit] = useState(null); // { scopeId, startKey }
   const [comments, setComments] = useState([]);
   const [resultsOpen, setResultsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -59,6 +69,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [sheetFull, setSheetFull] = useState(false);
+  const [panelW, setPanelW] = useState(() => readWidth());
   const [hint, setHint] = useState(() => !storage.get('projectmap.hint'));
   const mapRef = useRef(null);
   const sceneRef = useRef(null);
@@ -118,7 +129,6 @@ export function App() {
   const commentsFor = useRef(new Set());
   useEffect(() => {
     setComments([]);
-    setAreaEdit(null);
     commentsFor.current = new Set();
   }, [projectId]);
   const loadComments = useCallback(
@@ -204,21 +214,18 @@ export function App() {
     hashTimer.current = setTimeout(writeHash, 400);
   }, [writeHash]);
 
-  const panelMode = editing ? 'edit' : selected ? 'details' : resultsOpen && lens.matches ? 'results' : null;
+  const panelMode = selected ? 'details' : resultsOpen && lens.matches ? 'results' : null;
   const insets = useMemo(() => {
-    if (mobile) return { top: 130, bottom: panelMode ? Math.round(window.innerHeight * (sheetFull ? 0.88 : 0.46)) : 72 };
-    return { left: panelMode ? 424 : 0, top: 60 };
-  }, [panelMode, mobile, sheetFull]);
+    if (mobile) return { top: 130, bottom: panelMode ? Math.round(window.innerHeight * (sheetFull ? 0.92 : 0.46)) : 72 };
+    return { left: panelMode ? panelW + 24 : 0, top: 60 };
+  }, [panelMode, mobile, sheetFull, panelW]);
 
+  // The panel holds one item at a time (EDIT-13): picking another replaces it, and its edits wait in the changeset.
   const pick = useCallback((id) => {
-    setEditing(null);
     setSelectedId(id);
     if (id) mapRef.current?.flyTo(id);
   }, []);
-  const onMapSelect = useCallback((id) => {
-    setEditing(null);
-    setSelectedId(id);
-  }, []);
+  const onMapSelect = useCallback((id) => setSelectedId(id), []);
   const setLens = useCallback((id) => {
     setLensId(id);
     const hasResults = Boolean(LENS_BY_ID[id].matches);
@@ -226,7 +233,6 @@ export function App() {
     if (hasResults) setSelectedId(null);
   }, []);
   const closePanel = useCallback(() => {
-    setEditing(null);
     setSelectedId(null);
     setResultsOpen(false);
     setSheetFull(false);
@@ -234,34 +240,94 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key !== 'Escape' || drawerOpen || areaEdit) return;
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
-      if (editing) setEditing(null);
-      else closePanel();
+      if (e.key !== 'Escape' || drawerOpen) return;
+      const el = document.activeElement;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable || el?.closest?.('.thread-pop')) return;
+      closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [editing, drawerOpen, areaEdit, closePanel]);
+  }, [drawerOpen, closePanel]);
 
   const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
+  const editing = useItemEditing({
+    projectId: data?.project.id,
+    tree,
+    setComments,
+    toast,
+    fail,
+    onAccepted: (nodes) => {
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      replaceNodes((ns) => ns.map((n) => byId.get(n.id) ?? n));
+    },
+    reloadNodes: async () => {
+      const pid = data.project.id;
+      const d = await api.getProject(pid);
+      if (latest.current.projectId !== pid) return null;
+      replaceNodes(() => d.nodes);
+      return d.nodes;
+    },
+  });
 
-  async function save(fields) {
-    const pid = data.project.id;
+  // The panel's expand handle (EDIT-10): drag to any width, or click to switch between narrow and wide.
+  const setWidth = (w) => {
+    const next = Math.round(Math.min(Math.max(w, PANEL_MIN), maxWidth()));
+    setPanelW(next);
+    try {
+      localStorage.setItem(PANEL_KEY, String(next));
+    } catch {
+      // Not remembered in a private window; the panel still works.
+    }
+  };
+  const onHandleDown = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panelW;
+    let moved = false;
+    const move = (ev) => {
+      if (Math.abs(ev.clientX - startX) > 3) moved = true;
+      if (moved) setPanelW(Math.round(Math.min(Math.max(startW + ev.clientX - startX, PANEL_MIN), maxWidth())));
+    };
+    const up = (ev) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setWidth(moved ? startW + ev.clientX - startX : startW > PANEL_MIN + 40 ? PANEL_MIN : wideWidth());
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
+  // The bottom sheet on a phone (EDIT-12): pull it up to edit full screen, down to see the map.
+  const onSheetDown = (e) => {
+    const startY = e.clientY;
+    const up = (ev) => {
+      window.removeEventListener('pointerup', up);
+      const dy = ev.clientY - startY;
+      if (Math.abs(dy) < 8) setSheetFull((f) => !f);
+      else setSheetFull(dy < 0);
+    };
+    window.addEventListener('pointerup', up);
+  };
+
+  async function patch(node, fields) {
+    try {
+      const { node: next } = await api.patchNode(data.project.id, node.id, fields);
+      replaceNodes((ns) => ns.map((n) => (n.id === next.id ? next : n)));
+      if ('parentId' in fields) pendingFly.current = next.id;
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  // A new item opens in the panel at once, its title ready to write over: there is no form to fill first.
+  async function add(parentId, kind) {
     setBusy(true);
     try {
-      if (editing.create) {
-        const { nodes } = await api.createNode(pid, fields);
-        replaceNodes((ns) => [...ns, ...nodes]);
-        setSelectedId(nodes[0].id);
-        pendingFly.current = nodes[0].id;
-        toast(`Added “${nodes[0].title}” to the map`);
-      } else {
-        const before = tree.byId.get(editing.id);
-        const { node } = await api.patchNode(pid, editing.id, fields);
-        replaceNodes((ns) => ns.map((n) => (n.id === node.id ? node : n)));
-        if (before?.parent && node.parentId !== before.parent.id) pendingFly.current = node.id;
-      }
-      setEditing(null);
+      const { nodes } = await api.createNode(data.project.id, { parentId, kind, title: `New ${KIND_LABEL[kind].toLowerCase()}`, tags: kind === 'story' ? ['new-feature'] : [] });
+      replaceNodes((ns) => [...ns, ...nodes]);
+      setSelectedId(nodes[0].id);
+      pendingFly.current = nodes[0].id;
+      toast(`Added a ${KIND_LABEL[kind].toLowerCase()} to the map`);
     } catch (err) {
       fail(err);
     } finally {
@@ -269,15 +335,13 @@ export function App() {
     }
   }
 
-  async function remove() {
-    const node = tree.byId.get(editing.id);
+  async function remove(node) {
     setBusy(true);
     try {
       const res = await api.deleteNode(data.project.id, node.id);
       const gone = new Set(res.deleted);
       const updated = new Map(res.updated.map((n) => [n.id, n]));
       replaceNodes((ns) => ns.filter((n) => !gone.has(n.id)).map((n) => updated.get(n.id) ?? n));
-      setEditing(null);
       setSelectedId(node.parent?.id ?? null);
       toast(`Deleted ${res.deleted.length === 1 ? `“${node.title}”` : `${res.deleted.length} items`}`);
     } catch (err) {
@@ -294,7 +358,6 @@ export function App() {
       await loadProjects();
       setProjectId(project.id);
       setSelectedId(null);
-      setEditing(null);
       setDrawerOpen(false);
       if (message) toast(message);
     } catch (err) {
@@ -387,37 +450,28 @@ export function App() {
       </div>
 
       {panelMode && tree && (
-        <aside className="panel" aria-label="Details">
+        <aside className="panel" aria-label="Details" style={mobile ? undefined : { width: panelW }}>
           {mobile && (
-            <button className="sheet-handle" onClick={() => setSheetFull((f) => !f)} aria-label={sheetFull ? 'Shrink panel' : 'Expand panel'}>
+            <button className="sheet-handle" onPointerDown={onSheetDown} aria-label={sheetFull ? 'Show the map' : 'Pull up to edit'}>
               <span />
             </button>
           )}
           <div className="panel-scroll">
-            {panelMode === 'edit' && (
-              <Editor
-                key={editing.id ?? `new-${editing.create.parentId}`}
-                node={editing.id ? tree.byId.get(editing.id) : null}
-                draft={editing.create}
-                tree={tree}
-                busy={busy}
-                onSave={save}
-                onCancel={() => setEditing(null)}
-                onDelete={editing.id ? remove : undefined}
-              />
-            )}
             {panelMode === 'details' && (
               <Details
+                key={selected.id}
                 node={selected}
                 tree={tree}
                 lens={lens}
+                comments={comments}
+                editing={editing}
                 onPick={pick}
                 onFly={(id) => mapRef.current?.flyTo(id)}
-                comments={comments}
-                onEdit={() => setEditing({ id: selected.id })}
-                onEditText={(scopeId, startKey) => setAreaEdit({ scopeId, startKey })}
-                onAdd={(parentId, kind) => setEditing({ create: { parentId, kind } })}
+                onAdd={add}
+                onPatch={(fields) => patch(selected, fields)}
+                onDelete={remove}
                 onClose={closePanel}
+                onDocFocus={mobile ? () => setSheetFull(true) : undefined}
                 onCopyLink={async () => {
                   writeHash();
                   try {
@@ -431,6 +485,22 @@ export function App() {
             )}
             {panelMode === 'results' && <Results lens={lens} tree={tree} focusId={focusId} onPick={pick} onClose={() => setResultsOpen(false)} />}
           </div>
+          {!mobile && (
+            <button
+              type="button"
+              className="panel-grip"
+              onPointerDown={onHandleDown}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowRight') setWidth(panelW + 40);
+                else if (e.key === 'ArrowLeft') setWidth(panelW - 40);
+                else if (e.key === 'Enter' || e.key === ' ') setWidth(panelW > PANEL_MIN + 40 ? PANEL_MIN : wideWidth());
+              }}
+              aria-label={panelW > PANEL_MIN + 40 ? 'Narrow the panel' : 'Widen the panel'}
+              title="Drag to resize, click to widen or narrow"
+            >
+              <span />
+            </button>
+          )}
         </aside>
       )}
 
@@ -481,7 +551,6 @@ export function App() {
           onOpen={(id) => {
             setProjectId(id);
             setSelectedId(null);
-            setEditing(null);
             setDrawerOpen(false);
           }}
           onCreate={(body) => openNew(api.createProject(body), body.template ? 'Demo project created' : 'Project created — click the island to start adding areas')}
@@ -505,35 +574,6 @@ export function App() {
             setLocked(true);
           }}
         />
-      )}
-      {areaEdit && tree && (
-        <Suspense fallback={<div className="area-editor loading">Opening the editor…</div>}>
-          <AreaEditor
-            key={areaEdit.scopeId}
-            projectId={data.project.id}
-            tree={tree}
-            scopeId={areaEdit.scopeId}
-            startKey={areaEdit.startKey}
-            comments={comments}
-            setComments={setComments}
-            loadComments={loadComments}
-            mobile={mobile}
-            toast={toast}
-            fail={fail}
-            onClose={() => setAreaEdit(null)}
-            onAccepted={(nodes) => {
-              const byId = new Map(nodes.map((n) => [n.id, n]));
-              replaceNodes((ns) => ns.map((n) => byId.get(n.id) ?? n));
-            }}
-            reloadNodes={async () => {
-              const pid = data.project.id;
-              const d = await api.getProject(pid);
-              if (latest.current.projectId !== pid) return null;
-              replaceNodes(() => d.nodes);
-              return d.nodes;
-            }}
-          />
-        </Suspense>
       )}
       <Toasts toasts={toasts} />
     </div>

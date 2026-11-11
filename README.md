@@ -30,8 +30,8 @@ you would expect them:
   the amount of work, so a big header means a lot of header work.
 
 Placement is guessed from titles and tags ("Footer links", "Orders database", "Stripe
-integration"). You can override it in the editor: *Where it sits* is a nine-spot screen
-plus *Behind the screen*, and top-level items have *Its own continent?*.
+integration"). You can override it in an item's properties: *Where it sits* is a nine-spot screen
+plus *Behind the screen*, and top-level items have *Continent*.
 
 **Organic** is one island of free-form territories, sized by work.
 
@@ -70,28 +70,33 @@ and the results list narrows to what is under you.
 Keys: `/` search · `+`/`-` zoom · arrows pan · `Esc` close. Every view is a shareable URL
 (project, selection, lens, position).
 
-## Editing an area together
+## Editing in the panel
 
-Issues follow a strict shape (see [CONTRIBUTING.md](CONTRIBUTING.md)): *Why*, *Behaviours*,
-*Acceptance*, *Out of scope* and *Open questions*. Choose **Edit** on an issue, or **Edit area**
-on anything with issues inside it, to open them side by side:
+Pick an item, on the map at whatever layer it shows or from a list, and it opens in the panel
+beside the map. The panel is the editor: there is no separate edit screen. It holds one item at a
+time, the umbrella, epic, story or task you picked; picking another replaces it.
 
-- **One document per item.** The title, then each section as a heading, edited like any document.
-  Select text for the formatting menu. In *Behaviours*, Enter at the end of one starts the next with
-  the next free ID in the area, and *Given*, *when* and *then* are picked out as you write. A
-  heading outside the shape or a behaviour without an ID is marked where it is, never blocked.
-  Sections you don't touch are saved character for character, so the markdown on GitHub stays as it was.
-- **One changeset.** Edits to every open item collect into the area's changeset, saved as you
-  type. Accept it and the whole map changes at once; discard it and nothing does. If an item
-  changed on GitHub since you started, accepting stops and says which one; nothing is
-  overwritten.
-- **Waiting for GitHub.** Writing to GitHub needs the GitHub App and the sync worker (a separate
-  issue). Until then, accepted changesets wait in Overworld, and a refresh from GitHub keeps
-  their edits on the map.
-- **Anchored comments.** Comment on one section or one behaviour (by its ID), from the 💬 beside it. The comment stays
-  with it when items are reordered or the map is refreshed, and shows in the item's details.
+- **One document per item.** The title, then each section of the strict shape (see
+  [CONTRIBUTING.md](CONTRIBUTING.md)): *Why*, *Behaviours*, *Acceptance*, *Out of scope* and *Open
+  questions*. Click into it and write. Select text for the formatting menu. In *Behaviours*, Enter at
+  the end of one starts the next with the next free ID, and *Given*, *when* and *then* are picked out
+  as you write. A heading outside the shape or a behaviour without an ID is marked where it is, never
+  blocked. Sections you don't touch are saved character for character.
+- **Properties in place.** Kind, status, priority and owner sit under the document, with estimate,
+  due date, tags, health, definition, summary, parent and placement one click away. A change is kept
+  as soon as you make it. Connections are added and removed in the same panel.
+- **One changeset.** Text edits are saved into the project's changeset as you type, so picking
+  another item loses nothing. The bar above the document says what it holds: accept it and the
+  map changes at once, discard it and nothing does, then save to send accepted changes to GitHub.
+  If an item changed on GitHub since you started, accepting stops and says which one.
+- **Anchored comments.** Comment on one section or one behaviour (by its ID), from the 💬 beside it.
+  The comment stays with it when items are reordered or the map is refreshed.
+- **Room to write.** The handle on the panel's edge widens it while the map stays beside it: drag it
+  to any width, or click it to switch between narrow and wide. The panel remembers its width.
+- **New items** open in the panel at once, titled *New epic* (or story, task…), ready to write over.
 
-On a phone, the editor shows one item at a time with a picker to switch between them.
+On a phone the panel is a bottom sheet: pull it up to edit full screen (it rises by itself when you
+tap into the text), and pull it down to see the map.
 
 ## Architecture
 
@@ -111,8 +116,8 @@ api/engine/  The deterministic repository mapper (no AI): architecture.mjs reads
 api/edits.mjs  Applies changesets to the map, and keeps unsynced ones through a refresh.
 shared/   Schema and validation used by both sides; issue-shape.js reads and writes the
           strict issue shape without losing a character.
-web/src/editor/  The area editor: TipTap (ProseMirror) fields, loaded the first time
-          someone edits.
+web/src/editor/  The item document: TipTap (ProseMirror), loaded the first time an item
+          with text opens; useItemEditing.js keeps the changeset the panel edits into.
 template.yaml  SAM: DynamoDB (on-demand, retained on delete) + Lambda (Node 24, arm64)
                with a public Function URL. Reserved concurrency 10 caps runaway cost.
 ```
