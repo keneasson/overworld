@@ -233,6 +233,24 @@ const FOG_LAYERS = [
   { seed: 71, scale: 2.4, vx: -6, vy: 2, alpha: 0.9 },
 ];
 
+/**
+ * Where the fog over a region lies (FOG-01): over the land of the parts nobody knows yet, not spread across all of it.
+ * A region that is a third fog shows cloud over that third of its land, at any zoom; each patch is as thick as its
+ * own part is uncharted. A part goes down to its own parts until it is all fog, or too small on screen to tell apart.
+ * @returns {{ n, g, w }[]}  the parts, their geometry and how thick their fog is
+ */
+export function fogPatches(n, { fog, geo, k, inView = () => true }) {
+  const out = [];
+  (function visit(m) {
+    const w = fog(m);
+    const g = geo.get(m.id);
+    if (w <= 0.02 || !inView(g.bbox)) return;
+    if (!m.children.length || w >= 0.98 || g.size * k < 6) out.push({ n: m, g, w });
+    else for (const c of m.children) visit(c);
+  })(n);
+  return out;
+}
+
 function drawFog(ctx, items, k, t, dark) {
   // A veil under the clouds, so even a gap between them still reads as fog.
   ctx.fillStyle = dark ? '#8d99ab' : '#eef1f5';
@@ -497,8 +515,8 @@ export function drawMap(ctx, scene, view, opts) {
     // Houses and fog belong to what you can see: a region hands them to its children as they fade in.
     const here = alpha > 0.01 ? alpha * (1 - sub) : 0;
     if (here > 0.02 && !thumbnail) towns.push({ n, g, w: here });
-    const thick = lens.fog && alpha > 0.01 ? alpha * (1 - sub) * lens.fog(n) : 0;
-    if (thick > 0.02) fogged.push({ g, s, w: thick });
+    // Fog lies over the unknown parts of what you can see, wherever they are inside it (FOG-01).
+    if (lens.fog && here > 0.02) for (const f of fogPatches(n, { fog: lens.fog, geo, k, inView })) fogged.push({ g: f.g, s, w: here * f.w });
     if (sub > 0.01) for (const c of n.children) walk(c, sub);
   };
   walk(tree.root, 1);
