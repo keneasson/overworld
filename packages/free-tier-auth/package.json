@@ -1,0 +1,15 @@
+{
+  "name": "free-tier-auth",
+  "version": "0.1.0",
+  "description": "Sign in with GitHub (more providers later) on Amazon Cognito's free tier: sessions in a cookie, accounts, members and invites.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./triggers": "./src/triggers.mjs",
+    "./memory-store": "./src/memory-store.mjs",
+    "./aws": "./src/aws.mjs"
+  },
+  "files": ["src", "template.yaml", "README.md", "LICENSE"]
+}
