@@ -26,7 +26,7 @@ const digest = (s) => createHash('sha256').update(String(s)).digest();
  * @param {object} [o.stores] each project's store (api/stores/index.mjs)
  * @param {() => Promise<string>} [o.webhookSecret] the GitHub App's webhook secret
  * @param {(projectId: string) => void} [o.onSaved] runs after a save: in AWS the table's stream wakes the worker instead
- * @param {() => number} [o.clock] the time, in milliseconds: agents' claims and limits run on it
+ * @param {() => number} [o.clock] the time, in milliseconds: agents' claims, limits and standups, and comments' times, run on it
  * @param {number} [o.agentCallsPerMinute] each agent's limit on MCP tool calls
  */
 export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, stores = createStores({ fetchImpl }), webhookSecret = null, onSaved = null, clock = Date.now, agentCallsPerMinute }) {
@@ -347,7 +347,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const anchor = a.behaviour ? { behaviour: text(a.behaviour, 40, 'anchor.behaviour') } : { section: text(a.section ?? 'Why', 60, 'anchor.section') };
         const said = text(body?.text ?? '', 4000, 'text').trim();
         if (!said) throw new ValidationError('text: required');
-        const comment = { id: commentId(), itemKey, anchor, text: said, author: author(body?.author), resolved: false, createdAt: new Date().toISOString() };
+        const comment = { id: commentId(), itemKey, anchor, text: said, author: author(body?.author), resolved: false, createdAt: new Date(clock()).toISOString() };
         await model.comments.put(pid, comment);
         return { comment };
       },

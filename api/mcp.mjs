@@ -14,6 +14,7 @@ const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const CHILDREN_SHOWN = 100;
 
 const HOW_TO_WORK = [
+  'Start each session with standup(), passing your local git state: it says what is waiting for you and where to begin. There is nothing to do at the end of a session.',
   'Find work with next_work(), and claim() it before you start: a claim keeps other agents off it, and runs out after two hours unless you claim it again.',
   'context(issue) has everything about one issue in one read.',
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
@@ -21,6 +22,26 @@ const HOW_TO_WORK = [
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
+
+// The standup prompt (CONN-03): clients like Claude Code show it as a slash command. Only the agent can see the local
+// copy, so the prompt asks it to look, and the standup tool puts that beside what Overworld knows.
+const STANDUP_PROMPT = [
+  'Start the session with a standup on this project.',
+  '',
+  'First gather the local facts, quietly, in this repository:',
+  '- the current branch and its upstream (git rev-parse --abbrev-ref HEAD; git rev-parse --abbrev-ref @{upstream});',
+  '- after git fetch, how far ahead and behind the upstream it is (git rev-list --left-right --count HEAD...@{upstream});',
+  '- the subjects of unpushed commits (git log --format=%s @{upstream}..HEAD);',
+  '- uncommitted changes, as file paths (git status --porcelain);',
+  '- open pull requests from this branch, if the gh CLI is available (gh pr list --head <branch> --json number,title,state).',
+  'Leave out anything you can\'t find; nothing is required.',
+  '',
+  'Then call the standup tool with them. Present its report briefly, in plain words: what is addressed to me, what I hold and what is ready next, how my copy and GitHub differ, my work in progress, and, after a while away, what changed and where I left off. End with its first step as your suggestion, and wait for me before acting on it.',
+].join('\n');
+
+const PROMPTS = {
+  standup: { title: 'Standup', description: 'Start a session: what is waiting for you, how your copy and GitHub differ, and where to begin. After a while away it regroups.', text: STANDUP_PROMPT },
+};
 
 const place = { type: 'string', description: 'An item key (issue-12, node-<id>) or a node id. Leave it out for the whole project.' };
 const requestKey = { type: 'string', description: 'Any string unique to this change. Repeating a call with the same key returns the first result and changes nothing.' };
@@ -96,6 +117,25 @@ export function createMcp({ model, agents, call, log = console }) {
           handoff_notes: notes.map(noteOf),
           your_last_handoff: self?.lastHandoff,
         };
+      },
+    },
+
+    standup: {
+      description: 'Start each session here, with your local git state: what is addressed to you, what you hold and what is ready next, how your copy and GitHub differ, your work in progress, and a first step. The first time it onboards; after a while away it regroups: what changed and where you left off.',
+      input: {
+        branch: { type: 'string' },
+        upstream: { type: 'string' },
+        ahead: { type: 'number', description: 'Commits on this branch not on its upstream.' },
+        behind: { type: 'number', description: 'Commits on the upstream not here, after a fetch.' },
+        unpushed: { type: 'array', items: { type: 'string' }, description: 'Subjects of unpushed commits.' },
+        uncommitted: { type: 'array', items: { type: 'string' }, description: 'Paths with uncommitted changes.' },
+        pull_requests: { type: 'array', items: { type: 'object', properties: { number: { type: 'number' }, title: { type: 'string' }, state: { type: 'string' } } }, description: 'Open pull requests from this branch.' },
+      },
+      writes: true,
+      async run({ pid, agent }, args) {
+        const report = await agents.standup(pid, agent, args);
+        if (report.mode === 'onboarding') report.onboarding = { ...report.onboarding, how_to_work: HOW_TO_WORK };
+        return report;
       },
     },
 
@@ -268,7 +308,7 @@ export function createMcp({ model, agents, call, log = console }) {
     name,
     description: t.description,
     inputSchema: { type: 'object', properties: t.input, ...(t.required ? { required: t.required } : {}) },
-    annotations: { readOnlyHint: !t.changes, idempotentHint: !t.changes, openWorldHint: false },
+    annotations: { readOnlyHint: !t.changes && !t.writes, idempotentHint: !t.changes && !t.writes, openWorldHint: false },
   }));
 
   const result = (data, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, ...(isError ? { isError: true } : {}) });
@@ -304,9 +344,9 @@ export function createMcp({ model, agents, call, log = console }) {
         return reply({
           result: {
             protocolVersion: PROTOCOLS.includes(asked) ? asked : PROTOCOLS[0],
-            capabilities: { tools: { listChanged: false } },
+            capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
             serverInfo: { name: APP_NAME, version: '0.1.0' },
-            instructions: `You are ${ctx.agent.name} (${ctx.agent.id}) on ${ctx.project.title}. Call prime() first.`,
+            instructions: `You are ${ctx.agent.name} (${ctx.agent.id}) on ${ctx.project.title}. Start each session with standup(), passing your local git state.`,
           },
         });
       }
@@ -314,6 +354,13 @@ export function createMcp({ model, agents, call, log = console }) {
         return reply({ result: {} });
       case 'tools/list':
         return reply({ result: { tools: definitions } });
+      case 'prompts/list':
+        return reply({ result: { prompts: Object.entries(PROMPTS).map(([name, p]) => ({ name, title: p.title, description: p.description, arguments: [] })) } });
+      case 'prompts/get': {
+        const p = PROMPTS[msg.params?.name];
+        if (!p) return reply({ error: { code: -32602, message: `No prompt called ${msg.params?.name}` } });
+        return reply({ result: { description: p.description, messages: [{ role: 'user', content: { type: 'text', text: p.text } }] } });
+      }
       case 'tools/call':
         return reply(await callTool(ctx, msg.params?.name, msg.params?.arguments));
       default:
