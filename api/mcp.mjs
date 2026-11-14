@@ -18,7 +18,7 @@ const HOW_TO_WORK = [
   'Find work with next_work(), and claim() it before you start: a claim keeps other agents off it, and runs out after two hours unless you claim it again.',
   'context(issue) has everything about one issue in one read.',
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
-  'Raise questions with ask(place, question), so they stay on the map until someone answers them.',
+  'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
@@ -36,7 +36,7 @@ const STANDUP_PROMPT = [
   '- open pull requests from this branch, if the gh CLI is available (gh pr list --head <branch> --json number,title,state).',
   'Leave out anything you can\'t find; nothing is required.',
   '',
-  'Then call the standup tool with them. Present its report briefly, in plain words: what is addressed to me, what I hold and what is ready next, how my copy and GitHub differ, my work in progress, and, after a while away, what changed and where I left off. End with its first step as your suggestion, and wait for me before acting on it.',
+  'Then call the standup tool with them. Present its report briefly, in plain words: what is addressed to me, what I hold and what is ready next, how my copy and GitHub differ, my work in progress, and, after a while away, what changed and where I left off. Then act on its first step yourself, without waiting for me (CONN-08): carry on with what you hold, or claim what is ready, and build it to a pull request. Raise anything you can\'t settle alone with ask() on the item and keep building what doesn\'t depend on the answer; if nothing can go on, handoff() with a note. Never leave a claim idle.',
 ].join('\n');
 
 const PROMPTS = {

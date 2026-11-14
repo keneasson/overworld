@@ -358,3 +358,15 @@ test('CONN-05 after a while away, or many changes by others, the standup regroup
   assert.ok(busy.while_you_were_away.by_other_agents.every((x) => x.by.startsWith('Reviewer')));
   assert.equal((await a.use('standup')).mode, 'up_to_date');
 });
+
+test('CONN-08 after the standup the agent builds unassisted: blockers go to ask() on the item, never a wait in its own window', async () => {
+  const { agent } = await setup();
+  const a = await agent('Builder');
+  const prompt = (await a.rpc('prompts/get', { name: 'standup' })).result.messages[0].content.text;
+  assert.doesNotMatch(prompt, /wait for me/i);
+  assert.match(prompt, /without waiting/);
+  assert.match(prompt, /ask\(\)/);
+  assert.match(prompt, /handoff\(\)/);
+  const { how_to_work } = await a.use('prime');
+  assert.ok(how_to_work.some((line) => /without waiting/.test(line) && /ask\(/.test(line)), 'how work goes here says so too');
+});
