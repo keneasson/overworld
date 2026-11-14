@@ -151,7 +151,7 @@ export function ConnectAgent({ projectId, projectTitle, onClose, onError }) {
             <section>
               <h3>3. Start it</h3>
               <p className="small">
-                Restart your agent, then run <code>/standup</code>, or ask it to call <code>prime</code>.
+                Restart your agent. In Claude Code, run <code>/mcp__overworld__standup</code>; in other tools, ask it to call <code>standup</code> (or <code>prime</code>).
               </p>
               <p className={`status small${connected ? ' ok' : ''}`} aria-live="polite">
                 <Icon name={connected ? 'check' : 'refresh'} size={14} />{' '}
