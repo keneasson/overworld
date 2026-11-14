@@ -54,7 +54,6 @@ export function splitOf(node, kids, tested) {
   const hint = { looks_built: built, still_to_build: unbuilt };
   if (kids.length && unbuilt.length) return { reason: 'It has child issues and behaviours of its own still to build: move those into a child.', ...hint };
   if (built.length && unbuilt.length) return { reason: 'Partly built: split what is left into a child issue, and close this one when the built part is done.', ...hint };
-  if (built.length && node.status === 'ready') return { reason: 'Every behaviour has a test: close it, or split off what is left.', ...hint };
   return null;
 }
 
@@ -81,7 +80,7 @@ export function buildingOf(node, claim) {
  * one that needs a split is listed apart, not offered (STATE-10).
  * @param {Map<string, object>} live live claims by behaviour id
  * @param {{ tested?: Iterable<string> }} [o] behaviour ids with a test named by them on the default branch
- * @returns {{ work: { item, title, priority, behaviours }[], blocked: { item, title, by }[], needsSplit: { item, title, reason, looks_built, still_to_build }[] }}
+ * @returns {{ work: { item, title, priority, behaviours }[], blocked: { item, title, by }[], needsSplit: { item, title, reason, looks_built, still_to_build }[], toVerify: { item, title, behaviours }[] }}
  */
 export function nextWork(nodes, live, { tested = [] } = {}) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -90,6 +89,7 @@ export function nextWork(nodes, live, { tested = [] } = {}) {
   const work = [];
   const blocked = [];
   const needsSplit = [];
+  const toVerify = []; // every behaviour has a test: ready to verify, not done (STATE-12)
   for (const node of nodes) {
     if (!isWork(node)) continue;
     const split = splitOf(node, kids.get(node.id) ?? [], have);
@@ -98,6 +98,11 @@ export function nextWork(nodes, live, { tested = [] } = {}) {
       continue;
     }
     if (kids.has(node.id)) continue; // a parent: its children are the work
+    const own = behavioursOf(node).filter((b) => !b.fog);
+    if (own.length && own.every((b) => have.has(b.id))) {
+      toVerify.push({ item: keyOf(node), title: node.title, behaviours: own.map((b) => b.id) });
+      continue;
+    }
     const open = behavioursOf(node).filter((b) => !b.fog && !live.has(b.id));
     if (!open.length) continue;
     const by = blockersOf(node, byId);
@@ -106,5 +111,5 @@ export function nextWork(nodes, live, { tested = [] } = {}) {
     else work.push({ ...entry, order: node.order ?? 0 });
   }
   work.sort((a, b) => (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9) || a.order - b.order || a.item.localeCompare(b.item));
-  return { work: work.map(({ order, ...w }) => w), blocked, needsSplit };
+  return { work: work.map(({ order, ...w }) => w), blocked, needsSplit, toVerify };
 }

@@ -260,7 +260,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const awayHours = last ? (now - Date.parse(last.at)) / 3_600_000 : 0;
     const mode = !last ? 'onboarding' : awayHours > REGROUP_AFTER_HOURS || changes >= REGROUP_AFTER_CHANGES ? 'regroup' : 'up_to_date';
 
-    const { work, needsSplit } = nextWork(data.nodes, live, { tested: data.project?.tested });
+    const { work, needsSplit, toVerify } = nextWork(data.nodes, live, { tested: data.project?.tested });
     const git = gitOf(local);
     const refinements = changesets.filter((cs) => cs.status === 'open' && cs.author === me).map((cs) => ({ refinement: cs.id, place: data.nodes.find((n) => n.id === cs.scopeId)?.title ?? cs.scopeId, items: cs.items.length }));
     const unsaved = pending.filter((n) => n.sync && n.sync !== 'saving').map((n) => ({ item: keyOf(n), title: n.title, state: n.sync }));
@@ -276,6 +276,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       you_hold: holding,
       ready_next: work.slice(0, 3).map((w) => ({ item: w.item, title: w.title, priority: w.priority || undefined, behaviours: w.behaviours.map((b) => b.id) })),
       ...(needsSplit.length ? { needs_split: needsSplit.slice(0, SHOWN).map(({ item, title, reason, looks_built }) => ({ item, title, reason, looks_built })), ...(needsSplit.length > SHOWN ? { more_need_split: needsSplit.length - SHOWN } : {}) } : {}),
+      ...(toVerify.length ? { to_verify: toVerify.slice(0, SHOWN) } : {}),
       ...(git ? { local_and_github: git } : {}),
       work_in_progress: {
         ...(refinements.length ? { your_open_refinements: refinements } : {}),
@@ -304,7 +305,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         remembered: (await model.facts.list(projectId)).map((f) => ({ fact: f.text, by: f.by?.name, at: f.at.slice(0, 10) })),
       };
     }
-    report.first_step = firstStep({ mode, git, ranOut, answered, holding, work, needsSplit, refinements, title });
+    report.first_step = firstStep({ mode, git, ranOut, answered, holding, work, needsSplit, toVerify, refinements, title });
 
     await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !c.resolved).map((c) => c.id) } });
     return report;
@@ -333,7 +334,7 @@ function gitOf(local) {
 }
 
 /** One suggestion: unfinished local work first, then catching up, then answers, then held work, then the next work. */
-function firstStep({ mode, git, ranOut, answered, holding, work, needsSplit = [], refinements, title }) {
+function firstStep({ mode, git, ranOut, answered, holding, work, needsSplit = [], toVerify = [], refinements, title }) {
   const local = git && (git.uncommitted?.length || git.unpushed?.length || git.ahead);
   if (local && ranOut.length && !holding.length) return `You have local work on ${git.branch ?? 'this branch'} and your claim on ${ranOut.map((c) => c.behaviour).join(', ')} ran out: claim it again, or hand it off, before you carry on.`;
   if (git?.behind) return `Pull first: ${git.behind} commit${git.behind === 1 ? '' : 's'} on GitHub you don't have yet.`;
@@ -342,6 +343,7 @@ function firstStep({ mode, git, ranOut, answered, holding, work, needsSplit = []
   if (holding.length) return `Carry on with ${holding[0].title} (${holding[0].behaviours.join(', ')}); your claim holds until ${holding[0].until}.`;
   if (refinements.length) return `Finish your refinement over ${refinements[0].place}.`;
   if (work.length) return `Claim the next work: ${work[0].title} (${work[0].behaviours.map((b) => b.id).join(', ')}).`;
+  if (toVerify.length) return `Nothing is ready to build. ${toVerify[0].title} has a test for every behaviour: verify it does what it says, and record what you saw on the issue; a person's yes closes it (STATE-12).`;
   if (needsSplit.length) return `Nothing is ready that can be built in one go. ${needsSplit[0].title} needs a split first: refine() it into child issues.`;
   return mode === 'onboarding' ? 'Nothing is ready to build yet: zoom() around the map, and ask() where things are unclear.' : 'Nothing is ready and unclaimed: ask() or refine() where the map is unclear.';
 }

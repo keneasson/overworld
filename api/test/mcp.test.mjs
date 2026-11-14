@@ -377,7 +377,7 @@ test('STATE-09 only leaf issues are offered as work; a parent with behaviours of
   assert.match((await a.refused('claim', { behaviours: ['PA-01'] })).error, /needs a split/);
 });
 
-test('STATE-10 an issue partly built, judged by tests named by its behaviour IDs, needs a split and is not offered', async () => {
+test('STATE-10 STATE-12 an issue partly built needs a split; one tested throughout is to verify, not done; neither is offered to build', async () => {
   const { rest, agent, shop } = await setup();
   const ready = { labels: [{ name: 'status:ready' }] };
   shop.issues.push(
@@ -395,6 +395,8 @@ test('STATE-10 an issue partly built, judged by tests named by its behaviour IDs
   const s = await a.use('standup');
   const half = s.needs_split.find((x) => x.item === 'issue-30');
   assert.deepEqual(half.looks_built, ['HB-01']);
-  assert.match(s.needs_split.find((x) => x.item === 'issue-31').reason, /close it/);
+  assert.ok(!s.needs_split.some((x) => x.item === 'issue-31'), 'tested throughout is not a split');
+  assert.deepEqual(s.to_verify.find((x) => x.item === 'issue-31').behaviours, ['AB-01']);
+  assert.deepEqual(next.to_verify, ['issue-31']);
   assert.deepEqual((await a.use('context', { issue: '30' })).needs_split.still_to_build, ['HB-02']);
 });

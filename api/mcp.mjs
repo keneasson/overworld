@@ -164,9 +164,9 @@ export function createMcp({ model, agents, call, log = console }) {
       input: { limit: { type: 'number', description: 'How many issues, at most (default 5).' } },
       async run({ pid }, args) {
         const { project, nodes } = await mapOf(pid);
-        const { work, blocked, needsSplit } = nextWork(nodes, (await agents.liveClaims(pid)).live, { tested: project?.tested });
+        const { work, blocked, needsSplit, toVerify } = nextWork(nodes, (await agents.liveClaims(pid)).live, { tested: project?.tested });
         const limit = Math.min(50, Math.max(1, Number(args.limit) || 5));
-        return { work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}), ...(needsSplit.length ? { need_a_split: needsSplit.map((x) => x.item) } : {}) };
+        return { work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}), ...(needsSplit.length ? { need_a_split: needsSplit.map((x) => x.item) } : {}), ...(toVerify.length ? { to_verify: toVerify.map((x) => x.item) } : {}) };
       },
     },
 
