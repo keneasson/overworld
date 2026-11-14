@@ -91,7 +91,7 @@ agents' tokens first. The token itself is never stored.
 | A project's agents | `agents.list(projectId)` | Query `begins_with(SK, AGENT#)` |
 | One agent | `agents.get(projectId, id)` | GetItem |
 | Make an agent and its token | `agents.create(projectId, agent, tokenHash)` | Conditional PutItem (the id is free), then PutItem |
-| Save an agent (its last handoff, its revocation) | `agents.put(projectId, agent)` | PutItem |
+| Save an agent (its last handoff, its last standup, its revocation) | `agents.put(projectId, agent)` | PutItem |
 | Who a token belongs to | `agents.byToken(tokenHash)` | GetItem `TOKEN#<hash>` |
 | Revoke a token, or every token of a project | `agents.revokeToken(hash)`, `agents.revokeAll(projectId)` | DeleteItem; Query `AGENT#`, then batched deletes |
 | A project's claims | `claims.list(projectId)` | Query `begins_with(SK, CLAIM#)` |
@@ -100,6 +100,7 @@ agents' tokens first. The token itself is never stored.
 | One item's handoff notes | `handoffs.list(projectId, itemKey)`, `handoffs.put` | Query `begins_with(SK, HANDOFF#<itemKey>#)`; PutItem |
 | What a project remembers | `facts.list(projectId)`, `facts.put`, `facts.delete` | Query `begins_with(SK, FACT#)`; PutItem; DeleteItem |
 | Record a change by an agent; one agent's changes | `actions.put(projectId, action)`, `actions.list(projectId, agentId)` | PutItem; Query GSI1 `ACTIONS#<id>#<agentId>`, descending |
+| Every agent's changes since a time (a standup) | `actions.since(projectId, at)` | Query `SK BETWEEN ACTION#<at> AND ACTION#~` |
 | A change's request key: start, read, finish, forget | `requests.start` / `get` / `finish` / `forget` | Conditional PutItem; GetItem; PutItem; DeleteItem |
 | Count an agent's call this minute | `limits.count(projectId, agentId, minute, limit)` | UpdateItem `ADD`, conditional on the limit |
 
