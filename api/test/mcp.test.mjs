@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), tested the way an agent uses it: JSON-RPC over HTTP.
+// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4) and the standup (CONN-03 to CONN-05, #34), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -288,4 +288,73 @@ test('CONN-07 the agents list shows when each agent last called, written at most
   await rest('DELETE', `/api/projects/${pid}/agents/${a.id}`);
   const after = (await rest('GET', `/api/projects/${pid}/agents`)).agents.find((x) => x.id === a.id);
   assert.ok(after.revokedAt && after.lastSeenAt, 'a revoked agent keeps its last call, and its revocation');
+});
+
+test('CONN-03 the standup prompt asks the agent for its local state, and the standup tool reports it beside what is waiting', async () => {
+  const { rest, pid, agent, clock } = await setup();
+  const a = await agent('Builder');
+  const b = await agent('Reviewer');
+  const init = await a.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
+  assert.ok(init.result.capabilities.prompts);
+  assert.deepEqual((await a.rpc('prompts/list')).result.prompts.map((p) => p.name), ['standup']);
+  const prompt = (await a.rpc('prompts/get', { name: 'standup' })).result.messages[0].content.text;
+  assert.match(prompt, /git status/);
+  assert.match(prompt, /standup tool/);
+
+  await a.use('standup');
+  clock.now += 60_000;
+  const { question } = await a.use('ask', { place: 'issue-10', question: 'Semantic or geometric?' });
+  await a.use('claim', { behaviours: ['CL-01'] });
+  clock.now += 10 * 60_000;
+  await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', anchor: { behaviour: 'CL-01' }, text: 'Hold it for a day?', author: 'Ken' });
+  await rest('PATCH', `/api/projects/${pid}/comments/issue-10/${question}`, { resolved: true });
+  await b.use('standup');
+
+  const r = await a.use('standup', { branch: 'claims', ahead: 1, behind: 2, unpushed: ['Hold claims'], uncommitted: ['api/claims.mjs'], pull_requests: [{ number: 7, title: 'Claims', state: 'OPEN' }] });
+  assert.equal(r.mode, 'up_to_date');
+  assert.deepEqual(r.addressed_to_you.answered.map((q) => q.question), ['Semantic or geometric?']);
+  assert.deepEqual(r.addressed_to_you.new_comments.map((c) => c.said), ['Hold it for a day?']);
+  assert.deepEqual(r.you_hold.map((h) => [h.item, h.behaviours]), [['issue-11', ['CL-01']]]);
+  assert.ok(r.ready_next.length && !r.ready_next.some((w) => w.behaviours.includes('CL-01')), 'what is ready leaves out what is held');
+  assert.deepEqual([r.local_and_github.branch, r.local_and_github.ahead, r.local_and_github.behind, r.local_and_github.in_line], ['claims', 1, 2, false]);
+  assert.equal(r.local_and_github.pull_requests[0].number, 7);
+  assert.match(r.first_step, /^Pull first: 2 commits/);
+  assert.ok(!(await a.use('standup')).addressed_to_you.answered, 'an answer is reported once');
+});
+
+test('CONN-04 the first standup on a machine onboards; the next one stays short', async () => {
+  const { agent } = await setup();
+  const a = await agent('Builder');
+  const first = await a.use('standup');
+  assert.equal(first.mode, 'onboarding');
+  assert.equal(first.onboarding.project, 'App');
+  assert.ok(first.onboarding.how_to_work.some((line) => /standup\(\)/.test(line)));
+  assert.match(first.first_step, /Claim the next work: #11 Claims/);
+  const next = await a.use('standup');
+  assert.equal(next.mode, 'up_to_date');
+  assert.ok(!next.onboarding && !next.while_you_were_away);
+});
+
+test('CONN-05 after a while away, or many changes by others, the standup regroups: what changed, where you left off, what ran out', async () => {
+  const { agent, clock } = await setup();
+  const a = await agent('Builder');
+  const b = await agent('Reviewer');
+  await a.use('standup');
+  await a.use('claim', { behaviours: ['ZOOM-01'] });
+  await a.use('standup');
+  clock.now += 9 * 3_600_000;
+  const back = await a.use('standup', { branch: 'zoom', uncommitted: ['web/zoom.js'] });
+  assert.equal(back.mode, 'regroup');
+  assert.equal(back.away, '9 hours');
+  assert.deepEqual(back.claims_ran_out.map((c) => c.behaviour), ['ZOOM-01']);
+  assert.ok(back.where_you_left_off.notes.some((n) => /ran out/.test(n.note)));
+  assert.match(back.first_step, /claim on ZOOM-01 ran out/);
+
+  clock.now += 10 * 60_000;
+  for (let i = 0; i < 10; i++) await b.use('remember', { fact: `Fact ${i}` });
+  const busy = await a.use('standup');
+  assert.equal(busy.mode, 'regroup', 'ten changes by others regroup even after a short break');
+  assert.equal(busy.while_you_were_away.changes, 10);
+  assert.ok(busy.while_you_were_away.by_other_agents.every((x) => x.by.startsWith('Reviewer')));
+  assert.equal((await a.use('standup')).mode, 'up_to_date');
 });

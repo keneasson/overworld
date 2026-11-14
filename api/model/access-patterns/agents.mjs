@@ -100,6 +100,10 @@ export function actions(table) {
       const expiresAt = Math.floor(Date.parse(action.at) / 1000) + ACTIONS_KEPT_DAYS * DAY;
       await table.put({ ...keys.action(projectId, action), ...keys.agentActions(projectId, action.agentId, action.at), entity: 'action', ...action, expiresAt });
     },
+    /** Every agent's changes since a time, oldest first: for a standup's "while you were away". Query SK BETWEEN ACTION#<at> AND ACTION#~. */
+    async since(projectId, at) {
+      return (await table.query(keys.actionsSince(projectId, at))).map(({ expiresAt, ...a }) => strip(a));
+    },
     /** One agent's changes, newest first. Query GSI1 PK = ACTIONS#<projectId>#<agentId>. */
     async list(projectId, agentId) {
       return (await table.query({ ...keys.actionsOf(projectId, agentId), newestFirst: true })).map(({ expiresAt, ...a }) => strip(a));

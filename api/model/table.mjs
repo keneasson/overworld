@@ -6,8 +6,8 @@
 //   get(key)                                         -> item | null
 //   put(item)                                        replaces the whole item
 //   delete(key)
-//   query({ pk, skBeginsWith, skFrom, index, newestFirst })  -> every matching item, all pages
-//                                                    (skFrom: sort keys from this one on)
+//   query({ pk, skBeginsWith, skFrom, skTo, index, newestFirst })  -> every matching item, all pages
+//                                                    (skFrom: sort keys from this one on; skTo: up to this one)
 //   write({ puts, deletes })                         batched, retried while throttled
 //   transact({ puts, deletes })                      all or nothing, at most 100 items (the outbox)
 //   claim(key, { owner, until, now })                -> true if this owner now holds the lease: nobody did,
@@ -59,15 +59,16 @@ export async function dynamoTable(tableName, { region } = {}) {
     async delete(key) {
       await db.send(new DeleteCommand({ TableName: tableName, Key: key }));
     },
-    async query({ pk, skBeginsWith, skFrom, index, newestFirst = false }) {
+    async query({ pk, skBeginsWith, skFrom, skTo, index, newestFirst = false }) {
       const names = index ? INDEXES[index] : BASE;
       const sk = skBeginsWith ?? skFrom;
-      const range = skBeginsWith != null ? ' AND begins_with(#sk, :sk)' : skFrom != null ? ' AND #sk >= :sk' : '';
+      const between = skBeginsWith == null && skFrom != null && skTo != null;
+      const range = skBeginsWith != null ? ' AND begins_with(#sk, :sk)' : between ? ' AND #sk BETWEEN :sk AND :to' : skFrom != null ? ' AND #sk >= :sk' : '';
       return all(QueryCommand, {
         IndexName: index,
         KeyConditionExpression: `#pk = :pk${range}`,
         ExpressionAttributeNames: range ? { '#pk': names.pk, '#sk': names.sk } : { '#pk': names.pk },
-        ExpressionAttributeValues: range ? { ':pk': pk, ':sk': sk } : { ':pk': pk },
+        ExpressionAttributeValues: range ? { ':pk': pk, ':sk': sk, ...(between ? { ':to': skTo } : {}) } : { ':pk': pk },
         ScanIndexForward: !newestFirst,
       });
     },
@@ -220,11 +221,11 @@ export function fileTable(path) {
       (await load()).delete(at(key));
       await save();
     },
-    async query({ pk, skBeginsWith, skFrom, index, newestFirst = false }) {
+    async query({ pk, skBeginsWith, skFrom, skTo, index, newestFirst = false }) {
       // Like DynamoDB: an index only holds items that carry its keys, sorted by its sort key.
       const names = index ? INDEXES[index] : BASE;
       const out = [...(await load()).values()].filter(
-        (it) => it[names.pk] === pk && it[names.sk] != null && (skBeginsWith == null || it[names.sk].startsWith(skBeginsWith)) && (skFrom == null || it[names.sk] >= skFrom),
+        (it) => it[names.pk] === pk && it[names.sk] != null && (skBeginsWith == null || it[names.sk].startsWith(skBeginsWith)) && (skFrom == null || it[names.sk] >= skFrom) && (skTo == null || it[names.sk] <= skTo),
       );
       out.sort((a, b) => (a[names.sk] < b[names.sk] ? -1 : a[names.sk] > b[names.sk] ? 1 : 0));
       if (newestFirst) out.reverse();

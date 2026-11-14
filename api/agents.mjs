@@ -10,6 +10,10 @@ const CALLS_PER_MINUTE = 120;
 const CLAIM_MINUTES = { default: 120, max: 480 };
 const TOKEN_PREFIX = 'owk_';
 const SEEN_EVERY_MS = 5 * 60 * 1000;
+// A standup regroups (CONN-05) after this long away, or after this many changes by others since the last one.
+const REGROUP_AFTER_HOURS = 8;
+const REGROUP_AFTER_CHANGES = 10;
+const SHOWN = 8;
 
 export const tokenHash = (token) => createHash('sha256').update(String(token)).digest('hex');
 
@@ -212,5 +216,131 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     }
   }
 
-  return { callsPerMinute, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
+  /**
+   * The start of a session (CONN-03 to CONN-05): what's addressed to the agent, what it holds and what's next, how its
+   * local copy and GitHub differ (from the facts its agent gathered, since only it can see them), its work in progress,
+   * and a first step. The first standup onboards; one after a while away regroups; otherwise it says they're up to date.
+   * Nothing has to be done at the end of a session: where the work stood is rebuilt from claims, notes and git.
+   */
+  async function standup(projectId, agent, local = {}) {
+    const now = clock();
+    const self = (await model.agents.get(projectId, agent.id)) ?? agent;
+    const last = self.lastStandup;
+    const me = `${agent.name} (${agent.id})`;
+    const data = await model.projects.getWithNodes(projectId);
+    const { live, expired } = await liveClaims(projectId);
+    const mine = [...live.values()].filter((c) => c.owner === agent.id);
+    const [comments, changesets, pending, actions] = await Promise.all([
+      model.comments.list(projectId),
+      model.changesets.list(projectId),
+      model.nodes.pending(projectId),
+      last ? model.actions.since(projectId, last.at) : [],
+    ]);
+    const held = [...new Set(mine.map((c) => c.item))];
+    // Items this agent cares about: what it holds now, what it held last time, and where it asked questions.
+    const asked = comments.filter((c) => c.author === me && c.anchor?.section === 'Open questions');
+    const watched = new Set([...held, ...(last?.items ?? []), ...asked.map((c) => c.itemKey)]);
+    const notesOn = Object.fromEntries(await Promise.all([...watched].map(async (i) => [i, await model.handoffs.list(projectId, i)])));
+    const title = (key) => data.nodes.find((n) => keyOf(n) === key)?.title ?? key;
+
+    // Answered: open at the last standup, or asked since, and resolved now. Each is reported once.
+    const answered = last ? asked.filter((c) => c.resolved && ((last.openQuestions ?? []).includes(c.id) || c.createdAt > last.at)) : [];
+    const fresh = last ? comments.filter((c) => c.author !== me && c.createdAt > last.at) : [];
+    // Claims that ran out: noticed just now, or since the last standup (each left a note on its item).
+    const ranOut = [...new Map([...expired.filter((c) => c.owner === agent.id).map((c) => ({ behaviour: c.behaviour, item: c.item, at: c.until })),
+      ...Object.values(notesOn).flat().filter((n) => n.reason === 'expired' && n.agentId === agent.id && last && n.at > last.at).map((n) => ({ behaviour: n.behaviours[0], item: n.itemKey, at: n.at }))]
+      .map((c) => [`${c.behaviour}@${c.at}`, c])).values()];
+    const byOthers = actions.filter((a) => a.agentId !== agent.id && a.at > last.at);
+    const behind = Math.max(0, Number(local.behind) || 0);
+    const changes = byOthers.length + fresh.length + behind;
+    const awayHours = last ? (now - Date.parse(last.at)) / 3_600_000 : 0;
+    const mode = !last ? 'onboarding' : awayHours > REGROUP_AFTER_HOURS || changes >= REGROUP_AFTER_CHANGES ? 'regroup' : 'up_to_date';
+
+    const { work } = nextWork(data.nodes, live);
+    const git = gitOf(local);
+    const refinements = changesets.filter((cs) => cs.status === 'open' && cs.author === me).map((cs) => ({ refinement: cs.id, place: data.nodes.find((n) => n.id === cs.scopeId)?.title ?? cs.scopeId, items: cs.items.length }));
+    const unsaved = pending.filter((n) => n.sync && n.sync !== 'saving').map((n) => ({ item: keyOf(n), title: n.title, state: n.sync }));
+    const holding = held.map((item) => ({ item, title: title(item), behaviours: mine.filter((c) => c.item === item).map((c) => c.behaviour), until: mine.find((c) => c.item === item).until }));
+
+    const report = {
+      mode,
+      ...(last ? { last_connected: last.at, away: span(now - Date.parse(last.at)) } : {}),
+      addressed_to_you: {
+        ...(answered.length ? { answered: answered.map((c) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text })) } : {}),
+        ...(fresh.filter((c) => watched.has(c.itemKey)).length ? { new_comments: fresh.filter((c) => watched.has(c.itemKey)).slice(-SHOWN).map((c) => ({ item: c.itemKey, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })) } : {}),
+      },
+      you_hold: holding,
+      ready_next: work.slice(0, 3).map((w) => ({ item: w.item, title: w.title, priority: w.priority || undefined, behaviours: w.behaviours.map((b) => b.id) })),
+      ...(git ? { local_and_github: git } : {}),
+      work_in_progress: {
+        ...(refinements.length ? { your_open_refinements: refinements } : {}),
+        ...(unsaved.length ? { not_saved_to_github: unsaved.slice(0, SHOWN), ...(unsaved.length > SHOWN ? { more_not_saved: unsaved.length - SHOWN } : {}) } : {}),
+      },
+    };
+    if (mode === 'regroup') {
+      report.while_you_were_away = {
+        changes,
+        ...(byOthers.length ? { by_other_agents: byOthers.slice(-SHOWN).map((a) => ({ at: a.at, by: `${a.agentName} (${a.agentId})`, did: a.tool })) } : {}),
+        ...(fresh.length ? { comments: fresh.length } : {}),
+        ...(behind ? { commits_on_github: behind } : {}),
+      };
+      report.where_you_left_off = {
+        ...(self.lastHandoff ? { last_handoff: self.lastHandoff } : {}),
+        notes: Object.values(notesOn).flat().filter((n) => !last || n.at > last.at).slice(-SHOWN).map((n) => ({ item: n.itemKey, at: n.at, by: `${n.agentName} (${n.agentId})`, note: n.note })),
+      };
+      if (ranOut.length) report.claims_ran_out = ranOut;
+    } else if (ranOut.length) report.claims_ran_out = ranOut;
+    if (mode === 'onboarding') {
+      const project = data.project ?? (await model.projects.get(projectId));
+      report.onboarding = {
+        project: project.title,
+        conventions: project.guide?.conventions?.length ? `Read ${project.guide.conventions.join(' and ')} in the repository.` : undefined,
+        standing_decisions: project.guide?.standingDecisions || undefined,
+        remembered: (await model.facts.list(projectId)).map((f) => ({ fact: f.text, by: f.by?.name, at: f.at.slice(0, 10) })),
+      };
+    }
+    report.first_step = firstStep({ mode, git, ranOut, answered, holding, work, refinements, title });
+
+    await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !c.resolved).map((c) => c.id) } });
+    return report;
+  }
+
+  return { callsPerMinute, standup, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
 }
+
+/** How the local copy and GitHub differ, from what the agent saw: null when it sent nothing. */
+function gitOf(local) {
+  const f = local ?? {};
+  if (![f.branch, f.ahead, f.behind, f.unpushed, f.uncommitted, f.pull_requests].some((v) => v != null)) return null;
+  const n = (v) => Math.max(0, Number(v) || 0);
+  const unpushed = Array.isArray(f.unpushed) ? f.unpushed.map(String).slice(0, SHOWN) : [];
+  const uncommitted = Array.isArray(f.uncommitted) ? f.uncommitted.map(String) : [];
+  const ahead = Math.max(n(f.ahead), unpushed.length);
+  return {
+    branch: f.branch ? String(f.branch).slice(0, 200) : undefined,
+    ...(f.upstream ? { upstream: String(f.upstream).slice(0, 200) } : {}),
+    ahead, behind: n(f.behind),
+    ...(unpushed.length ? { unpushed } : {}),
+    ...(uncommitted.length ? { uncommitted: uncommitted.slice(0, 25), ...(uncommitted.length > 25 ? { more_uncommitted: uncommitted.length - 25 } : {}) } : {}),
+    ...(Array.isArray(f.pull_requests) && f.pull_requests.length ? { pull_requests: f.pull_requests.slice(0, SHOWN).map((p) => ({ number: Number(p?.number) || undefined, title: p?.title ? String(p.title).slice(0, 200) : undefined, state: p?.state ? String(p.state) : undefined })) } : {}),
+    in_line: !ahead && !n(f.behind) && !uncommitted.length,
+  };
+}
+
+/** One suggestion: unfinished local work first, then catching up, then answers, then held work, then the next work. */
+function firstStep({ mode, git, ranOut, answered, holding, work, refinements, title }) {
+  const local = git && (git.uncommitted?.length || git.unpushed?.length || git.ahead);
+  if (local && ranOut.length && !holding.length) return `You have local work on ${git.branch ?? 'this branch'} and your claim on ${ranOut.map((c) => c.behaviour).join(', ')} ran out: claim it again, or hand it off, before you carry on.`;
+  if (git?.behind) return `Pull first: ${git.behind} commit${git.behind === 1 ? '' : 's'} on GitHub you don't have yet.`;
+  if (local) return `Finish what's local on ${git.branch ?? 'this branch'}: ${git.uncommitted?.length ? 'commit, then ' : ''}push.`;
+  if (answered.length) return `Read the answer${answered.length === 1 ? '' : 's'} on ${[...new Set(answered.map((a) => a.title))].join(', ')}.`;
+  if (holding.length) return `Carry on with ${holding[0].title} (${holding[0].behaviours.join(', ')}); your claim holds until ${holding[0].until}.`;
+  if (refinements.length) return `Finish your refinement over ${refinements[0].place}.`;
+  if (work.length) return `Claim the next work: ${work[0].title} (${work[0].behaviours.map((b) => b.id).join(', ')}).`;
+  return mode === 'onboarding' ? 'Nothing is ready to build yet: zoom() around the map, and ask() where things are unclear.' : 'Nothing is ready and unclaimed: ask() or refine() where the map is unclear.';
+}
+
+const span = (ms) => {
+  const h = ms / 3_600_000;
+  return h < 1 ? `${Math.max(1, Math.round(ms / 60_000))} minutes` : h < 48 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`;
+};

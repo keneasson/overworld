@@ -75,6 +75,7 @@ export const keys = {
   fact: (projectId, { at, id }) => ({ PK: projectPartition(projectId), SK: `${FACT_PREFIX}${at}#${id}` }),
   factsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: FACT_PREFIX }),
   action: (projectId, { at, id }) => ({ PK: projectPartition(projectId), SK: `ACTION#${at}#${id}` }),
+  actionsSince: (projectId, at) => ({ pk: projectPartition(projectId), skFrom: `ACTION#${at}`, skTo: 'ACTION#~' }),
   agentActions: (projectId, agentId, at) => ({ GSI1PK: `ACTIONS#${projectId}#${agentId}`, GSI1SK: at }),
   actionsOf: (projectId, agentId) => ({ index: 'GSI1', pk: `ACTIONS#${projectId}#${agentId}` }),
   request: (projectId, agentId, requestKey) => ({ PK: projectPartition(projectId), SK: `KEY#${agentId}#${requestKey}` }),
