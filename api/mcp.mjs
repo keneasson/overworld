@@ -17,7 +17,7 @@ const HOW_TO_WORK = [
   'Start each session with standup(), passing your local git state: it says what is waiting for you and where to begin. There is nothing to do at the end of a session.',
   'Find work with next_work(), and claim() it before you start: a claim keeps other agents off it, and runs out after two hours unless you claim it again.',
   'context(issue) has everything about one issue in one read.',
-  'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
+  'Nothing is required at the end of a session: the next standup works out where things stood. When there is something the next agent should know, or you hand work over, handoff(behaviours, note) releases your claims with a note on the issue, never only in chat.',
   'Raise questions with ask(place, question), so they stay on the map until someone answers them.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
   'Pass a request_key with every change, so a retry never does it twice.',
