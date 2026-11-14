@@ -14,7 +14,7 @@ model.
 | Entity  | PK             | SK            | GSI1PK   | GSI1SK      |
 | ------- | -------------- | ------------- | -------- | ----------- |
 | Project | `PROJECT#<id>` | `PROJECT`     | `PROJECTS` | `<updatedAt>` |
-| Node    | `PROJECT#<id>` | `NODE#<nodeId>` | `PENDING#<id>`, only while it has a sync state | `<itemKey>` |
+| Node    | `PROJECT#<id>` | `NODE#<nodeId>` | `PENDING#<id>`, only while it has a sync state or is new in a refinement | `<itemKey>` |
 | Flag    | `APP`          | `FLAG#<name>` |          |             |
 | Changeset | `PROJECT#<id>` | `CHANGESET#<changesetId>` | | |
 | Comment | `PROJECT#<id>` | `COMMENT#<itemKey>#<commentId>` | | |
@@ -38,8 +38,8 @@ query reads a whole map and nothing else. A new entity in the partition must sor
 comments share it too, so deleting a project removes them with it. They are keyed by the item
 they concern (`issue-<number>` for a GitHub issue, `node-<id>` otherwise). Comment ids start with the time, so a thread reads in order, because a refresh from
 GitHub gives every node a new id. GSI1 is sparse. Projects carry its keys, which makes it the project list.
-So does a node while it has a sync state (unsaved, saving, conflict or failed): that makes it the list of
-items not yet in line with their store, so a save or a refresh finds them without reading the map.
+So does a node while it has a sync state (unsaved, saving, conflict or failed), or while it is a new item in an open
+refinement that its store hasn't seen yet: that makes it the list of items not yet in line with their store, so a save or a refresh finds them without reading the map.
 
 Sync with each project's store (#3) keeps its state in the project's partition too: the outbox of saved items (one
 job per item and save; an item saved again before it was written replaces its job), the lease that lets
@@ -78,7 +78,7 @@ agents' tokens first. The token itself is never stored.
 | Has a one-off thing happened? | `flags.has(name)`, `flags.set(name)` | GetItem, PutItem |
 | A project's summary, without its map | `projects.get(id)` | GetItem |
 | One node (an issue's is `issue-<number>`) | `nodes.get(projectId, id)` | GetItem |
-| Items not yet in line with their store (to save, or to keep through a refresh) | `nodes.pending(projectId)` | Query GSI1, `GSI1PK = PENDING#<id>` |
+| Items not yet in line with their store, new ones in a refinement included (to save, or to keep through a refresh) | `nodes.pending(projectId)` | Query GSI1, `GSI1PK = PENDING#<id>` |
 | Save: queue items for the store (the outbox) | `jobs.save(projectId, saves)` | TransactWriteItems: each item's node, its job and the job it replaces, or none of them |
 | What is still on its way to the store, in the order saved | `jobs.list(projectId)` | Query `begins_with(SK, JOB#)` |
 | A job's attempts, next try, or the new item's ref | `jobs.put(projectId, job)` | PutItem |

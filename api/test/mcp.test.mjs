@@ -188,6 +188,24 @@ test('MCP-06 refine and propose open and fill a refinement; an agent marks behav
   assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept/.test(t.name)), 'no tool adopts');
 });
 
+test('NEW-05 an agent proposes a new item, and it arrives in the refinement the way a person\'s does', async () => {
+  const { agent, rest, pid } = await setup();
+  const a = await agent('Builder');
+  const { refinement } = await a.use('refine', { place: 'issue-15' });
+  const made = await a.use('propose', { refinement, parent: 'issue-15', kind: 'feature', title: 'Epic part one' });
+  assert.equal(made.new, true);
+  const cs = (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((x) => x.id === refinement);
+  assert.deepEqual(cs.items.map((it) => [it.key, it.new]), [[made.item, true]]);
+  const { nodes } = await rest('GET', `/api/projects/${pid}`);
+  const node = nodes.find((n) => `node-${n.id}` === made.item);
+  assert.equal(node.parentId, nodes.find((n) => n.title.startsWith('#15 ')).id);
+  assert.ok(node.body.startsWith('Part of #15\nKind: Feature'), node.body);
+  const markdown = body({ behaviours: ['PART-01 Given a part, when built, then it fits.'] });
+  assert.deepEqual((await a.use('propose', { refinement, item: made.item, markdown, ready_for_adoption: ['PART-01'] })).ready_for_adoption, ['PART-01'], 'then it is refined like any item');
+  assert.equal((await a.use('zoom', { place: 'issue-15' })).children.find((c) => c.key === made.item).state, 'needs improvement');
+  assert.ok(!(await a.use('next_work', {})).work.some((w) => w.item === made.item), 'not work until a person adopts it');
+});
+
 test('MCP-08 prime returns the conventions, standing decisions, remembered facts, and your own claims and handoff notes', async () => {
   const { agent, rest, shop } = await setup();
   shop.tree.push({ path: 'CONTRIBUTING.md', type: 'blob' }, { path: 'CLAUDE.md', type: 'blob' });

@@ -419,6 +419,37 @@ const behaviours = [
       if (h.github) assert.deepEqual(a.labels, ['status:draft', 'epic'], 'on GitHub, the state and the epic are labels');
     },
   ],
+  [
+    'NEW-04 an epic and its children written in Overworld become issues, with Part of and mentions pointing at the real numbers',
+    { strict: true },
+    async (h) => {
+      const cs = (await h.call('POST', `/api/projects/${h.pid}/changesets`, {})).body.changeset;
+      const add = async (parentId, kind, title) => {
+        const { node } = (await h.call('POST', `/api/projects/${h.pid}/changesets/${cs.id}/new`, { parentId, kind, title })).body;
+        return node;
+      };
+      const epic = await add('root', 'epic', 'Epic: Refunds');
+      const kids = [];
+      for (const title of ['Refund to the card', 'Refund as credit', 'Refund email']) kids.push(await add(epic.id, 'task', title));
+      // The epic lists its children, and each child is Part of the epic: references both ways, before anything has a number.
+      const epicText = epic.body.replace(/## Why\n\n<!--[^\n]*-->/, `## Why\n\nMoney back.\n\n${kids.map((k) => `- #new-${k.id}`).join('\n')}`);
+      assert.equal((await h.call('PUT', `/api/projects/${h.pid}/changesets/${cs.id}/items`, { key: `node-${epic.id}`, title: 'Epic: Refunds', markdown: epicText })).status, 200);
+      assert.equal((await h.call('POST', `/api/projects/${h.pid}/changesets/${cs.id}/accept`)).status, 200);
+      assert.equal((await h.save()).length, 4);
+      assert.equal((await h.sync.drain(h.pid)).status, 'synced');
+
+      const [a, ...more] = h.storedTitled('Epic: Refunds');
+      assert.equal(more.length, 0);
+      const children = kids.map((k) => h.storedTitled(k.title)[0]);
+      assert.ok(a.epic && !children.some((c) => c.epic), 'the epic is marked as one');
+      for (const c of children) assert.ok(c.markdown.startsWith(`Part of ${h.mention(a)}\nKind: Task`), c.markdown);
+      for (const c of children) assert.ok(a.markdown.includes(`- ${h.mention(c)}`), a.markdown);
+      assert.ok(![a, ...children].some((x) => /#new-/.test(x.markdown) || x.guarded));
+      if (h.github) assert.deepEqual(children[0].labels, ['status:draft']);
+      const map = (await h.call('GET', `/api/projects/${h.pid}`)).body.nodes;
+      assert.ok(![epic, ...kids].some((k) => map.find((n) => n.id === k.id)?.sync), 'all in line with the store');
+    },
+  ],
 ];
 
 for (const [name, options, run] of behaviours) test(name, async () => run(await harness('github', options)));

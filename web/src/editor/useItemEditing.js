@@ -14,7 +14,7 @@ const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
  * project's open changeset as you type, so picking another item loses nothing; Accept applies them to the map
  * together (EDIT-03), and only Save sends anything to GitHub (SYNC-07), deciding nothing (SYNC-08).
  */
-export function useItemEditing({ projectId, tree, setComments, onAccepted, reloadNodes, toast, fail }) {
+export function useItemEditing({ projectId, tree, setComments, onAccepted, onRemoved, reloadNodes, toast, fail }) {
   const [changeset, setChangeset] = useState(null);
   const [drafts, setDrafts] = useState(() => new Map());
   const [generation, setGeneration] = useState(0); // remounts the documents after an accept or a discard
@@ -78,6 +78,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
         const cs = await ensureChangeset();
         const res = await api.putChangesetItem(projectId, cs.id, { key, ...after });
         setChangeset(res.changeset);
+        if (res.node) onAccepted([res.node]); // a new item changes on the map as it is written (NEW-03)
       } catch (err) {
         csPromise.current = null;
         fail(err);
@@ -101,6 +102,49 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
       }, SAVE_AFTER_MS),
     );
   };
+
+  // A new item in an area (NEW-01): it joins the open changeset, the refinement it belongs to (NEW-02), and is on the map at once.
+  async function addItem(parentId, kind) {
+    setBusy(true);
+    try {
+      await flush();
+      const cs = await ensureChangeset();
+      const res = await api.newChangesetItem(projectId, cs.id, { parentId, kind });
+      setChangeset(res.changeset);
+      return res.node;
+    } catch (err) {
+      fail(err);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Take a new item out of the refinement: it is gone, and never reaches GitHub (NEW-06).
+  async function drop(node) {
+    setBusy(true);
+    try {
+      const key = itemKeyOf(node);
+      clearTimeout(timers.current.get(key));
+      timers.current.delete(key);
+      pending.current.delete(key);
+      const cs = await csPromise.current;
+      const res = await api.dropChangesetItem(projectId, cs.id, key);
+      setChangeset(res.changeset);
+      setDrafts((d) => {
+        const next = new Map(d);
+        next.delete(key);
+        return next;
+      });
+      onRemoved(res.deleted, res.updated);
+      return res.deleted;
+    } catch (err) {
+      fail(err);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function reset() {
     csPromise.current = null;
@@ -135,7 +179,10 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
       timers.current.clear();
       pending.current.clear();
       const cs = await csPromise.current;
-      if (cs) await api.discardChangeset(projectId, cs.id);
+      if (cs) {
+        const res = await api.discardChangeset(projectId, cs.id);
+        if (res.deleted?.length) onRemoved(res.deleted, res.nodes);
+      }
       reset();
       toast('Changes discarded');
     } catch (err) {
@@ -145,7 +192,11 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     }
   }
 
-  const edited = useMemo(() => (tree ? tree.list.filter((n) => drafts.has(itemKeyOf(n)) && !same(drafts.get(itemKeyOf(n)), editableOf(n))).map(itemKeyOf) : []), [tree, drafts]);
+  // What Accept would adopt: edited items, and every new item made in this changeset.
+  const edited = useMemo(
+    () => (tree ? tree.list.filter((n) => (changeset && n.refinement === changeset.id) || (!n.refinement && drafts.has(itemKeyOf(n)) && !same(drafts.get(itemKeyOf(n)), editableOf(n)))).map(itemKeyOf) : []),
+    [tree, drafts, changeset],
+  );
   const unsaved = useMemo(() => (tree ? toSave(tree.list) : []), [tree]);
   const onItsWay = tree ? tree.list.filter((n) => n.sync === 'saving').length : 0;
 
@@ -191,5 +242,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     storage.set(NAME, v || null);
   };
 
-  return { changeset, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, accept, discard, saveToGithub, comment, resolve, flush };
+  return { changeset, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, flush };
 }

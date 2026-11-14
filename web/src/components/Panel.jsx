@@ -5,7 +5,7 @@ import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema
 import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
 import { editableOf, issueOf, itemKeyOf } from '@shared/issue-shape.js';
-import { isEditable } from '../editor/items.js';
+import { isEditable, isMapped } from '../editor/items.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
 
@@ -107,10 +107,13 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
   const s = node.stats;
   const key = itemKeyOf(node);
   const issue = issueOf(node);
-  const editable = isEditable(tree, node);
+  // A new item changes only in the refinement it was made in (NEW-02).
+  const theirs = Boolean(node.refinement) && node.refinement !== editing.changeset?.id;
+  const editable = isEditable(tree, node) && !theirs;
   const path = pathOf(node).slice(0, -1);
   const incoming = tree.incoming.get(node.id) ?? [];
-  const childKind = CHILD_KIND[node.kind] ?? 'task';
+  // On a map read from GitHub everything added is an issue: under the project or an area, that starts with an epic.
+  const childKind = isMapped(tree) && ['project', 'area'].includes(node.kind) ? 'epic' : (CHILD_KIND[node.kind] ?? 'task');
   const isRoot = node.depth === 0;
   // Every behaviour already written, drafts included, so a new behaviour's ID never collides.
   const texts = useMemo(() => (editable ? tree.list.map((n) => editing.drafts.get(itemKeyOf(n))?.markdown ?? n.body ?? '') : []), [editable, tree, editing.drafts]);
@@ -144,6 +147,11 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
         <HealthPill health={s.health} />
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
         {s.vague && <span className="pill pill-fog">Poorly defined</span>}
+        {node.refinement && (
+          <span className="pill pill-new" title={theirs ? 'New in someone else’s refinement: it changes there until it is adopted.' : 'New in your refinement: Accept adopts it, Discard drops it.'}>
+            New · needs improvement
+          </span>
+        )}
         <SyncBadge node={node} />
       </div>
 
@@ -174,12 +182,12 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
             Source
           </a>
         )}
-        {!isRoot && (
+        {!isRoot && !theirs && (
           <button className={confirmDelete ? 'armed' : ''} onClick={() => (confirmDelete ? onDelete(node) : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
             <span className="action-icon danger">
               <Icon name="trash" />
             </span>
-            {confirmDelete ? `Delete${node.children.length ? ` ${node.stats.items}` : ''}?` : 'Delete'}
+            {node.refinement ? (confirmDelete ? 'Drop it?' : 'Drop') : confirmDelete ? `Delete${node.children.length ? ` ${node.stats.items}` : ''}?` : 'Delete'}
           </button>
         )}
       </div>

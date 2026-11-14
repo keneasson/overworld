@@ -3,8 +3,11 @@
 import { NODE_PREFIX, keys, strip } from '../keys.mjs';
 import { itemKeyOf } from '../../../shared/issue-shape.js';
 
-/** A node as stored. One with a sync state (unsaved, saving, conflict, failed) also sits in the sparse PENDING index. */
-export const nodeItem = (projectId, node) => ({ ...keys.node(projectId, node.id), ...(node.sync ? keys.pending(projectId, itemKeyOf(node)) : {}), entity: 'node', ...node });
+/**
+ * A node as stored. One not in line with its store also sits in the sparse PENDING index: it has a sync state (unsaved,
+ * saving, conflict, failed), or it is a new item in an open refinement, which the store hasn't seen at all (NEW-03).
+ */
+export const nodeItem = (projectId, node) => ({ ...keys.node(projectId, node.id), ...(node.sync || node.refinement ? keys.pending(projectId, itemKeyOf(node)) : {}), entity: 'node', ...node });
 
 export function nodes(table) {
   const item = nodeItem;
@@ -16,7 +19,7 @@ export function nodes(table) {
       return it ? strip(it) : null;
     },
 
-    /** The nodes not yet in line with their store: unsaved, saving, in conflict or failed. Query GSI1 PK = PENDING#<id>, so the map isn't read. */
+    /** The nodes not yet in line with their store: unsaved, saving, in conflict or failed, or new in a refinement. Query GSI1 PK = PENDING#<id>, so the map isn't read. */
     async pending(projectId) {
       return (await table.query(keys.pendingOf(projectId))).map(strip);
     },

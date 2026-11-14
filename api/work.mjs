@@ -6,6 +6,7 @@
 //   new           adopted, and nobody holds a claim on it
 //   being coded   a live claim (MCP-04)
 //   coded         its issue is done
+// A new item in an open refinement (NEW-03) needs improvement, and is never work, until a person adopts it.
 // When #32 lands, only this file changes.
 
 import { editableOf, itemKeyOf, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
@@ -28,8 +29,8 @@ export function behavioursOf(node) {
 
 export const isFinished = (node) => FINISHED.has(node.status);
 
-/** Is this item work an agent may pick up: adopted behaviours, nothing left undecided? */
-export const isWork = (node) => node.status === 'ready' && !NOT_WORK.has(node.kind);
+/** Is this item work an agent may pick up: adopted behaviours, nothing left undecided? A new item isn't in the spec until its refinement is adopted (NEW-03). */
+export const isWork = (node) => node.status === 'ready' && !NOT_WORK.has(node.kind) && !node.refinement;
 
 /** Unfinished items this one depends on: [{ key, title, state }]. */
 export function blockersOf(node, byId) {
@@ -40,8 +41,8 @@ export function blockersOf(node, byId) {
     .map((dep) => ({ key: keyOf(dep), title: dep.title, state: stateOf(dep) }));
 }
 
-/** An item's state, in words an agent reads. */
-export const stateOf = (node) => node.status;
+/** An item's state, in words an agent reads. A new item in an open refinement needs improvement until it is adopted (NEW-03). */
+export const stateOf = (node) => (node.refinement ? 'needs improvement' : node.status);
 
 /** A behaviour's building state. */
 export function buildingOf(node, claim) {
