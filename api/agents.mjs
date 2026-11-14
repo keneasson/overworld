@@ -4,7 +4,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { ValidationError, newId } from '../shared/schema.js';
-import { nextWork, behavioursOf, blockersOf, isWork, keyOf } from './work.mjs';
+import { nextWork, behavioursOf, blockersOf, childrenOf, isWork, keyOf, splitOf } from './work.mjs';
 
 const CALLS_PER_MINUTE = 120;
 const CLAIM_MINUTES = { default: 120, max: 480 };
@@ -116,11 +116,11 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       const othersHold = new Map([...live].filter(([, c]) => c.owner !== agent.id));
       let wanted;
       if (!behaviours.length) {
-        const top = nextWork(data.nodes, live).work[0];
+        const top = nextWork(data.nodes, live, { tested: data.project?.tested }).work[0];
         if (!top) return { claimed: [], message: 'Nothing is ready and unclaimed.' };
         wanted = top.behaviours.map((b) => ({ id: b.id, node: data.nodes.find((n) => keyOf(n) === top.item) }));
       } else {
-        wanted = placeBehaviours(data.nodes, behaviours.map(String));
+        wanted = placeBehaviours(data.nodes, behaviours.map(String), data.project?.tested);
         const held = holders(behaviours, othersHold);
         if (held.length) throw new Refused(`Already claimed: ${held.map((h) => `${h.behaviour} by ${h.agent} until ${h.until}`).join('; ')}`, { held_by: held });
       }
@@ -141,14 +141,18 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
   }
 
   /** Each named behaviour's item, if it is work an agent may claim, or a refusal saying why not. */
-  function placeBehaviours(nodes, ids) {
+  function placeBehaviours(nodes, ids, tested = []) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
+    const kids = childrenOf(nodes);
+    const have = new Set(tested);
     const out = [];
     for (const id of ids) {
       const node = nodes.find((n) => behavioursOf(n).some((b) => b.id === id));
       if (!node) throw new Refused(`${id} isn't a behaviour on the map`);
       if (!isWork(node)) throw new Refused(`${id} belongs to ${node.title}, which is ${node.status.replace('_', ' ')}, not ready`);
       if (behavioursOf(node).find((b) => b.id === id).fog) throw new Refused(`${id} isn't worked out yet, so it can't be built`);
+      const split = splitOf(node, kids.get(node.id) ?? [], have);
+      if (split) throw new Refused(`${node.title} needs a split before it is built (STATE-10). ${split.reason}`, { needs_split: split });
       const by = blockersOf(node, byId);
       if (by.length) throw new Refused(`${node.title} waits on ${by.map((b) => `${b.title} (${b.state.replace('_', ' ')})`).join(', ')}`, { blocked_by: by });
       out.push({ id, node });
@@ -256,7 +260,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const awayHours = last ? (now - Date.parse(last.at)) / 3_600_000 : 0;
     const mode = !last ? 'onboarding' : awayHours > REGROUP_AFTER_HOURS || changes >= REGROUP_AFTER_CHANGES ? 'regroup' : 'up_to_date';
 
-    const { work } = nextWork(data.nodes, live);
+    const { work, needsSplit } = nextWork(data.nodes, live, { tested: data.project?.tested });
     const git = gitOf(local);
     const refinements = changesets.filter((cs) => cs.status === 'open' && cs.author === me).map((cs) => ({ refinement: cs.id, place: data.nodes.find((n) => n.id === cs.scopeId)?.title ?? cs.scopeId, items: cs.items.length }));
     const unsaved = pending.filter((n) => n.sync && n.sync !== 'saving').map((n) => ({ item: keyOf(n), title: n.title, state: n.sync }));
@@ -271,6 +275,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       },
       you_hold: holding,
       ready_next: work.slice(0, 3).map((w) => ({ item: w.item, title: w.title, priority: w.priority || undefined, behaviours: w.behaviours.map((b) => b.id) })),
+      ...(needsSplit.length ? { needs_split: needsSplit.slice(0, SHOWN).map(({ item, title, reason, looks_built }) => ({ item, title, reason, looks_built })), ...(needsSplit.length > SHOWN ? { more_need_split: needsSplit.length - SHOWN } : {}) } : {}),
       ...(git ? { local_and_github: git } : {}),
       work_in_progress: {
         ...(refinements.length ? { your_open_refinements: refinements } : {}),
@@ -299,7 +304,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         remembered: (await model.facts.list(projectId)).map((f) => ({ fact: f.text, by: f.by?.name, at: f.at.slice(0, 10) })),
       };
     }
-    report.first_step = firstStep({ mode, git, ranOut, answered, holding, work, refinements, title });
+    report.first_step = firstStep({ mode, git, ranOut, answered, holding, work, needsSplit, refinements, title });
 
     await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !c.resolved).map((c) => c.id) } });
     return report;
@@ -328,7 +333,7 @@ function gitOf(local) {
 }
 
 /** One suggestion: unfinished local work first, then catching up, then answers, then held work, then the next work. */
-function firstStep({ mode, git, ranOut, answered, holding, work, refinements, title }) {
+function firstStep({ mode, git, ranOut, answered, holding, work, needsSplit = [], refinements, title }) {
   const local = git && (git.uncommitted?.length || git.unpushed?.length || git.ahead);
   if (local && ranOut.length && !holding.length) return `You have local work on ${git.branch ?? 'this branch'} and your claim on ${ranOut.map((c) => c.behaviour).join(', ')} ran out: claim it again, or hand it off, before you carry on.`;
   if (git?.behind) return `Pull first: ${git.behind} commit${git.behind === 1 ? '' : 's'} on GitHub you don't have yet.`;
@@ -337,6 +342,7 @@ function firstStep({ mode, git, ranOut, answered, holding, work, refinements, ti
   if (holding.length) return `Carry on with ${holding[0].title} (${holding[0].behaviours.join(', ')}); your claim holds until ${holding[0].until}.`;
   if (refinements.length) return `Finish your refinement over ${refinements[0].place}.`;
   if (work.length) return `Claim the next work: ${work[0].title} (${work[0].behaviours.map((b) => b.id).join(', ')}).`;
+  if (needsSplit.length) return `Nothing is ready that can be built in one go. ${needsSplit[0].title} needs a split first: refine() it into child issues.`;
   return mode === 'onboarding' ? 'Nothing is ready to build yet: zoom() around the map, and ask() where things are unclear.' : 'Nothing is ready and unclaimed: ask() or refine() where the map is unclear.';
 }
 

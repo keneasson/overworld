@@ -433,7 +433,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/import\/github$/,
       async ({ body }) => {
         const data = await importGitHub({ repo: body?.repo, token: body?.token || undefined }, fetchImpl);
-        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle, guide: data.guide });
+        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested });
         await model.links.link(stores.forProject(saved.project).key, saved.project.id);
         return saved;
       },

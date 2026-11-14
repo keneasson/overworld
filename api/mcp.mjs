@@ -8,7 +8,7 @@ import { APP_NAME } from '../shared/brand.js';
 import { ROOT_ID, ValidationError } from '../shared/schema.js';
 import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { Refused } from './agents.mjs';
-import { behavioursOf, blockersOf, buildingOf, isFinished, keyOf, nextWork, stateOf } from './work.mjs';
+import { behavioursOf, blockersOf, buildingOf, childrenOf, isFinished, keyOf, nextWork, splitOf, stateOf } from './work.mjs';
 
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const CHILDREN_SHOWN = 100;
@@ -160,13 +160,13 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     next_work: {
-      description: 'Behaviours ready to build that nobody has claimed, grouped by issue and in priority order. Work waiting on an unfinished dependency is left out; context(issue) says what blocks it.',
+      description: 'Behaviours ready to build that nobody has claimed, grouped by issue and in priority order. Only leaf issues are work: a parent is built through its children. Work waiting on an unfinished dependency is left out; context(issue) says what blocks it. Issues that need a split first are listed by key; context(issue) says why.',
       input: { limit: { type: 'number', description: 'How many issues, at most (default 5).' } },
       async run({ pid }, args) {
-        const { nodes } = await mapOf(pid);
-        const { work, blocked } = nextWork(nodes, (await agents.liveClaims(pid)).live);
+        const { project, nodes } = await mapOf(pid);
+        const { work, blocked, needsSplit } = nextWork(nodes, (await agents.liveClaims(pid)).live, { tested: project?.tested });
         const limit = Math.min(50, Math.max(1, Number(args.limit) || 5));
-        return { work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}) };
+        return { work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}), ...(needsSplit.length ? { need_a_split: needsSplit.map((x) => x.item) } : {}) };
       },
     },
 
@@ -175,7 +175,7 @@ export function createMcp({ model, agents, call, log = console }) {
       input: { issue: { ...place, description: 'The issue: issue-12, 12, or a node id.' } },
       required: ['issue'],
       async run({ pid }, args) {
-        const { nodes } = await mapOf(pid);
+        const { project, nodes } = await mapOf(pid);
         const node = find(nodes, args.issue);
         const key = keyOf(node);
         const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -213,6 +213,7 @@ export function createMcp({ model, agents, call, log = console }) {
           files: filesOf(node, byId),
           pull_requests: (node.pulls ?? []).map((n) => `#${n}`),
           blocked_by: blockersOf(node, byId),
+          ...((split) => (split ? { needs_split: split } : {}))(splitOf(node, childrenOf(nodes).get(node.id) ?? [], new Set(project?.tested ?? []))),
           links: (node.links ?? []).filter((l) => l.type !== 'depends' && byId.has(l.to)).map((l) => ({ type: l.type, key: keyOf(byId.get(l.to)), title: byId.get(l.to).title })),
         };
       },

@@ -5,12 +5,15 @@
 //   adopted       the behaviours of an issue that is Ready and isn't an epic
 //   new           adopted, and nobody holds a claim on it
 //   being coded   a live claim (MCP-04)
-//   coded         its issue is done
-// When #32 lands, only this file changes.
+//   coded         its issue is done; that issue is a leaf, an independent unit of work (#32 STATE-02, STATE-08)
+// Work is hierarchical: only leaf issues are offered (STATE-09). An issue with child issues is a parent, whose state
+// rolls up from them. An issue that is partly built, judged by which of its behaviours have a test named by their ID on
+// the default branch (#19), needs a split and isn't offered either (STATE-10). When #32 lands, only this file changes.
 
 import { editableOf, itemKeyOf, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
 
 const NOT_WORK = new Set(['project', 'area', 'epic']);
+const NOT_ITEMS = new Set(['project', 'area', 'behavior']); // places and spec rows: what an issue holds without being a parent
 const FOG = /^not worked out yet\b/i;
 const FINISHED = new Set(['done', 'rejected']);
 const PRIORITY = { P0: 0, P1: 1, P2: 2, P3: 3 };
@@ -31,6 +34,30 @@ export const isFinished = (node) => FINISHED.has(node.status);
 /** Is this item work an agent may pick up: adopted behaviours, nothing left undecided? */
 export const isWork = (node) => node.status === 'ready' && !NOT_WORK.has(node.kind);
 
+/** Each item's child issues, by parent id. */
+export function childrenOf(nodes) {
+  const kids = new Map();
+  for (const n of nodes) if (n.parentId && !NOT_ITEMS.has(n.kind)) kids.set(n.parentId, [...(kids.get(n.parentId) ?? []), n]);
+  return kids;
+}
+
+/**
+ * Why an unfinished item needs splitting before it can be built (STATE-10), or null.
+ * @param {object[]} kids its child issues
+ * @param {Set<string>} tested behaviour ids that have a test named by them on the default branch
+ */
+export function splitOf(node, kids, tested) {
+  if (isFinished(node)) return null;
+  const own = behavioursOf(node).filter((b) => !b.fog);
+  const built = own.filter((b) => tested.has(b.id)).map((b) => b.id);
+  const unbuilt = own.filter((b) => !tested.has(b.id)).map((b) => b.id);
+  const hint = { looks_built: built, still_to_build: unbuilt };
+  if (kids.length && unbuilt.length) return { reason: 'It has child issues and behaviours of its own still to build: move those into a child.', ...hint };
+  if (built.length && unbuilt.length) return { reason: 'Partly built: split what is left into a child issue, and close this one when the built part is done.', ...hint };
+  if (built.length && node.status === 'ready') return { reason: 'Every behaviour has a test: close it, or split off what is left.', ...hint };
+  return null;
+}
+
 /** Unfinished items this one depends on: [{ key, title, state }]. */
 export function blockersOf(node, byId) {
   return (node.links ?? [])
@@ -50,16 +77,27 @@ export function buildingOf(node, claim) {
 }
 
 /**
- * Work that is new and unclaimed, grouped by item and ordered by priority, then by number.
+ * Work that is new and unclaimed, grouped by item and ordered by priority, then by number. Only leaf issues (STATE-09);
+ * one that needs a split is listed apart, not offered (STATE-10).
  * @param {Map<string, object>} live live claims by behaviour id
- * @returns {{ work: { item, title, priority, behaviours }[], blocked: { item, title, by }[] }}
+ * @param {{ tested?: Iterable<string> }} [o] behaviour ids with a test named by them on the default branch
+ * @returns {{ work: { item, title, priority, behaviours }[], blocked: { item, title, by }[], needsSplit: { item, title, reason, looks_built, still_to_build }[] }}
  */
-export function nextWork(nodes, live) {
+export function nextWork(nodes, live, { tested = [] } = {}) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const kids = childrenOf(nodes);
+  const have = new Set(tested);
   const work = [];
   const blocked = [];
+  const needsSplit = [];
   for (const node of nodes) {
     if (!isWork(node)) continue;
+    const split = splitOf(node, kids.get(node.id) ?? [], have);
+    if (split) {
+      needsSplit.push({ item: keyOf(node), title: node.title, ...split });
+      continue;
+    }
+    if (kids.has(node.id)) continue; // a parent: its children are the work
     const open = behavioursOf(node).filter((b) => !b.fog && !live.has(b.id));
     if (!open.length) continue;
     const by = blockersOf(node, byId);
@@ -68,5 +106,5 @@ export function nextWork(nodes, live) {
     else work.push({ ...entry, order: node.order ?? 0 });
   }
   work.sort((a, b) => (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9) || a.order - b.order || a.item.localeCompare(b.item));
-  return { work: work.map(({ order, ...w }) => w), blocked };
+  return { work: work.map(({ order, ...w }) => w), blocked, needsSplit };
 }
