@@ -1384,6 +1384,77 @@ button.danger.armed {
   padding-top: 8px;
 }
 
+/* ---------- connect an agent (CONN-07) ---------- */
+.drawer.wide {
+  width: min(520px, 100vw);
+}
+.tool-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.snippet {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.snippet pre {
+  margin: 0;
+  padding: 10px 12px 40px;
+  overflow-x: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.copy-btn {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.warn {
+  color: var(--danger);
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.status.ok {
+  color: var(--accent);
+  font-weight: 600;
+}
+.agent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.agent-list li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.agent-list .row-sub {
+  white-space: normal;
+}
+.agent-list li.revoked {
+  opacity: 0.6;
+}
+.link-btn.danger {
+  color: var(--danger);
+  padding-left: 0;
+}
+.link-btn.danger.armed {
+  font-weight: 600;
+}
+
 /* ---------- unlock ---------- */
 .unlock {
   position: fixed;

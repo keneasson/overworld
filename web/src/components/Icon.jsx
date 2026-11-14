@@ -26,6 +26,7 @@ const PATHS = {
   comment: 'M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z',
   columns: 'M4 5h16v14H4zM10 5v14M15 5v14',
   check: 'M5 12l5 5L20 7',
+  copy: 'M9 9h11v11H9zM5 15H4V4h11v1',
   bold: 'M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z',
   italic: 'M14 5h-4M14 19h-4M14 5l-4 14',
   code: 'M9 8l-4 4 4 4M15 8l4 4-4 4',

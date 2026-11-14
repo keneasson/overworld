@@ -271,6 +271,25 @@ test('MCP-14 every change is recorded with the agent, the time and what changed'
   assert.deepEqual(actions[1].change.result.claimed, ['ZOOM-01']);
 });
 
+test('CONN-07 the agents list shows when each agent last called, written at most every few minutes', async () => {
+  const { rest, pid, agent, clock } = await setup();
+  const a = await agent('Builder');
+  const seen = async () => (await rest('GET', `/api/projects/${pid}/agents`)).agents.find((x) => x.id === a.id).lastSeenAt;
+  assert.equal(await seen(), null, 'not connected until its first call');
+  await a.use('zoom');
+  const first = await seen();
+  assert.equal(first, new Date(clock.now).toISOString(), 'connected after its first call');
+  clock.now += 60 * 1000;
+  await a.use('zoom');
+  assert.equal(await seen(), first, 'a minute later, nothing new is written');
+  clock.now += 10 * 60 * 1000;
+  await a.use('zoom');
+  assert.equal(await seen(), new Date(clock.now).toISOString(), 'later calls move it on');
+  await rest('DELETE', `/api/projects/${pid}/agents/${a.id}`);
+  const after = (await rest('GET', `/api/projects/${pid}/agents`)).agents.find((x) => x.id === a.id);
+  assert.ok(after.revokedAt && after.lastSeenAt, 'a revoked agent keeps its last call, and its revocation');
+});
+
 test('CONN-03 the standup prompt asks the agent for its local state, and the standup tool reports it beside what is waiting', async () => {
   const { rest, pid, agent, clock } = await setup();
   const a = await agent('Builder');
