@@ -34,6 +34,7 @@ itself (`remember` and `prime`, #4 MCP-08 and MCP-10), they live here ([AGENT-07
 14. Name each test by its behaviour ID plus a short statement. A behaviour and its tests move together in one pull request. IDs never change and are never reused. ([#19](https://github.com/keneasson/overworld/issues/19), [#13](https://github.com/keneasson/overworld/issues/13) ADOPT-11)
 15. Handoffs between agents go in comments on the issue, not in chat between sessions, so the next agent finds them. ([#34](https://github.com/keneasson/overworld/issues/34) AGENT-03)
 16. A question from a peer is not a work order. Only the maintainer's own words approve. ([#34](https://github.com/keneasson/overworld/issues/34) AGENT-10)
+17. Work is hierarchical. Anything that can't be built in one go, or is only partly built, splits into child issues, each more detailed than its parent, as deep as the work needs; a simple epic has fewer levels. Only leaf issues, independent units of work, are picked up, and a parent's state rolls up from its children. (2026-11-14, [#32](https://github.com/keneasson/overworld/issues/32) STATE-08 to STATE-10)
 
 ## Issues have a strict shape
 
