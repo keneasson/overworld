@@ -27,7 +27,7 @@
 //   conflict  { ours, theirs } for a person to resolve;  syncError  why the store refused it
 
 import { randomUUID } from 'node:crypto';
-import { editableOf, itemKeyOf } from '../shared/issue-shape.js';
+import { editableOf, itemKeyOf, splitNote } from '../shared/issue-shape.js';
 import { PermanentError } from './stores/errors.mjs';
 import { same } from './edits.mjs';
 
@@ -138,21 +138,21 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
     await model.budgets.put(projectId, [...writes, iso(t)]);
   }
 
-  /** References to items made here that are now in the store become the store's own references. */
-  async function withRefs(projectId, store, text) {
+  /** References to items made here that are now in the store become the store's own references: from its node, or from its job while that is still running. */
+  async function withRefs(projectId, store, text, waiting) {
     const mentions = new Map();
     for (const [, id] of text.matchAll(NEW_REF)) {
       const node = await model.nodes.get(projectId, id);
-      const ref = node && store.refOf(node);
+      const ref = (node && store.refOf(node)) || waiting.find((j) => j.key === `new-${id}`)?.ref;
       if (ref) mentions.set(id, store.mention(ref));
     }
     return text.replace(NEW_REF, (whole, id) => mentions.get(id) ?? whole);
   }
 
   /** Take one saved item to the store, and say what happened. A new item's create is written down first, so a crash can't make two. */
-  async function syncItem(projectId, store, job) {
+  async function syncItem(projectId, store, job, waiting) {
     const guard = `${GUARD}:${job.key}`;
-    const want = { ...job.after, markdown: await withRefs(projectId, store, job.after.markdown) };
+    const want = { ...job.after, markdown: await withRefs(projectId, store, job.after.markdown, waiting) };
     let ref = job.ref;
     try {
       if (!ref) {
@@ -165,6 +165,10 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
           ref = (await store.create(want, { guard, epic: job.epic })).ref;
         }
         await model.jobs.put(projectId, { ...job, ref });
+        // It mentions new items not in the store yet (a child saved before its parent, or two that name each other):
+        // they go first, and this comes round again to point at them (NEW-04).
+        const unplaced = [...want.markdown.matchAll(NEW_REF)].map(([, id]) => `new-${id}`);
+        if (waiting.some((j) => !j.ref && j.key !== job.key && unplaced.includes(j.key))) return { outcome: 'later' };
       }
       const item = await store.read(ref);
       const theirs = store.version(item);
@@ -191,7 +195,8 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
     let next = null;
     if (node && result.outcome === 'written') {
       const current = !node.sync || (node.sync === 'saving' && node.savedAt === job.savedAt);
-      next = current ? inLine(placed) : { ...placed, base: result.want };
+      // The map says what the store now holds, its references to new items included.
+      next = current ? { ...inLine(placed), body: `${result.want.markdown}${splitNote(node.body ?? '').note}` } : { ...placed, base: result.want };
     } else if (node && result.outcome === 'conflict') {
       next = { ...store.onMap(inLine(node), result.item), updatedAt: iso(), sync: 'conflict', conflict: { ours: store.wanted(node), theirs: result.theirs } };
     } else if (node && result.outcome === 'failed') {
@@ -231,7 +236,7 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
         }
         let result;
         try {
-          result = await syncItem(projectId, store, job);
+          result = await syncItem(projectId, store, job, all);
         } catch (err) {
           if (!(err instanceof OverBudget) && !err.transient) throw err;
           const stored = await latest(projectId, job);
@@ -249,7 +254,7 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
           log.warn?.(`sync ${projectId}: ${err.message}; next try ${nextAttemptAt}`);
           return { status: 'retrying', until: nextAttemptAt };
         }
-        await finish(projectId, store, job, result, all);
+        if (result.outcome !== 'later') await finish(projectId, store, job, result, all);
       }
       return { status: 'synced' };
     } finally {

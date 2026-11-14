@@ -5,8 +5,8 @@
 // agents' core (agents.mjs), so a rule like "a claim is atomic" holds however a request arrives.
 
 import { APP_NAME } from '../shared/brand.js';
-import { ROOT_ID, ValidationError } from '../shared/schema.js';
-import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { CHILD_KIND, ROOT_ID, ValidationError, newId } from '../shared/schema.js';
+import { editableOf, kindIn, newItem, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { Refused } from './agents.mjs';
 import { behavioursOf, blockersOf, buildingOf, isFinished, keyOf, nextWork, stateOf } from './work.mjs';
 
@@ -19,7 +19,7 @@ const HOW_TO_WORK = [
   'context(issue) has everything about one issue in one read.',
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
   'Raise questions with ask(place, question), so they stay on the map until someone answers them.',
-  'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
+  'Change behaviours through refine(place) and propose(...), which also proposes new items inside a place. You can mark behaviours ready for adoption; only a person adopts.',
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
 
@@ -261,22 +261,36 @@ export function createMcp({ model, agents, call, log = console }) {
       description: "Propose an item's new text inside a refinement: its title and the whole markdown, in the strict issue shape. Optionally mark behaviours ready for adoption. Nothing changes on the map until a person adopts it.",
       input: {
         refinement: { type: 'string', description: 'From refine().' },
-        item: { ...place, description: 'The item to change.' },
+        item: { ...place, description: 'The item to change, or a new item proposed earlier in this refinement (its node-<id>). Leave out to propose a new item.' },
+        inside: { ...place, description: 'For a new item: the place it goes inside, on the map or new in this refinement. Its markdown names its Kind; left out, it starts from the template, part of that place.' },
         title: { type: 'string', description: 'Leave out to keep it.' },
         markdown: { type: 'string', description: 'The full new markdown. Leave out to keep it.' },
         ready_for_adoption: ids('Behaviour IDs whose conversation has converged.'),
         request_key: requestKey,
       },
-      required: ['refinement', 'item'],
+      required: ['refinement'],
       changes: true,
       async run({ pid }, args) {
-        const node = find((await mapOf(pid)).nodes, args.item);
-        const current = editableOf(node);
+        const { nodes } = await mapOf(pid);
         const before = await model.changesets.get(pid, String(args.refinement));
-        const pending = before?.items.find((it) => it.key === keyOf(node))?.after ?? current;
+        // A new item (NEW-05) arrives in the refinement as a person's would: a node made here, inside its place.
+        const fresh = (key) => before?.items.find((it) => it.new && it.key === key);
+        let node, isNew;
+        if (args.item && fresh(String(args.item))) {
+          const it = fresh(String(args.item));
+          node = { id: it.key.slice('node-'.length), parentId: it.new.parentId, kind: it.new.kind, madeHere: true, title: it.after.title, body: it.after.markdown };
+        } else if (args.item) node = find(nodes, args.item);
+        else {
+          const at = String(args.inside ?? '');
+          const parent = fresh(at) ? { id: at.slice('node-'.length), kind: fresh(at).new.kind, madeHere: true } : find(nodes, at);
+          const start = newItem(kindIn(args.markdown ?? '') ?? CHILD_KIND[parent.kind] ?? 'task', parent);
+          node = { id: newId(), parentId: parent.id, kind: start.kind, madeHere: true, title: start.title, body: start.markdown };
+          isNew = { parentId: parent.id, kind: start.kind };
+        }
+        const pending = before?.items.find((it) => it.key === keyOf(node))?.after ?? editableOf(node);
         const title = args.title ?? pending.title;
         const markdown = args.markdown ?? pending.markdown;
-        const { changeset } = await api('PUT', `/api/projects/${pid}/changesets/${encodeURIComponent(String(args.refinement))}/items`, { key: keyOf(node), title, markdown });
+        const { changeset } = await api('PUT', `/api/projects/${pid}/changesets/${encodeURIComponent(String(args.refinement))}/items`, { key: keyOf(node), title, markdown, ...(isNew ? { new: isNew } : {}) });
         const ready = list(args.ready_for_adoption);
         const item = changeset.items.find((it) => it.key === keyOf(node));
         if (ready.length) {

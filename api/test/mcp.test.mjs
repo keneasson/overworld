@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4) and the standup (CONN-03 to CONN-05, #34), tested the way an agent uses it: JSON-RPC over HTTP.
+// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34) and new items (NEW-05, #26), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -186,6 +186,28 @@ test('MCP-06 refine and propose open and fill a refinement; an agent marks behav
   assert.match(cs.items[0].after.markdown, /two hours/);
   assert.ok((await a.refused('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: ['CL-01 x'], questions: 'How long?' }), ready_for_adoption: ['CL-01'] })).error, 'not ready while it has open questions');
   assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept/.test(t.name)), 'no tool adopts');
+});
+
+test('NEW-05 an agent proposes new items into its refinement, the same way a person makes them, and only a person adopts them', async () => {
+  const { agent, rest, pid } = await setup();
+  const a = await agent('Builder');
+  const { refinement } = await a.use('refine', { place: 'issue-15' });
+  const feature = await a.use('propose', { refinement, inside: 'issue-15', title: 'Refunds' });
+  const task = await a.use('propose', { refinement, inside: feature.item, title: 'Refund to the card', markdown: 'Kind: Task · Place: checkout\n\n## Why\n\nFastest.\n' });
+  await a.use('propose', { refinement, item: feature.item, markdown: body({ behaviours: ['REF-01 Given an order, when refunded, then the money goes back.'] }), ready_for_adoption: ['REF-01'] });
+
+  let cs = (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((x) => x.id === refinement);
+  assert.deepEqual(cs.items.map((it) => [it.key, it.after.title]), [[feature.item, 'Refunds'], [task.item, 'Refund to the card']]);
+  const id = (key) => key.slice('node-'.length);
+  assert.ok(!(await rest('GET', `/api/projects/${pid}`)).nodes.some((n) => n.id === id(feature.item)), 'nothing is on the map until a person adopts it');
+
+  cs = (await rest('POST', `/api/projects/${pid}/changesets/${refinement}/accept`)).changeset;
+  const nodes = (await rest('GET', `/api/projects/${pid}`)).nodes;
+  const made = (key) => nodes.find((n) => n.id === id(key));
+  const epic = nodes.find((n) => n.title === '#15 Epic');
+  assert.deepEqual([made(feature.item).parentId, made(feature.item).kind, made(feature.item).title], [epic.id, 'feature', 'Refunds'], 'inside the epic, as the kind a person would add there');
+  assert.deepEqual([made(task.item).parentId, made(task.item).kind], [id(feature.item), 'task']);
+  assert.match(made(feature.item).body, /REF-01 Given an order/);
 });
 
 test('MCP-08 prime returns the conventions, standing decisions, remembered facts, and your own claims and handoff notes', async () => {

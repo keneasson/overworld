@@ -30,6 +30,8 @@ export function applyTo(node, after, now) {
 /** Items whose node changed since editing began (or is gone): these need a person, not an overwrite. */
 export function conflictsOf(changeset, nodes) {
   return changeset.items.filter((it) => {
+    // A new item has nothing to conflict with, unless what it was made inside is gone.
+    if (it.new) return !nodes.some((n) => n.id === it.new.parentId) && !changeset.items.some((o) => o.new && o.key === `node-${it.new.parentId}`);
     const node = findItem(nodes, it.key);
     return !node || (!same(editableOf(node), it.base) && !same(editableOf(node), it.after));
   });

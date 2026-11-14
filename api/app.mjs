@@ -2,7 +2,8 @@
 // Used by the Lambda handler in AWS and by the Vite dev server locally.
 
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
+import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
+import { kindIn } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
 import { applyTo, conflictsOf, editableOf, findItem, same } from './edits.mjs';
@@ -135,6 +136,13 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     if (!cs) throw new HttpError(404, 'Changeset not found');
     if (open && cs.status !== 'open') throw new HttpError(409, `This changeset was already ${cs.status}`);
     return cs;
+  }
+
+  /** A new item of an accepted changeset, now on the map. In a project with a store it waits for a save, like any edit (SYNC-07). */
+  function made(it, now, store) {
+    const kind = kindIn(it.after.markdown) ?? it.new.kind;
+    const node = { ...sanitizeNode({ kind, title: it.after.title, status: 'idea', tags: kind === 'story' ? ['new-feature'] : [] }), id: it.key.slice('node-'.length), parentId: it.new.parentId, madeHere: true, createdAt: now };
+    return { ...applyTo(node, it.after, now), ...(store ? { sync: 'unsaved' } : {}) };
   }
 
   const routes = [
@@ -285,10 +293,24 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (!KEY.test(key)) throw new ValidationError('key: expected issue-<number> or node-<id>');
         const { nodes } = await loadProject(pid);
         const node = findItem(nodes, key);
-        if (!node) throw new HttpError(404, 'No such item on the map');
         const after = version(body, 'item');
         if (!after.title) throw new ValidationError('title: required');
         const at = cs.items.findIndex((it) => it.key === key);
+        // A new item (NEW-01, NEW-05) is made inside an item on the map, or inside another new item of this changeset.
+        if (!node && (cs.items[at]?.new || body?.new)) {
+          if (at >= 0) cs.items[at] = { ...cs.items[at], nodeTitle: after.title, after };
+          else {
+            if (!/^node-[\w-]{4,64}$/.test(key)) throw new ValidationError('key: a new item is node-<id>, with an id of 4 to 64 letters, digits, - or _');
+            const parentId = String(body.new.parentId ?? ROOT_ID);
+            if (!nodes.some((n) => n.id === parentId) && !cs.items.some((it) => it.new && it.key === `node-${parentId}`)) throw new ValidationError('new.parentId: no such item');
+            const kind = kindIn(after.markdown) ?? (KINDS.includes(body.new.kind) && body.new.kind !== 'project' ? body.new.kind : 'task');
+            cs.items.push({ key, new: { parentId, kind }, nodeTitle: after.title, base: null, after });
+          }
+          cs.updatedAt = new Date().toISOString();
+          await model.changesets.put(pid, cs);
+          return { changeset: cs };
+        }
+        if (!node) throw new HttpError(404, 'No such item on the map');
         const base = at >= 0 ? cs.items[at].base : editableOf(node);
         if (same(base, after)) {
           if (at >= 0) cs.items.splice(at, 1);
@@ -318,6 +340,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         // Accepting changes the map. Items from a store are then unsaved: nothing reaches the store until a save (SYNC-07).
         const store = stores.forProject(project);
         const changed = cs.items.map((it) => {
+          if (it.new) return made(it, now, store);
           const before = findItem(nodes, it.key);
           return markEdited(before, applyTo(before, it.after, now), store);
         });

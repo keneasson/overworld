@@ -198,3 +198,34 @@ export function editableOf(node) {
 
 /** "None", "n/a" or nothing: no open questions. Mirrors the mapper's reading (api/engine/lifecycle.mjs). */
 export const hasOpenQuestions = (content) => Boolean(contentOf(content)) && !/^(none|n\/a|no open questions)\b/i.test(contentOf(content));
+
+// ---- New items ---------------------------------------------------------------------------------
+
+// The kinds an issue says it is ("Kind: Epic"), each the node kind it becomes on the map.
+const KIND_WORDS = { epic: 'Epic', feature: 'Feature', story: 'Story', task: 'Task', bug: 'Bug' };
+const AS_ISSUE = { area: 'epic', behavior: 'task' }; // an area or a behaviour of the map is not an issue kind
+
+/** The node kind an issue's head names ("Kind: Feature · …" -> 'feature'), or null. */
+export function kindIn(markdown = '') {
+  const kind = parseIssue(markdown).head.match(/^Kind:\s*([A-Za-z]+)/im)?.[1].toLowerCase();
+  return kind && KIND_WORDS[kind] ? kind : null;
+}
+
+/** How an item refers to another: its issue number, or #new-<node id> for one made here that the store doesn't have yet. */
+export const mentionOf = (node) => {
+  const issue = issueOf(node);
+  return issue ? `#${issue.number}` : node?.madeHere ? `#new-${node.id}` : null;
+};
+
+/**
+ * A new item inside `parent`, in the strict shape's template (.github/ISSUE_TEMPLATE/work.md) (NEW-01). It is part of
+ * its parent's issue when there is one; inside an area of the code, it names the area as its place instead.
+ * @returns {{ kind: string, title: string, markdown: string }}
+ */
+export function newItem(kind, parent) {
+  const k = KIND_WORDS[kind] ? kind : (AS_ISSUE[kind] ?? 'task');
+  const partOf = parent && mentionOf(parent);
+  const place = !partOf && parent && parent.id !== 'root' && parent.kind !== 'project' ? parent.title : '';
+  const head = `${partOf ? `Part of ${partOf}\n` : ''}Kind: ${KIND_WORDS[k]} · Place: ${place}`.trimEnd();
+  return { kind: k, title: `New ${k}`, markdown: `${head}\n\n${SECTIONS.map((s) => `## ${s}\n`).join('\n')}` };
+}

@@ -6,6 +6,8 @@ import {
   behaviourPrefix,
   blankBehaviour,
   isWellFormed,
+  kindIn,
+  newItem,
   nextBehaviourId,
   parseBehaviours,
   parseIssue,
@@ -130,4 +132,18 @@ test("EDIT-01 the map's 📍 note is never saved as part of the issue", () => {
   const body = `${TEMPLATE}\n\n---\n📍 Placed in api/engine because it names a file there.`;
   assert.deepEqual(splitNote(body), { markdown: TEMPLATE, note: '\n\n---\n📍 Placed in api/engine because it names a file there.' });
   assert.equal(splitNote('A body\n\n---\nwith a rule').note, '');
+});
+
+test('NEW-01 a new item opens in the strict shape, part of the area it was added to', () => {
+  const epic = { id: 'issue-26', kind: 'epic', title: '#26 New items', url: 'https://github.com/octo/shop/issues/26' };
+  const feature = newItem('feature', epic);
+  assert.ok(isWellFormed(parseIssue(feature.markdown)), 'every section of the shape, in order');
+  assert.equal(parseIssue(feature.markdown).head, 'Part of #26\nKind: Feature · Place:\n\n');
+  assert.equal(toDocument(feature.markdown).split('\n\n## ')[0], 'Part of #26\nKind: Feature · Place:', 'the editor opens it as it is');
+
+  const fresh = { id: 'a1b2c3d4', kind: 'epic', title: 'Refunds', madeHere: true };
+  assert.match(newItem('task', fresh).markdown, /^Part of #new-a1b2c3d4\nKind: Task /, 'inside an item made here, until the store gives it a number');
+  assert.match(newItem('epic', { id: 'region-checkout', kind: 'area', title: 'checkout' }).markdown, /^Kind: Epic · Place: checkout\n/, 'inside an area of the code, it names the area');
+  assert.equal(newItem('area', { id: 'root', kind: 'project', title: 'Shop' }).kind, 'epic', 'top-level work is an epic');
+  assert.equal(kindIn(newItem('story', epic).markdown), 'story');
 });

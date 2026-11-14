@@ -145,6 +145,11 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
         {s.vague && <span className="pill pill-fog">Poorly defined</span>}
         <SyncBadge node={node} />
+        {node.provisional && (
+          <span className="pill pill-outline" title="New in this changeset: Accept puts it on the map, Discard drops it">
+            New
+          </span>
+        )}
       </div>
 
       <div className="actions">
@@ -174,7 +179,7 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
             Source
           </a>
         )}
-        {!isRoot && (
+        {!isRoot && !node.provisional && (
           <button className={confirmDelete ? 'armed' : ''} onClick={() => (confirmDelete ? onDelete(node) : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
             <span className="action-icon danger">
               <Icon name="trash" />
@@ -205,10 +210,12 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
         )}
       </div>
 
-      <section>
-        <h3>Properties</h3>
-        <Properties node={node} tree={tree} onPatch={onPatch} />
-      </section>
+      {!node.provisional && (
+        <section>
+          <h3>Properties</h3>
+          <Properties node={node} tree={tree} onPatch={onPatch} />
+        </section>
+      )}
 
       {node.summary && <p className="summary">{node.summary}</p>}
 
@@ -259,7 +266,7 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
         </section>
       )}
 
-      {!isRoot && (
+      {!isRoot && !node.provisional && (
         <section>
           <h3>Connections</h3>
           <ul className="rows">

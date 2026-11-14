@@ -151,12 +151,33 @@ export function App() {
     [projectId, fail],
   );
 
+  const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
+  const editing = useItemEditing({
+    projectId: data?.project.id,
+    nodes: data?.nodes,
+    setComments,
+    toast,
+    fail,
+    onAccepted: (nodes) => {
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      replaceNodes((ns) => [...ns.map((n) => byId.get(n.id) ?? n), ...nodes.filter((n) => !ns.some((o) => o.id === n.id))]); // new items join the map
+    },
+    reloadNodes: async () => {
+      const pid = data.project.id;
+      const d = await api.getProject(pid);
+      if (latest.current.projectId !== pid) return null;
+      replaceNodes(() => d.nodes);
+      return d.nodes;
+    },
+  });
+
+  // New items in the changeset are on the map from the start, in their place (NEW-01).
   const scene = useMemo(() => {
     if (!data) return null;
-    const s = buildScene(data.nodes, data.project.id, sceneRef.current, projection);
+    const s = buildScene(editing.newNodes.length ? [...data.nodes, ...editing.newNodes] : data.nodes, data.project.id, sceneRef.current, projection);
     sceneRef.current = s;
     return s;
-  }, [data, projection]);
+  }, [data, editing.newNodes, projection]);
   const tree = scene?.tree;
   const lens = LENS_BY_ID[lensId];
   const selected = selectedId ? tree?.byId.get(selectedId) : null;
@@ -252,26 +273,6 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [drawerOpen, connectOpen, closePanel]);
 
-  const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
-  const editing = useItemEditing({
-    projectId: data?.project.id,
-    tree,
-    setComments,
-    toast,
-    fail,
-    onAccepted: (nodes) => {
-      const byId = new Map(nodes.map((n) => [n.id, n]));
-      replaceNodes((ns) => ns.map((n) => byId.get(n.id) ?? n));
-    },
-    reloadNodes: async () => {
-      const pid = data.project.id;
-      const d = await api.getProject(pid);
-      if (latest.current.projectId !== pid) return null;
-      replaceNodes(() => d.nodes);
-      return d.nodes;
-    },
-  });
-
   // The panel's expand handle (EDIT-10): drag to any width, or click to switch between narrow and wide.
   const setWidth = (w) => {
     const next = Math.round(Math.min(Math.max(w, PANEL_MIN), maxWidth()));
@@ -322,8 +323,16 @@ export function App() {
     }
   }
 
-  // A new item opens in the panel at once, its title ready to write over: there is no form to fill first.
+  // A new item opens in the panel at once, its title ready to write over: there is no form to fill first. On a map of
+  // a repository it is a new issue: part of the changeset, in the strict shape, and on GitHub once accepted and saved (NEW-01).
   async function add(parentId, kind) {
+    const parent = tree.byId.get(parentId);
+    if (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/.test(tree.root.url ?? '') && parent) {
+      const id = editing.add(parent, kind);
+      setSelectedId(id);
+      pendingFly.current = id;
+      return;
+    }
     setBusy(true);
     try {
       const { nodes } = await api.createNode(data.project.id, { parentId, kind, title: `New ${KIND_LABEL[kind].toLowerCase()}`, tags: kind === 'story' ? ['new-feature'] : [] });

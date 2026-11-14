@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { editableOf, itemKeyOf } from '@shared/issue-shape.js';
+import { editableOf, itemKeyOf, kindIn, newItem } from '@shared/issue-shape.js';
+import { newId } from '@shared/schema.js';
 import { api, storage } from '../api.js';
 import { toSave } from '../model/sync.js';
 
@@ -13,10 +14,16 @@ const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
  * Editing the project's items in the panel, one at a time (#41 EDIT-09, EDIT-13). Every edit goes into the
  * project's open changeset as you type, so picking another item loses nothing; Accept applies them to the map
  * together (EDIT-03), and only Save sends anything to GitHub (SYNC-07), deciding nothing (SYNC-08).
+ *
+ * A new item (NEW-01) is part of the changeset too: it shows on the map from the start, in the strict shape's template,
+ * becomes a real item when the changeset is accepted, and is gone if it is discarded. `nodes` are the map's own.
  */
-export function useItemEditing({ projectId, tree, setComments, onAccepted, reloadNodes, toast, fail }) {
+export function useItemEditing({ projectId, nodes, setComments, onAccepted, reloadNodes, toast, fail }) {
   const [changeset, setChangeset] = useState(null);
   const [drafts, setDrafts] = useState(() => new Map());
+  const [fresh, setFresh] = useState(() => new Map()); // new items in the changeset: key -> { id, parentId, kind }
+  const freshRef = useRef(fresh);
+  freshRef.current = fresh;
   const [generation, setGeneration] = useState(0); // remounts the documents after an accept or a discard
   const [conflicts, setConflicts] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
@@ -34,6 +41,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     csPromise.current = null;
     setChangeset(null);
     setDrafts(new Map());
+    setFresh(new Map());
     setConflicts(new Set());
     api
       .listChangesets(projectId)
@@ -44,6 +52,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
         if (open) {
           csPromise.current = Promise.resolve(open);
           setDrafts(new Map(open.items.map((it) => [it.key, it.after])));
+          setFresh(new Map(open.items.filter((it) => it.new).map((it) => [it.key, { id: it.key.slice('node-'.length), ...it.new }])));
         }
       })
       .catch(fail);
@@ -76,7 +85,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
       setSaving((n) => n + 1);
       try {
         const cs = await ensureChangeset();
-        const res = await api.putChangesetItem(projectId, cs.id, { key, ...after });
+        const made = freshRef.current.get(key);
+        const res = await api.putChangesetItem(projectId, cs.id, { key, ...after, ...(made ? { new: { parentId: made.parentId, kind: made.kind } } : {}) });
         setChangeset(res.changeset);
       } catch (err) {
         csPromise.current = null;
@@ -102,10 +112,25 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     );
   };
 
+  /** Add an item inside `parent` (NEW-01): it opens at once, in the template, part of its parent. @returns its node id */
+  function add(parent, kind) {
+    const start = newItem(kind, parent);
+    const id = newId();
+    const key = `node-${id}`;
+    const made = { id, parentId: parent.id, kind: start.kind };
+    freshRef.current = new Map(freshRef.current).set(key, made);
+    setFresh(freshRef.current);
+    setDrafts((d) => new Map(d).set(key, { title: start.title, markdown: start.markdown }));
+    pending.current.set(key, { title: start.title, markdown: start.markdown });
+    save(key);
+    return id;
+  }
+
   function reset() {
     csPromise.current = null;
     setChangeset(null);
     setDrafts(new Map());
+    setFresh(new Map());
     setConflicts(new Set());
     setGeneration((g) => g + 1);
   }
@@ -145,9 +170,22 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     }
   }
 
-  const edited = useMemo(() => (tree ? tree.list.filter((n) => drafts.has(itemKeyOf(n)) && !same(drafts.get(itemKeyOf(n)), editableOf(n))).map(itemKeyOf) : []), [tree, drafts]);
-  const unsaved = useMemo(() => (tree ? toSave(tree.list) : []), [tree]);
-  const onItsWay = tree ? tree.list.filter((n) => n.sync === 'saving').length : 0;
+  // The new items, as the map shows them until the changeset is accepted: in their place, not yet the project's.
+  const newNodes = useMemo(
+    () =>
+      [...fresh].map(([key, { id, parentId, kind }]) => {
+        const d = drafts.get(key) ?? { title: '', markdown: '' };
+        const k = kindIn(d.markdown) ?? kind;
+        return { id, parentId, kind: k, title: d.title || 'Untitled', body: d.markdown, status: 'idea', tags: k === 'story' ? ['new-feature'] : [], links: [], madeHere: true, provisional: true };
+      }),
+    [fresh, drafts],
+  );
+  const edited = useMemo(
+    () => (nodes ? [...nodes.filter((n) => drafts.has(itemKeyOf(n)) && !same(drafts.get(itemKeyOf(n)), editableOf(n))).map(itemKeyOf), ...fresh.keys()] : []),
+    [nodes, drafts, fresh],
+  );
+  const unsaved = useMemo(() => (nodes ? toSave(nodes) : []), [nodes]);
+  const onItsWay = nodes ? nodes.filter((n) => n.sync === 'saving').length : 0;
 
   // Save (SYNC-08): every unsaved item goes to GitHub as it is now. Then watch until it has arrived.
   async function saveToGithub() {
@@ -191,5 +229,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     storage.set(NAME, v || null);
   };
 
-  return { changeset, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, accept, discard, saveToGithub, comment, resolve, flush };
+  return { changeset, drafts, newNodes, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, add, accept, discard, saveToGithub, comment, resolve, flush };
 }

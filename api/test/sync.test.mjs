@@ -166,10 +166,16 @@ async function harness(kind, { strict = false, budget } = {}) {
   h.later = (minutes) => (now += minutes * 60_000);
   h.nodeOf = async (n) => (await h.call('GET', `/api/projects/${h.pid}`)).body.nodes.find((x) => x.id === h.nodeId(n));
   h.textOf = async (n) => (await h.nodeOf(n)).body.replace(note, '');
-  /** Accept one changeset of edits: [[number, newText], …]. */
+  /** Accept one changeset of edits: [[number, newText], …], and new items: [{ key: 'node-<id>', title, markdown, new: { parentId } }, …]. */
   h.accept = async (edits) => {
     const cs = (await h.call('POST', `/api/projects/${h.pid}/changesets`, {})).body.changeset;
-    for (const [n, markdown] of edits) {
+    for (const edit of edits) {
+      if (!Array.isArray(edit)) {
+        const res = await h.call('PUT', `/api/projects/${h.pid}/changesets/${cs.id}/items`, edit);
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        continue;
+      }
+      const [n, markdown] = edit;
       const node = await h.nodeOf(n);
       await h.call('PUT', `/api/projects/${h.pid}/changesets/${cs.id}/items`, { key: h.key(n), title: node.title.replace(/^#\d+ /, ''), markdown });
     }
@@ -397,11 +403,12 @@ const behaviours = [
     'NEW-04 new items reach the store with their state, and references between items point at the real ones',
     { strict: true },
     async (h) => {
-      await h.model.nodes.put(h.pid, [
-        { id: 'refunds', parentId: 'root', kind: 'area', title: 'Epic: Refunds', body: 'Kind: Epic · Place: checkout\n\n## Why\n\nMoney back.', status: 'idea', tags: [], sync: 'unsaved' },
-        { id: 'to-card', parentId: 'refunds', kind: 'task', title: 'Refund to the saved card', body: 'Part of #new-refunds\nKind: Task · Place: checkout\n\n## Why\n\nFastest.', status: 'idea', tags: [], sync: 'unsaved' },
+      // Made in one changeset: an epic, and a task inside it that is saved first. The two name each other.
+      await h.accept([
+        { key: 'node-refunds', title: 'Epic: Refunds', markdown: 'Kind: Epic · Place: checkout\n\n## Why\n\nMoney back, starting with #new-a-card.', new: { parentId: 'root' } },
+        { key: 'node-a-card', title: 'Refund to the saved card', markdown: 'Part of #new-refunds\nKind: Task · Place: checkout\n\n## Why\n\nFastest.', new: { parentId: 'refunds' } },
+        [4, 'Tokens also refund: see #new-a-card.'],
       ]);
-      await h.accept([[4, 'Tokens also refund: see #new-to-card.']]);
       assert.equal((await h.save()).length, 3);
 
       h.app.crashAfter('create'); // the first item reaches the store, and the worker dies before it writes that down
@@ -413,7 +420,10 @@ const behaviours = [
       assert.equal(more.length, 0, 'the crash made no duplicate');
       assert.deepEqual([a.status, a.epic, b.status, b.epic], ['idea', true, 'idea', false]);
       assert.ok(b.markdown.startsWith(`Part of ${h.mention(a)}\n`));
+      assert.match(a.markdown, new RegExp(`starting with ${h.mention(b).replace(/[[\]]/g, '\\$&')}\\.`), 'a reference to an item saved after it is pointed at the real one too');
       assert.equal(h.stored(4).markdown, `Tokens also refund: see ${h.mention(b)}.`);
+      const child = (await h.call('GET', `/api/projects/${h.pid}`)).body.nodes.find((n) => n.id === 'a-card');
+      assert.deepEqual([child.parentId, child.sync, child.body.split('\n')[0]], ['refunds', undefined, `Part of ${h.mention(a)}`], 'the map holds what the store holds');
       assert.ok(!a.guarded && !b.guarded, 'the guard against duplicates is gone');
       assert.equal(h.app.writes().filter((w) => w === 'create').length, 2);
       if (h.github) assert.deepEqual(a.labels, ['status:draft', 'epic'], 'on GitHub, the state and the epic are labels');
