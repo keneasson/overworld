@@ -9,6 +9,7 @@ import { nextWork, behavioursOf, blockersOf, isWork, keyOf } from './work.mjs';
 const CALLS_PER_MINUTE = 120;
 const CLAIM_MINUTES = { default: 120, max: 480 };
 const TOKEN_PREFIX = 'owk_';
+const SEEN_EVERY_MS = 5 * 60 * 1000;
 
 export const tokenHash = (token) => createHash('sha256').update(String(token)).digest('hex');
 
@@ -29,6 +30,7 @@ const said = (v, max, what) => {
 /** @param {{ model: object, clock?: () => number, callsPerMinute?: number }} o */
 export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_PER_MINUTE }) {
   const iso = (ms = clock()) => new Date(ms).toISOString();
+  const lastWritten = new Map(); // agent → when its seen row was last written by this instance
 
   /** A new agent for one project, and its token, shown this once (MCP-07). */
   async function issueToken(projectId, name) {
@@ -59,6 +61,12 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     if (!found) return null;
     const agent = await model.agents.get(found.projectId, found.agentId);
     if (!agent || agent.revokedAt) return null;
+    // When it last called, for "connected" in the app (CONN-07): written at most every few minutes, never per call.
+    const key = `${found.projectId}/${agent.id}`;
+    if (!(clock() - (lastWritten.get(key) ?? -Infinity) < SEEN_EVERY_MS)) {
+      lastWritten.set(key, clock());
+      await model.agents.seen(found.projectId, agent.id, iso());
+    }
     const { tokenHash: _, ...plain } = agent;
     return { projectId: found.projectId, agent: plain };
   }

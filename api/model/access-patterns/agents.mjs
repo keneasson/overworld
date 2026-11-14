@@ -9,9 +9,15 @@ const ACTIONS_KEPT_DAYS = 90;
 
 export function agents(table) {
   return {
-    /** A project's agents, revoked ones included. Query begins_with(SK, AGENT#). */
+    /** A project's agents, revoked ones included, each with when it last called. Query begins_with(SK, AGENT#): the seen rows come with them. */
     async list(projectId) {
-      return (await table.query(keys.agentsOf(projectId))).map(strip);
+      const rows = await table.query(keys.agentsOf(projectId));
+      const seen = new Map(rows.filter((r) => r.entity === 'agentSeen').map((r) => [r.agentId, r.at]));
+      return rows.filter((r) => r.entity === 'agent').map((r) => ({ ...strip(r), lastSeenAt: seen.get(r.id) ?? null }));
+    },
+    /** PutItem of its own small row, so it never overwrites the agent's record (a revocation, say). */
+    async seen(projectId, agentId, at) {
+      await table.put({ ...keys.agentSeen(projectId, agentId), entity: 'agentSeen', agentId, at });
     },
     /** GetItem, or null. */
     async get(projectId, id) {

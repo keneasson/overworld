@@ -13,6 +13,7 @@
 //   Report    PROJECT#<id>    AUDIT#<at>         what a reconciliation with the store fixed
 //   Store link STORE#<store key>  PROJECT#<id>  which projects live in a store, e.g. github:owner/name (for its events)
 //   Agent     PROJECT#<id>    AGENT#<agentId>    an agent that may use the project through MCP (#4)
+//   Seen      PROJECT#<id>    AGENT#<agentId>#SEEN  when the agent last called, at most every few minutes (CONN-07)
 //   Token     TOKEN#<sha256>  TOKEN              an agent's token, by its hash; the token itself is never stored
 //   Claim     PROJECT#<id>    CLAIM#<behaviourId>  who is coding a behaviour, until when (MCP-04)
 //   Handoff   PROJECT#<id>    HANDOFF#<itemKey>#<at>#<id>  where work on an item stands, when a claim ends (MCP-09)
@@ -64,6 +65,7 @@ export const keys = {
   storeLink: (key, projectId) => ({ PK: `STORE#${key}`, SK: projectPartition(projectId) }),
   storeLinks: (key) => ({ pk: `STORE#${key}` }),
   agent: (projectId, agentId) => ({ PK: projectPartition(projectId), SK: `${AGENT_PREFIX}${agentId}` }),
+  agentSeen: (projectId, agentId) => ({ PK: projectPartition(projectId), SK: `${AGENT_PREFIX}${agentId}#SEEN` }),
   agentsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: AGENT_PREFIX }),
   token: (hash) => ({ PK: `TOKEN#${hash}`, SK: 'TOKEN' }),
   claim: (projectId, behaviourId) => ({ PK: projectPartition(projectId), SK: `${CLAIM_PREFIX}${behaviourId}` }),

@@ -9,6 +9,7 @@ import { Breadcrumbs, Chips, Hint, LayerButton, Legend, MapControls, SearchBar, 
 import { Details, Results } from './components/Panel.jsx';
 import { useItemEditing } from './editor/useItemEditing.js';
 import { Drawer, Unlock } from './components/Drawer.jsx';
+import { ConnectAgent } from './components/ConnectAgent.jsx';
 import { Icon } from './components/Icon.jsx';
 
 function readHash() {
@@ -65,6 +66,7 @@ export function App() {
   const [comments, setComments] = useState([]);
   const [resultsOpen, setResultsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
   const [focusId, setFocusId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
@@ -241,13 +243,14 @@ export function App() {
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape' || drawerOpen) return;
+      if (connectOpen) return setConnectOpen(false);
       const el = document.activeElement;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable || el?.closest?.('.thread-pop')) return;
       closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [drawerOpen, closePanel]);
+  }, [drawerOpen, connectOpen, closePanel]);
 
   const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
   const editing = useItemEditing({
@@ -568,12 +571,19 @@ export function App() {
             openNew(api.importJson(parsed), 'Imported');
           }}
           onExport={exportJson}
+          onConnectAgent={() => {
+            setDrawerOpen(false);
+            setConnectOpen(true);
+          }}
           onLock={() => {
             setAccessKey('');
             setDrawerOpen(false);
             setLocked(true);
           }}
         />
+      )}
+      {connectOpen && projectId && (
+        <ConnectAgent projectId={projectId} projectTitle={tree?.root.title ?? 'this project'} onClose={() => setConnectOpen(false)} onError={(err) => toast(err.message, 'error')} />
       )}
       <Toasts toasts={toasts} />
     </div>

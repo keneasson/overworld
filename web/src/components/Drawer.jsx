@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { APP_NAME } from '@shared/brand.js';
 import { Icon } from './Icon.jsx';
 
-export function Drawer({ projects, currentId, onOpen, onClose, onCreate, onDelete, onImportGithub, onRefreshGithub, onImportJson, onExport, onLock, busy }) {
+export function Drawer({ projects, currentId, onOpen, onClose, onCreate, onDelete, onImportGithub, onRefreshGithub, onImportJson, onExport, onLock, onConnectAgent, busy }) {
   const [title, setTitle] = useState('');
   const [repo, setRepo] = useState('');
   const [token, setToken] = useState('');
@@ -56,6 +56,16 @@ export function Drawer({ projects, currentId, onOpen, onClose, onCreate, onDelet
             ))}
           </ul>
         </section>
+
+        {currentId && (
+          <section>
+            <h3>Agents</h3>
+            <p className="muted small">Let your coding agent work from this map: its instructions, claims, questions and handoffs.</p>
+            <button onClick={onConnectAgent}>
+              <Icon name="link" size={18} /> Connect an agent
+            </button>
+          </section>
+        )}
 
         <section>
           <h3>New project</h3>

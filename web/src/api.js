@@ -59,5 +59,8 @@ export const api = {
   itemComments: (pid, itemKey) => request('GET', `/api/projects/${pid}/comments/${itemKey}`),
   addComment: (pid, comment) => request('POST', `/api/projects/${pid}/comments`, comment),
   resolveComment: (pid, c, resolved) => request('PATCH', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}`, { resolved }),
+  listAgents: (pid) => request('GET', `/api/projects/${pid}/agents`),
+  createAgent: (pid, body) => request('POST', `/api/projects/${pid}/agents`, body),
+  revokeAgent: (pid, id) => request('DELETE', `/api/projects/${pid}/agents/${id}`),
   deleteComment: (pid, c) => request('DELETE', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}`),
 };

@@ -102,7 +102,7 @@ test('DATA-03 deleting a project removes its partition and touches nothing else'
   await fullProject(call, mcp);
   const before = await table.scan();
   const partition = before.find((it) => it.entity === 'project' && it.id === pid).PK;
-  assert.deepEqual(new Set(before.filter((it) => it.PK === partition).map((it) => it.entity)), new Set(['project', 'node', 'changeset', 'comment', 'agent', 'fact', 'action', 'request', 'limit']), "it held its map, a changeset, a comment, and an agent's records");
+  assert.deepEqual(new Set(before.filter((it) => it.PK === partition).map((it) => it.entity)), new Set(['project', 'node', 'changeset', 'comment', 'agent', 'agentSeen', 'fact', 'action', 'request', 'limit']), "it held its map, a changeset, a comment, and an agent's records");
   await call('DELETE', `/api/projects/${pid}`);
   const after = await table.scan();
   assert.equal(after.filter((it) => it.PK === partition).length, 0, 'everything in its partition is gone');

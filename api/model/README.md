@@ -24,6 +24,7 @@ model.
 | Reconciliation report | `PROJECT#<id>` | `AUDIT#<at>` | | |
 | Store link | `STORE#<store key>` | `PROJECT#<id>` | | |
 | Agent | `PROJECT#<id>` | `AGENT#<agentId>` | | |
+| When an agent last called | `PROJECT#<id>` | `AGENT#<agentId>#SEEN` | | |
 | Agent token | `TOKEN#<sha256 of the token>` | `TOKEN` | | |
 | Claim | `PROJECT#<id>` | `CLAIM#<behaviourId>` | | |
 | Handoff note | `PROJECT#<id>` | `HANDOFF#<itemKey>#<at>#<id>` | | |
@@ -88,7 +89,8 @@ agents' tokens first. The token itself is never stored.
 | Keep a report, and drop those past the last 30 | `audits.put(projectId, report)` | Query, then batched put and deletes |
 | Projects that live in a store (its events) | `links.projectsOf(key)` | Query `PK = STORE#<key>` |
 | Link or unlink a project and its store | `links.link(key, projectId)`, `links.unlink(key, projectId)` | PutItem, DeleteItem |
-| A project's agents | `agents.list(projectId)` | Query `begins_with(SK, AGENT#)` |
+| A project's agents, with when each last called | `agents.list(projectId)` | Query `begins_with(SK, AGENT#)`: the seen rows come in the same query |
+| Note that an agent called (at most every few minutes per agent) | `agents.seen(projectId, id, at)` | PutItem |
 | One agent | `agents.get(projectId, id)` | GetItem |
 | Make an agent and its token | `agents.create(projectId, agent, tokenHash)` | Conditional PutItem (the id is free), then PutItem |
 | Save an agent (its last handoff, its revocation) | `agents.put(projectId, agent)` | PutItem |
