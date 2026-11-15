@@ -332,14 +332,19 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           return { changeset: cs, node: changed };
         }
         const at = cs.items.findIndex((it) => it.key === key);
-        const base = at >= 0 ? cs.items[at].base : editableOf(node);
+        // A whole new text, written after reading the item as it is now (an agent's revision, ADOPT-13), is based on
+        // that, so an edit made since the refinement opened doesn't leave it a conflict that can never be adopted.
+        const rebased = Boolean(body?.rebase) && at >= 0 && !same(cs.items[at].base, editableOf(node));
+        const base = at >= 0 && !rebased ? cs.items[at].base : editableOf(node);
         if (same(base, after)) {
           if (at >= 0) cs.items.splice(at, 1);
-        } else if (at >= 0) cs.items[at] = { ...cs.items[at], after };
-        else cs.items.push({ key, nodeTitle: node.title, base, after });
+        } else if (at >= 0) {
+          const { conflict, theirs, ...kept } = cs.items[at];
+          cs.items[at] = rebased ? { ...kept, base, after } : { ...cs.items[at], after };
+        } else cs.items.push({ key, nodeTitle: node.title, base, after });
         cs.updatedAt = new Date().toISOString();
         await model.changesets.put(pid, cs);
-        return { changeset: cs };
+        return { changeset: cs, ...(rebased ? { rebased: true } : {}) };
       },
     ],
 

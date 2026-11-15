@@ -356,6 +356,25 @@ test("ADOPT-02 ADOPT-05 a person adopts an item of someone else's refinement: th
   assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'adopted once');
 });
 
+test("ADOPT-13 an agent's whole new text, written after a person edited the item, is proposed against that edit and can still be adopted", async () => {
+  const { call, pid, node, map } = await shopProject();
+  const theirs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  await call('PUT', `/api/projects/${pid}/changesets/${theirs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('then it is a token.', 'then it is a token, never a number.') });
+
+  const mine = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Ken' })).body.changeset;
+  const edited = four.replace('then it is a token.', 'then it is a token. (Ken was here.)');
+  await call('PUT', `/api/projects/${pid}/changesets/${mine.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: edited });
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${mine.id}/accept`)).status, 200);
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${theirs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'a revision from before the edit is a conflict');
+
+  const revised = edited.replace('(Ken was here.)', '(Ken was here.) Never a number.');
+  const res = await call('PUT', `/api/projects/${pid}/changesets/${theirs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: revised, rebase: true });
+  assert.equal(res.body.rebased, true, 'the agent is told its base moved');
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${theirs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200);
+  assert.match((await map()).find((n) => n.title.startsWith('#4 ')).body, /Ken was here\.\) Never a number/);
+});
+
 test('ADOPT-05 a person declines an item of a refinement: it is dropped, the spec stays, and the reason is kept', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;

@@ -291,7 +291,7 @@ export function createMcp({ model, agents, call, log = console }) {
         const pending = before?.items.find((it) => it.key === keyOf(node))?.after ?? current;
         const title = args.title ?? pending.title;
         const markdown = args.markdown ?? pending.markdown;
-        const res = await api('PUT', `/api/projects/${pid}/changesets/${cid}/items`, { key: keyOf(node), title, markdown });
+        const res = await api('PUT', `/api/projects/${pid}/changesets/${cid}/items`, { key: keyOf(node), title, markdown, rebase: args.markdown != null });
         const { changeset } = res;
         const ready = list(args.ready_for_adoption);
         const item = changeset.items.find((it) => it.key === keyOf(node));
@@ -307,7 +307,7 @@ export function createMcp({ model, agents, call, log = console }) {
           await model.changesets.put(pid, changeset);
         }
         const applies = await agents.applyAnswers(pid, changeset, item, { answers: list(args.answers), ready: args.item_ready });
-        return { refinement: changeset.id, item: keyOf(node), ...(item?.new ? { new: true } : {}), proposed: Boolean(item), ready_for_adoption: item?.readyForAdoption ?? [], ...applies };
+        return { refinement: changeset.id, item: keyOf(node), ...(item?.new ? { new: true } : {}), ...(res.rebased ? { rebased: 'The item changed since this refinement opened: your text is now proposed against it as it is, so check you kept what changed.' } : {}), proposed: Boolean(item), ready_for_adoption: item?.readyForAdoption ?? [], ...applies };
       },
     },
 
