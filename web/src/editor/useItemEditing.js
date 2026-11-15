@@ -85,6 +85,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     setBusy(true);
     try {
       const res = await api.decideChangesetItem(projectId, cs.id, key, action, { by: name, reason });
+      // Adopting an agent's refinement applies the annotations it acted on (NOTE-19).
+      if (res.resolved?.length) setComments((all) => all.map((x) => res.resolved.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
       setOthers((os) => os.map((o) => (o.id === res.changeset.id ? res.changeset : o)).filter((o) => o.status === 'open'));
       if (res.nodes.length) {
         onAccepted(res.nodes);
@@ -266,8 +268,9 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
   // An annotation (#15): its kind and a Change's value, or a reply in a thread (NOTE-11). True once it is posted.
   async function comment(key, anchor, text, { kind, value, replyTo } = {}) {
     try {
-      const { comment: c } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name, kind, value, replyTo });
-      setComments((cs) => [...cs, c]);
+      const { comment: c, thread } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name, kind, value, replyTo });
+      // A reply to @Claude also changes its thread: it is addressed to an agent again (NOTE-14).
+      setComments((cs) => [...cs.map((x) => (thread && x.id === thread.id && x.itemKey === thread.itemKey ? thread : x)), c]);
       return true;
     } catch (err) {
       fail(err);

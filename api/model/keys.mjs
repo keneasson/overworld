@@ -6,6 +6,7 @@
 //   Flag      APP             FLAG#<name>
 //   Changeset PROJECT#<id>    CHANGESET#<changesetId>
 //   Comment   PROJECT#<id>    COMMENT#<itemKey>#<commentId>
+//   Inbox     PROJECT#<id>    INBOX#<commentId>  an annotation addressed to an agent, until an agent replies (#15 NOTE-17)
 //   Node with a sync state, or new in a refinement   PENDING#<id> <itemKey>  sparse: only nodes not yet in line with their store
 //   Sync job  PROJECT#<id>    JOB#<savedAt>#<itemKey>   the outbox: a saved item still to reach its store
 //   Lease     PROJECT#<id>    LEASE#sync         who is syncing this project, until when
@@ -80,6 +81,8 @@ export const keys = {
   actionsOf: (projectId, agentId) => ({ index: 'GSI1', pk: `ACTIONS#${projectId}#${agentId}` }),
   request: (projectId, agentId, requestKey) => ({ PK: projectPartition(projectId), SK: `KEY#${agentId}#${requestKey}` }),
   limit: (projectId, agentId, minute) => ({ PK: projectPartition(projectId), SK: `LIMIT#${agentId}#${minute}` }),
+  inbox: (projectId, id) => ({ PK: projectPartition(projectId), SK: `INBOX#${id}` }),
+  inboxOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: 'INBOX#' }),
   commentsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `${COMMENT_PREFIX}${itemKey ? `${itemKey}#` : ''}` }),
 };
 

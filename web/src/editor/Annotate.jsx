@@ -72,7 +72,7 @@ export function Composer({ heading, quote, what, src, onPost, onCancel }) {
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => posts(e) && post(e)}
-        placeholder={kind === 'question' ? 'Ask…' : kind === 'change' ? 'What to change… e.g. Make this blue' : kind === 'refactor' ? 'What to refactor, and to what…' : 'Comment…'}
+        placeholder={`${kind === 'question' ? 'Ask…' : kind === 'change' ? 'What to change… e.g. Make this blue' : kind === 'refactor' ? 'What to refactor, and to what…' : 'Comment…'} @Claude hands it to an agent`}
         maxLength={4000}
       />
       {kind === 'change' && (
@@ -157,6 +157,22 @@ function AnswerForm({ question, onAnswer, onPrompt, onCancel }) {
   );
 }
 
+/** Where an annotation addressed to an agent has got to (NOTE-17), or what became of it. */
+function Status({ c }) {
+  const o = c.outcome;
+  if (o?.state === 'applied') return <p className="note-status done">Applied when refinement {o.refinement} was adopted{o.by ? `, from ${o.by}` : ''}.</p>;
+  const d = c.delivery;
+  if (!d) return null;
+  if (d.state === 'waiting') return <p className="note-status">Sent to {d.for === 'any agent' ? 'Claude' : d.for}. No agent is connected: it is the first thing the next one to call gets.</p>;
+  if (d.state === 'delivered') return <p className="note-status live">With {d.to} since {when(d.at)}. Its reply comes here.</p>;
+  return <p className="note-status done">{d.by} replied.</p>;
+}
+
+/** Mentions stand out in what was said (NOTE-14). */
+function Words({ text }) {
+  return text.split(/(@[A-Za-z][\w.-]*)/g).map((part, i) => (i % 2 ? <span key={i} className="note-mention">{part}</span> : part));
+}
+
 function Said({ c, children }) {
   return (
     <div className={`comment${c.resolved ? ' resolved' : ''}`}>
@@ -168,7 +184,10 @@ function Said({ c, children }) {
         <time dateTime={c.createdAt}>{when(c.createdAt)}</time>
         {children}
       </div>
-      <p>{c.text}</p>
+      <p>
+        <Words text={c.text} />
+      </p>
+      {c.refinement && <p className="note-status">Proposed in refinement {c.refinement}, waiting for adoption on this item.</p>}
     </div>
   );
 }
@@ -219,6 +238,7 @@ export function Thread({ heading, quote, what, src, moved, thread, onReply, onRe
       <Said c={root}>
         <Value value={root.value} />
       </Said>
+      <Status c={root} />
       {root.answer && !answering && (
         <div className="answer">
           <div className="comment-head">

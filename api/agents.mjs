@@ -7,6 +7,7 @@ import { ValidationError, newId } from '../shared/schema.js';
 import { nextWork, behavioursOf, blockersOf, isWork, keyOf } from './work.mjs';
 import { awaitsApplying, isQuestion, promptOf } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
+import { notePrompt } from './notes.mjs';
 
 const CALLS_PER_MINUTE = 120;
 const CLAIM_MINUTES = { default: 120, max: 480 };
@@ -220,6 +221,51 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     return { answers: item.answers, item_ready: Boolean(item.itemReady) };
   }
 
+  /**
+   * Annotations addressed to agents (#15 NOTE-17). Each goes to the first agent to call after it is posted, or to the
+   * agent it names, and stays that agent's for a claim's length; after that it is any agent's again. With `fresh`,
+   * only those handed over by this call; otherwise every one this agent holds. Each comes with its prompt (NOTE-18).
+   */
+  async function addressed(projectId, agent, { fresh = true } = {}) {
+    const rows = await model.inbox.list(projectId);
+    if (!rows.length) return [];
+    const now = clock();
+    const free = (r) => !r.deliveredTo || now - Date.parse(r.deliveredAt) > CLAIM_MINUTES.default * 60_000;
+    const mine = rows.filter((r) => (!r.agentId || r.agentId === agent.id) && (free(r) || r.deliveredTo === agent.id));
+    const handing = mine.filter(free);
+    if (fresh && !handing.length) return [];
+    const { nodes } = await model.projects.getWithNodes(projectId);
+    const out = [];
+    for (const r of fresh ? handing : mine) {
+      const comments = await model.comments.list(projectId, r.itemKey);
+      let note = comments.find((c) => c.id === r.id);
+      if (!note || note.resolved) {
+        await model.inbox.delete(projectId, r.id);
+        continue;
+      }
+      if (handing.includes(r)) {
+        await model.inbox.put(projectId, { ...r, deliveredTo: agent.id, deliveredAt: iso(now) });
+        note = { ...note, delivery: { ...note.delivery, state: 'delivered', to: `${agent.name} (${agent.id})`, at: iso(now) } };
+        await model.comments.put(projectId, note);
+      }
+      out.push({ note, prompt: notePrompt({ nodes, comments, note }) });
+    }
+    return out;
+  }
+
+  /** A proposal that acts on annotations (NOTE-19): adopting it applies them (notes.mjs, settleNotes). */
+  async function applyNotes(projectId, changeset, item, { annotations = [] } = {}) {
+    if (!annotations.length) return {};
+    if (!item) throw new Refused('Nothing is proposed for this item, so it applies no annotation');
+    for (const id of annotations) {
+      const c = await model.comments.get(projectId, { itemKey: item.key, id });
+      if (!c || c.replyTo || c.resolved) throw new ValidationError(`${id} isn't an open annotation on this item`);
+    }
+    item.annotations = [...new Set([...(item.annotations ?? []), ...annotations])];
+    await model.changesets.put(projectId, changeset);
+    return { annotations: item.annotations };
+  }
+
   /** A standing decision or correction for the project, attributed to whoever made it (MCP-10). */
   async function remember(projectId, by, text) {
     const fact = { id: newId(), at: iso(), text: said(text ?? '', 2000, 'fact'), by };
@@ -294,6 +340,8 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     // Resolved: open at the last standup, or asked since, and resolved now. Each is reported once.
     const resolvedNow = last ? asked.filter((c) => c.resolved && ((last.openQuestions ?? []).includes(c.id) || c.createdAt > last.at)) : [];
     const answered = [...toApply.map((a) => ({ c: a.question, prompt: a.prompt() })), ...resolvedNow.map((c) => ({ c }))];
+    // Annotations addressed to agents with @ (NOTE-17): the standup is where one waits when no agent was connected.
+    const notes = await addressed(projectId, agent, { fresh: false });
     const fresh = last ? comments.filter((c) => c.author !== me && c.createdAt > last.at) : [];
     // Claims that ran out: noticed just now, or since the last standup (each left a note on its item).
     const ranOut = [...new Map([...expired.filter((c) => c.owner === agent.id).map((c) => ({ behaviour: c.behaviour, item: c.item, at: c.until })),
@@ -318,6 +366,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       mode,
       ...(last ? { last_connected: last.at, away: span(now - Date.parse(last.at)) } : {}),
       addressed_to_you: {
+        ...(notes.length ? { annotations: notes.map(noteOf) } : {}),
         ...(answered.length ? { answered: answered.map(({ c, prompt }) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text, ...(prompt ? { question_id: c.id, answer: c.answer.text, answered_by: c.answer.by, prompt } : {}) })) } : {}),
         ...(decided.length ? { your_refinements_decided: decided.slice(-SHOWN) } : {}),
         ...(fresh.filter((c) => watched.has(c.itemKey)).length ? { new_comments: fresh.filter((c) => watched.has(c.itemKey)).slice(-SHOWN).map((c) => ({ item: c.itemKey, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })) } : {}),
@@ -352,14 +401,17 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         remembered: (await model.facts.list(projectId)).map((f) => ({ fact: f.text, by: f.by?.name, at: f.at.slice(0, 10) })),
       };
     }
-    report.first_step = firstStep({ mode, git, ranOut, answered: answered.map(({ c, prompt }) => ({ title: title(c.itemKey), prompt })), holding, work, refinements });
+    report.first_step = firstStep({ mode, git, ranOut, notes, answered: answered.map(({ c, prompt }) => ({ title: title(c.itemKey), prompt })), holding, work, refinements });
 
     await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !c.resolved).map((c) => c.id) } });
     return report;
   }
 
-  return { callsPerMinute, standup, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
+  return { callsPerMinute, standup, addressed, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
 }
+
+/** An annotation addressed to an agent, as its tools show it: who said what, where, and the prompt to act on it. */
+export const noteOf = ({ note, prompt }) => ({ annotation: note.id, item: note.itemKey, kind: note.kind ?? 'comment', from: note.author, said: note.text, ...(note.value ? { value: note.value } : {}), prompt });
 
 /** How the local copy and GitHub differ, from what the agent saw: null when it sent nothing. */
 function gitOf(local) {
@@ -381,11 +433,12 @@ function gitOf(local) {
 }
 
 /** One suggestion: unfinished local work first, then catching up, then answers to apply or read, then held work, then the next work. */
-function firstStep({ mode, git, ranOut, answered, holding, work, refinements }) {
+function firstStep({ mode, git, ranOut, notes = [], answered, holding, work, refinements }) {
   const apply = answered.filter((a) => a.prompt);
   const local = git && (git.uncommitted?.length || git.unpushed?.length || git.ahead);
   if (local && ranOut.length && !holding.length) return `You have local work on ${git.branch ?? 'this branch'} and your claim on ${ranOut.map((c) => c.behaviour).join(', ')} ran out: claim it again, or hand it off, before you carry on.`;
   if (git?.behind) return `Pull first: ${git.behind} commit${git.behind === 1 ? '' : 's'} on GitHub you don't have yet.`;
+  if (notes.length) return `Act on what ${notes[0].note.author} addressed to you on ${notes[0].note.itemKey}: follow its prompt in addressed_to_you.annotations${notes.length > 1 ? `, then the other ${notes.length - 1}` : ''}.`;
   if (apply.length) return `Apply the answer to your question on ${apply[0].title}: follow its prompt in addressed_to_you.answered${apply.length > 1 ? `, then the other ${apply.length - 1}` : ''}.`;
   if (local) return `Finish what's local on ${git.branch ?? 'this branch'}: ${git.uncommitted?.length ? 'commit, then ' : ''}push.`;
   if (answered.length) return `Read the answer${answered.length === 1 ? '' : 's'} on ${[...new Set(answered.map((a) => a.title))].join(', ')}.`;

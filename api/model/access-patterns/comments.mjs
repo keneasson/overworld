@@ -27,3 +27,22 @@ export function comments(table) {
     },
   };
 }
+
+// What is addressed to agents (#15 NOTE-17): one small row per annotation, so each agent call finds what is waiting
+// in one short query, without reading every comment in the project.
+export function inbox(table) {
+  return {
+    /** Everything waiting for an agent, oldest first. Query begins_with(SK, INBOX#). */
+    async list(projectId) {
+      return (await table.query(keys.inboxOf(projectId))).map(strip);
+    },
+    /** PutItem: waiting, or handed to an agent. */
+    async put(projectId, row) {
+      await table.put({ ...keys.inbox(projectId, row.id), entity: 'inbox', ...row });
+    },
+    /** DeleteItem: an agent has replied. */
+    async delete(projectId, id) {
+      await table.delete(keys.inbox(projectId, id));
+    },
+  };
+}

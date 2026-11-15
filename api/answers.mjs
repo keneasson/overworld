@@ -2,19 +2,15 @@
 // what adopting the refinement that applied it settles (ANSWER-04). The API's routes, the standup and the MCP tools all
 // call this, so the web app shows a person the same prompt an agent gets.
 
-import { STATUS_LABEL } from '../shared/schema.js';
 import { editableOf, itemKeyOf } from '../shared/issue-shape.js';
+import { itemContext, quote, stateWords } from './prompts.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { isQuestion, whereOf } from '../shared/annotations.js';
-
-const SIBLINGS_SHOWN = 30;
 
 export { isQuestion };
 /** Answered, and waiting for an agent to write the answer into the spec (ANSWER-01). */
 export const awaitsApplying = (c) => isQuestion(c) && Boolean(c.answer) && !c.resolved;
 
-const quote = (s) => String(s).split('\n').map((l) => `> ${l}`).join('\n');
-const stateWords = (status) => (STATUS_LABEL[status] ?? status).toLowerCase();
 
 /**
  * The state the item would reach once this question is cleared: ready when nothing else is open, else what still is.
@@ -33,10 +29,7 @@ export function answerPrompt({ nodes, comments, question, answer, answeredBy }) 
   const node = nodes.find((n) => itemKeyOf(n) === question.itemKey);
   if (!node) return '';
   const key = itemKeyOf(node);
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const parent = byId.get(node.parentId);
-  const siblings = nodes.filter((n) => n.parentId === node.parentId && n.id !== node.id && n.kind !== 'behavior');
-  const { title, markdown } = editableOf(node);
+  const { markdown } = editableOf(node);
   const next = wouldBecome(node, comments, question);
   const textQuestions = openQuestions(markdown);
   const where = question.anchor?.behaviour ? `behaviour ${question.anchor.behaviour}` : whereOf(question.anchor);
@@ -50,14 +43,7 @@ export function answerPrompt({ nodes, comments, question, answer, answeredBy }) 
     `The answer${answeredBy ? `, from ${answeredBy}` : ''}:`,
     quote(answer),
     '',
-    `The item as it stands: its title is "${title}", and its text, in the strict shape, is:`,
-    '',
-    '~~~markdown',
-    markdown.trim(),
-    '~~~',
-    '',
-    parent ? `Its parent: ${parent.title} (${itemKeyOf(parent)}).` : 'It sits at the top of the map.',
-    ...(siblings.length ? ['Its siblings:', ...siblings.slice(0, SIBLINGS_SHOWN).map((s) => `- ${s.title} (${itemKeyOf(s)}), ${stateWords(s.status)}`), ...(siblings.length > SIBLINGS_SHOWN ? [`- and ${siblings.length - SIBLINGS_SHOWN} more`] : [])] : ['It has no siblings.']),
+    ...itemContext(nodes, node),
     '',
     `Its state now: ${stateWords(node.status)}. Once this question is cleared, it would be ${stateWords(next.status)}${next.others.length ? `, because these questions are still open: ${next.others.map((q) => `"${q}"`).join('; ')}` : ''}.`,
     ...(textQuestions ? ['Its Open questions section says:', quote(textQuestions), 'Anything there that this answer settles goes too; anything it leaves open stays.'] : []),

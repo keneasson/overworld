@@ -199,6 +199,9 @@ export function App() {
   useEffect(() => {
     if (selected) loadComments([itemKeyOf(selected)]);
   }, [selected, loadComments]);
+  // While an open item has an annotation with an agent, look for its reply every few seconds (NOTE-14, NOTE-19).
+  const selectedKey = selected ? itemKeyOf(selected) : null;
+  const withAgent = Boolean(selectedKey) && comments.some((c) => c.itemKey === selectedKey && !c.resolved && ['waiting', 'delivered'].includes(c.delivery?.state));
 
   useEffect(() => {
     if (tree && selectedId && !tree.byId.has(selectedId)) setSelectedId(null);
@@ -341,6 +344,19 @@ export function App() {
     const t = setInterval(() => document.visibilityState === 'visible' && reloadRefinements(), 60000);
     return () => clearInterval(t);
   }, [reloadRefinements]);
+  useEffect(() => {
+    if (!withAgent) return undefined;
+    const pid = projectId;
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      api
+        .itemComments(pid, selectedKey)
+        .then((d) => latest.current.projectId === pid && setComments((cs) => [...cs.filter((c) => c.itemKey !== selectedKey), ...d.comments]))
+        .catch(() => {});
+      reloadRefinements();
+    }, 4000);
+    return () => clearInterval(t);
+  }, [withAgent, selectedKey, projectId, reloadRefinements]);
 
   // The panel's expand handle (EDIT-10): drag to any width, or click to switch between narrow and wide.
   const setWidth = (w) => {

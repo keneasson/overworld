@@ -11,7 +11,8 @@ import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
 import { answerPrompt, settleAnswers } from './answers.mjs';
-import { NOTE_KINDS, annotationOf, cleanAnchor, isQuestion } from '../shared/annotations.js';
+import { NOTE_KINDS, annotationOf, cleanAnchor, isQuestion, mentionsOf } from '../shared/annotations.js';
+import { addresseesOf, settleNotes } from './notes.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
@@ -421,6 +422,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           await model.nodes.put(pid, changed);
           await touchProject(project, nodes.map((n) => (n.id === before.id ? changed[0] : n)));
         }
+        const applied = action === 'adopt' ? await settleNotes(model, pid, cs, now, [key]) : [];
         const decided = { key, nodeTitle: entry.nodeTitle, by, at: now, ...(entry.readyForAdoption?.length ? { readyForAdoption: entry.readyForAdoption } : {}) };
         if (action === 'adopt') cs.adopted = [...(cs.adopted ?? []), decided];
         else cs.declined = [...(cs.declined ?? []), { ...decided, reason: text(body?.reason ?? '', 2000, 'reason').trim() }];
@@ -429,7 +431,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         // A refinement with nothing left in it is closed: adopted if anything in it was.
         if (!cs.items.length) Object.assign(cs, cs.adopted?.length ? { status: 'accepted', acceptedAt: now } : { status: 'declined' });
         await model.changesets.put(pid, cs);
-        return { changeset: cs, nodes: changed };
+        return { changeset: cs, nodes: changed, ...(applied.length ? { resolved: applied.map(annotationOf) } : {}) };
       },
     ],
 
@@ -469,7 +471,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         Object.assign(cs, { status: 'accepted', acceptedAt: now, updatedAt: now });
         await model.changesets.put(pid, cs);
         // Adopting it settles the answers it applied, and an item with nothing else open comes back ready (ANSWER-04).
-        const { resolved, ready } = await settleAnswers(model, pid, cs, changed, now);
+        const { resolved: answered, ready } = await settleAnswers(model, pid, cs, changed, now);
+        // And the annotations it acted on are applied, naming it (NOTE-19).
+        const resolved = [...answered, ...(await settleNotes(model, pid, cs, now))].map(annotationOf);
         const marked = ready.filter((n) => n.status !== 'ready').map((n) => markEdited(n, { ...n, status: 'ready', updatedAt: now }, store));
         if (marked.length) await model.nodes.put(pid, marked);
         return { changeset: cs, nodes: changed.map((n) => marked.find((m) => m.id === n.id) ?? n), ...(resolved.length ? { resolved } : {}) };
@@ -499,6 +503,11 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const kind = root ? 'comment' : (body?.kind ?? (anchor.section === 'Open questions' ? 'question' : 'comment'));
         const value = body?.value == null ? '' : text(body.value, 200, 'value').trim();
         if (value && kind !== 'change') throw new ValidationError('value: only a Change carries a value');
+        const at = new Date(clock()).toISOString();
+        // Addressed to whoever it mentions (NOTE-14). One for an agent waits in the inbox until an agent replies, and
+        // every agent call hands it on at once (NOTE-17); the thread says where it is.
+        const to = addresseesOf(said, mentionsOf(said).length ? await model.agents.list(pid) : []);
+        const fromAgent = typeof body?.fromAgent === 'string' ? body.fromAgent : null;
         const comment = {
           id: commentId(),
           itemKey,
@@ -507,12 +516,27 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           ...(root ? { replyTo: root.id } : {}),
           text: said,
           ...(value ? { value } : {}),
+          ...(to.length ? { to } : {}),
+          ...(typeof body?.refinement === 'string' && body.refinement ? { refinement: body.refinement.slice(0, 40) } : {}),
           author: author(body?.author),
           resolved: false,
-          createdAt: new Date(clock()).toISOString(),
+          createdAt: at,
         };
+        let thread = root;
+        const agent = !fromAgent && to.find((t) => t.agent);
+        if (agent) {
+          const one = to.find((t) => t.agentId);
+          await model.inbox.put(pid, { id: root?.id ?? comment.id, itemKey, at, ...(one ? { agentId: one.agentId } : {}) });
+          const delivery = { state: 'waiting', for: one?.name ?? 'any agent', at };
+          if (root) thread = { ...root, delivery };
+          else comment.delivery = delivery;
+        } else if (fromAgent && root?.delivery && root.delivery.state !== 'replied') {
+          thread = { ...root, delivery: { ...root.delivery, state: 'replied', by: comment.author, at } };
+          await model.inbox.delete(pid, root.id);
+        }
         await model.comments.put(pid, comment);
-        return { comment };
+        if (thread !== root) await model.comments.put(pid, thread);
+        return { comment: annotationOf(comment), ...(thread !== root ? { thread: annotationOf(thread) } : {}) };
       },
       { status: 201 },
     ],
