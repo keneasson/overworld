@@ -12,6 +12,7 @@ import { isMapped } from './editor/items.js';
 import { Drawer, Unlock } from './components/Drawer.jsx';
 import { ConnectAgent } from './components/ConnectAgent.jsx';
 import { Icon } from './components/Icon.jsx';
+import { isNewer } from './model/version.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -48,6 +49,37 @@ function useMedia(query) {
     return () => mq.removeEventListener('change', on);
   }, [query]);
   return match;
+}
+
+// A newer deploy is noticed when the app comes back to the foreground, and every few minutes (SHIP-12): on a phone
+// the map takes every touch, so pull-to-refresh can't, and an app opened from the home screen has no reload button.
+const VERSION_CHECK_MS = 5 * 60_000;
+function useNewVersion() {
+  const [newer, setNewer] = useState(false);
+  useEffect(() => {
+    const running = document.querySelector('script[type="module"][src*="/assets/"]')?.getAttribute('src');
+    if (!running) return undefined;
+    let stop = false;
+    const check = async () => {
+      if (stop || document.visibilityState !== 'visible') return;
+      try {
+        const res = await fetch('/', { cache: 'no-store' });
+        if (res.ok && isNewer(running, await res.text())) setNewer(true);
+      } catch {
+        // Offline or between deploys: the next check tries again.
+      }
+    };
+    const timer = setInterval(check, VERSION_CHECK_MS);
+    document.addEventListener('visibilitychange', check);
+    window.addEventListener('focus', check);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', check);
+      window.removeEventListener('focus', check);
+    };
+  }, []);
+  return newer;
 }
 
 export function App() {
@@ -254,6 +286,7 @@ export function App() {
   }, [drawerOpen, connectOpen, closePanel]);
 
   const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
+  const newVersion = useNewVersion();
   const editing = useItemEditing({
     projectId: data?.project.id,
     tree,
@@ -628,6 +661,18 @@ export function App() {
       )}
       {connectOpen && projectId && (
         <ConnectAgent projectId={projectId} projectTitle={tree?.root.title ?? 'this project'} onClose={() => setConnectOpen(false)} onError={(err) => toast(err.message, 'error')} />
+      )}
+      {newVersion && (
+        <button
+          type="button"
+          className="update-chip"
+          onClick={async () => {
+            await editing.flush();
+            location.reload();
+          }}
+        >
+          <Icon name="refresh" size={16} /> A new version is out · Update
+        </button>
       )}
       <Toasts toasts={toasts} />
     </div>
