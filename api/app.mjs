@@ -9,9 +9,9 @@ import { applyTo, conflictsOf, editableOf, findItem, same } from './edits.mjs';
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
+import { answerPrompt, isQuestion, settleAnswers } from './answers.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
-import { answerPrompt, isQuestion, settleAnswers } from './answers.mjs';
 
 class HttpError extends Error {
   constructor(status, message) {
