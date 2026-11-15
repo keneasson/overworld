@@ -5,9 +5,10 @@ import { MarkdownManager } from '@tiptap/markdown';
 import { EditorState, TextSelection } from '@tiptap/pm/state';
 import { liftListItem, sinkListItem } from '@tiptap/pm/schema-list';
 import { newItemMarkdown, parseIssue, sectionText } from '@shared/issue-shape.js';
-import { EXTENSIONS, throughEditor } from '../src/editor/rich-text.js';
+import { EXTENSIONS, parseMarkdown, throughEditor } from '../src/editor/rich-text.js';
 import { fromDocument, toDocument } from '../src/editor/document.js';
-import { sectionBodies, withBodies } from '../src/editor/shape-extension.js';
+import { openWithBodies, sectionBodies } from '../src/editor/shape-extension.js';
+import { commentHtml } from '../src/editor/comment-text.js';
 
 const schema = getSchema(EXTENSIONS);
 const md = new MarkdownManager({ extensions: EXTENSIONS });
@@ -16,8 +17,7 @@ const markdownOf = (state) => md.serialize(state.doc.toJSON());
 /** The document as the editor opens it, with a stand-in for its view: what a person types goes through the same plugin. */
 function open(markdown) {
   const plugin = sectionBodies();
-  let state = EditorState.create({ doc: schema.nodeFromJSON(md.parse(markdown)), plugins: [plugin] });
-  state = state.apply(withBodies(state) ?? state.tr);
+  let state = EditorState.create({ doc: schema.nodeFromJSON(openWithBodies(parseMarkdown(markdown), schema)), plugins: [plugin] });
   const view = {
     get state() {
       return state;
@@ -91,4 +91,13 @@ test('EDIT-17 an item made a sub-item of the one above (Tab) saves nested, and l
   into('two');
   run(liftListItem);
   assert.equal(markdownOf(state), '- one\n- two\n- three');
+});
+
+test('EDIT-15 a comment written with the menu is kept as markdown and shown formatted, mentions still standing out', () => {
+  const said = '**Bold** and *italic* with `code`, [a link](https://example.com) for @Claude:\n\n- one\n  - two';
+  assert.equal(throughEditor(said), said, 'what the comment box writes is the markdown kept');
+  const html = commentHtml(said);
+  for (const bit of ['<strong>Bold</strong>', '<em>italic</em>', '<code>code</code>', '<a href="https://example.com">a link</a>', '<span class="note-mention">@Claude</span>', '<li>two</li>'])
+    assert.ok(html.includes(bit), `shows ${bit}`);
+  assert.ok(commentHtml('a plain line\nand the next').includes('<br>'), 'a plain comment keeps its line breaks');
 });

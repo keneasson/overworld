@@ -39,5 +39,8 @@ export const EXTENSIONS = [StarterKit.configure({ heading: { levels: [2, 3, 4] }
 let manager = null;
 const md = () => (manager ??= new MarkdownManager({ extensions: EXTENSIONS }));
 
+/** Markdown as the editor's document (JSON). */
+export const parseMarkdown = (markdown) => md().parse(markdown);
+
 /** Markdown -> the editor's document -> markdown: exactly what the editor saves for this text. */
 export const throughEditor = (markdown) => md().serialize(md().parse(markdown));

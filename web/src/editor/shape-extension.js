@@ -6,7 +6,7 @@
 // Entered into a shape heading go to that line instead.
 
 import { Extension } from '@tiptap/core';
-import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { SECTIONS, hasOpenQuestions } from '@shared/issue-shape.js';
 import { NOTE_KIND_LABEL, initials, kindOf } from '@shared/annotations.js';
@@ -112,6 +112,12 @@ export function withBodies(state) {
   const tr = state.tr;
   for (const pos of at.reverse()) tr.insert(pos, state.schema.nodes.paragraph.create());
   return tr;
+}
+
+/** A document (JSON) with a line under every section, for the editor to open on (EDIT-16). */
+export function openWithBodies(json, schema) {
+  const tr = withBodies(EditorState.create({ doc: schema.nodeFromJSON(json) }));
+  return tr ? tr.doc.toJSON() : json;
 }
 
 /** Moves the cursor from a section's heading to the first line of its text, making that line if the text starts with something else. */

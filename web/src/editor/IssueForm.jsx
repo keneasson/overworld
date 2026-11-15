@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { getSchema } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import { Markdown } from '@tiptap/markdown';
 import { Placeholder } from '@tiptap/extensions';
 import { behaviourPrefix, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
 import { NOTE_KIND_LABEL, initials, isPlain, kindOf, threadsOf, whereOf } from '@shared/annotations.js';
-import { EXTENSIONS } from './rich-text.js';
+import { EXTENSIONS, parseMarkdown } from './rich-text.js';
 import { fromDocument, sectionAt, toDocument } from './document.js';
-import { IssueShape, refreshNotes, withBodies } from './shape-extension.js';
+import { IssueShape, openWithBodies, refreshNotes } from './shape-extension.js';
 import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './targets.js';
 import { Composer, Thread, clearedWords } from './Annotate.jsx';
 import { SelectionMenu } from './SelectionMenu.jsx';
@@ -62,6 +63,8 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     setThread((t) => (t?.id === id ? null : { id, top: at.bottom - box.top + 4 }));
   };
 
+  // Empty sections open with a line to type on (EDIT-16).
+  const content = useMemo(() => openWithBodies(parseMarkdown(toDocument(original)), getSchema(EXTENSIONS)), [original]);
   const editor = useEditor({
     extensions: [
       ...EXTENSIONS,
@@ -76,13 +79,9 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
         },
       }),
     ],
-    content: toDocument(original),
-    contentType: 'markdown',
+    content,
     editorProps: { attributes: { class: 'issue-doc-text', 'aria-label': issueNumber ? `#${issueNumber}` : 'Item text', 'aria-multiline': 'true', role: 'textbox' } },
     onCreate: ({ editor: e }) => {
-      // Empty sections get a line to type on before anything is compared (EDIT-16).
-      const bodies = withBodies(e.state);
-      if (bodies) e.view.dispatch(bodies.setMeta('addToHistory', false));
       opened.current = e.getMarkdown();
     },
     // Changes before the editor has opened are its own setup, not the person's.
