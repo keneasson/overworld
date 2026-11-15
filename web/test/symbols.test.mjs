@@ -100,7 +100,7 @@ test('SYM-03 badges show pull requests, agents, comments and open questions, and
   }
 });
 
-test('NOTE-03 NOTE-04 open annotations badge their item by kind with the number open, a Question joins the "?" until answered, and a Comment adds none', () => {
+test('NOTE-03 NOTE-04 open annotations badge their item by kind with the number open, a Question joins the "?" until it is acted on, and a Comment adds none', () => {
   const tree = buildTree([root, item('epic', 'root'), item('a', 'epic', { body: '## Open questions\n- Who signs off?' }), item('b', 'epic')]);
   const comments = [
     { id: '1', itemKey: 'node-a', kind: 'question', text: 'Which vault?' },
@@ -117,7 +117,7 @@ test('NOTE-03 NOTE-04 open annotations badge their item by kind with the number 
   assert.deepEqual(badgesOf(tree.byId.get('a'), live), [
     { type: 'problem', count: 2 },
     { type: 'change', count: 1 },
-    { type: 'question', count: 2 },
+    { type: 'question', count: 3 },
   ]);
   assert.deepEqual(badgesOf(tree.byId.get('b'), live), [], 'a Comment expects nothing, so it marks nothing');
   assert.ok(markersOf(tree.byId.get('epic'), live).some((m) => m.type === 'problem' && m.count === 2 && m.target === 'a'), 'a region rolls them up');

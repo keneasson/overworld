@@ -69,22 +69,22 @@ export function notePrompt({ nodes, comments, note }) {
     'What to do:',
     KIND_ASKS[kind],
     '',
-    `How: change the item, the spec or the map through a refinement, so everyone sees it at once. Open one with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, annotations: ["${note.id}"]); changes to other items go into the same refinement. The annotation is applied when a person adopts it. Then reply(annotation: "${note.id}", item: "${key}", text: what you changed, refinement: its id) in the thread. If nothing needs changing, just reply. If something can't be decided from here, say so in your reply rather than guessing.`,
+    `How: change the item, the spec or the map through a refinement, so everyone sees it at once. Open one with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, annotations: ["${note.id}"]); changes to other items go into the same refinement. Then reply(annotation: "${note.id}", item: "${key}", text: what you changed, refinement: its id) in the thread. A person adopts the refinement, and that clears the annotation. If nothing needs changing, just reply. If something can't be decided from here, say so in your reply rather than guessing.`,
   ].join('\n');
 }
 
-/** Adopting a refinement applies the annotations it acted on (NOTE-19, NOTE-05): each says which refinement did it. */
+/** Adopting a refinement clears the annotations it acted on (NOTE-19, NOTE-05): each moves to the conversation log, naming it. */
 export async function settleNotes(model, pid, changeset, at, keys = changeset.items.map((it) => it.key)) {
-  const applied = [];
+  const cleared = [];
   for (const item of changeset.items.filter((it) => keys.includes(it.key) && it.annotations?.length)) {
     for (const id of item.annotations) {
       const c = await model.comments.get(pid, { itemKey: item.key, id });
       if (!c || c.resolved) continue;
-      const done = { ...c, resolved: true, outcome: { state: 'applied', by: changeset.author, at, refinement: changeset.id } };
+      const done = { ...c, resolved: true, cleared: { refinement: changeset.id, by: changeset.author, at } };
       await model.comments.put(pid, done);
       await model.inbox.delete(pid, id);
-      applied.push(done);
+      cleared.push(done);
     }
   }
-  return applied;
+  return cleared;
 }

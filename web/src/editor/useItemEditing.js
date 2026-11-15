@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { editableOf, itemKeyOf } from '@shared/issue-shape.js';
+import { isPlain, readBy, readsFor } from '@shared/annotations.js';
 import { api, storage } from '../api.js';
 import { toSave } from '../model/sync.js';
 
 const NAME = 'projectmap.name';
+const READ = 'projectmap.read'; // plain Comments read without a name, remembered in this browser only (NOTE-05)
+const readHereAtFirst = () => {
+  try {
+    return new Set(JSON.parse(storage.get(READ) ?? '[]'));
+  } catch {
+    return new Set();
+  }
+};
 const SAVE_AFTER_MS = 700;
 const SYNC_POLL_MS = 2000; // while a save is on its way to GitHub
 const SYNC_POLL_TRIES = 20;
@@ -25,6 +34,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(0);
   const [name, setNameState] = useState(() => storage.get(NAME) ?? '');
+  const [readHere, setReadHere] = useState(readHereAtFirst);
   const timers = useRef(new Map());
   const pending = useRef(new Map());
   const csPromise = useRef(null);
@@ -85,8 +95,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     setBusy(true);
     try {
       const res = await api.decideChangesetItem(projectId, cs.id, key, action, { by: name, reason });
-      // Adopting an agent's refinement applies the annotations it acted on (NOTE-19).
-      if (res.resolved?.length) setComments((all) => all.map((x) => res.resolved.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
+      // Adopting an agent's refinement clears the annotations it acted on (NOTE-19).
+      if (res.cleared?.length) setComments((all) => all.map((x) => res.cleared.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
       setOthers((os) => os.map((o) => (o.id === res.changeset.id ? res.changeset : o)).filter((o) => o.status === 'open'));
       if (res.nodes.length) {
         onAccepted(res.nodes);
@@ -205,7 +215,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
       const cs = await csPromise.current;
       const res = await api.acceptChangeset(projectId, cs.id);
       onAccepted(res.nodes);
-      if (res.resolved?.length) setComments((cs) => cs.map((x) => res.resolved.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
+      // Adopting clears the questions it answered and the annotations it acted on (ANSWER-04, NOTE-19).
+      if (res.cleared?.length) setComments((cs) => cs.map((x) => res.cleared.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
       const n = res.changeset.items.length;
       toast(`Accepted ${n} edit${n === 1 ? '' : 's'}. Save to send ${n === 1 ? 'it' : 'them'} to GitHub.`);
       reset();
@@ -265,10 +276,12 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
-  // An annotation (#15): its kind and a Change's value, or a reply in a thread (NOTE-11). True once it is posted.
-  async function comment(key, anchor, text, { kind, value, replyTo } = {}) {
+  // An annotation (#15): its kind and a Change's value, or a reply in a thread (NOTE-11). A person's reply to a question
+  // is its answer, with the prompt they changed, if they did (ANSWER-01, ANSWER-05). True once it is posted.
+  async function comment(key, anchor, text, { kind, value, replyTo, prompt } = {}) {
     try {
-      const { comment: c, thread } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name, kind, value, replyTo });
+      const { comment: c, thread, prompt: sent } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name, kind, value, replyTo, prompt });
+      if (sent) toast('Answered. An agent applies it through a refinement for you to adopt.');
       // A reply to @Claude also changes its thread: it is addressed to an agent again (NOTE-14).
       setComments((cs) => [...cs.map((x) => (thread && x.id === thread.id && x.itemKey === thread.itemKey ? thread : x)), c]);
       return true;
@@ -277,27 +290,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
       return false;
     }
   }
-  async function resolve(c, resolved) {
-    try {
-      const { comment: next } = await api.resolveComment(projectId, c, resolved);
-      setComments((cs) => cs.map((x) => (x.id === next.id ? next : x)));
-    } catch (err) {
-      fail(err);
-    }
-  }
-
-  // Dealing with an annotation (NOTE-05): answered, applied with what did it, or declined with a reason.
   const replace = (next) => setComments((cs) => cs.map((x) => (x.id === next.id && x.itemKey === next.itemKey ? next : x)));
-  async function settle(c, body) {
-    try {
-      replace((await api.settleComment(projectId, c, { by: name, ...body })).comment);
-      return true;
-    } catch (err) {
-      fail(err);
-      return false;
-    }
-  }
-  // A Problem or Refactor becomes a child task, new in this changeset like any item added here (NOTE-06).
+  // A Problem or Refactor becomes a child task, new in this changeset like any item added here, and clears (NOTE-06).
   async function promote(c) {
     setBusy(true);
     try {
@@ -317,24 +311,34 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
-  // Answering a question (ANSWER-01): it waits, unresolved, for an agent to apply it. The prompt can be read and changed first (ANSWER-05).
-  const answerPrompt = async (c, text) => (await api.answerPrompt(projectId, c, { text, author: name })).prompt;
-  async function answer(c, text, prompt) {
-    try {
-      const { comment: next } = await api.answerComment(projectId, c, { text, author: name, prompt });
-      setComments((cs) => cs.map((x) => (x.id === next.id && x.itemKey === next.itemKey ? next : x)));
-      toast('Answered. An agent applies it through a refinement for you to adopt.');
-      return true;
-    } catch (err) {
-      fail(err);
-      return false;
+  // A plain Comment read clears into this person's conversation log (NOTE-05): kept on the server under their name, or,
+  // with no name, in this browser. One addressed to someone else stays where it is.
+  const hasRead = useCallback((c) => (name ? readBy(c, name) : readHere.has(c.id)), [name, readHere]);
+  async function markRead(list) {
+    const fresh = list.filter((c) => isPlain(c) && !c.resolved && !hasRead(c) && (name ? readsFor(c, name) : !c.to?.length));
+    if (!fresh.length) return;
+    if (!name) {
+      const next = new Set([...readHere, ...fresh.map((c) => c.id)]);
+      setReadHere(next);
+      storage.set(READ, JSON.stringify([...next].slice(-2000)));
+      return;
+    }
+    for (const c of fresh) {
+      try {
+        replace((await api.readComment(projectId, c, { by: name })).comment);
+      } catch {
+        // Not read yet: it is marked again next time it is on screen.
+      }
     }
   }
+
+  // The prompt a reply to a question goes out with, to read and change first (ANSWER-05).
+  const answerPrompt = async (c, text) => (await api.answerPrompt(projectId, c, { text, author: name })).prompt;
 
   const setName = (v) => {
     setNameState(v);
     storage.set(NAME, v || null);
   };
 
-  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, settle, promote, answer, answerPrompt, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, promote, answerPrompt, hasRead, markRead, flush };
 }
