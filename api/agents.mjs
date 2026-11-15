@@ -259,6 +259,9 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const { work } = nextWork(data.nodes, live);
     const git = gitOf(local);
     const refinements = changesets.filter((cs) => cs.status === 'open' && cs.author === me).map((cs) => ({ refinement: cs.id, place: data.nodes.find((n) => n.id === cs.scopeId)?.title ?? cs.scopeId, items: cs.items.length }));
+    // People's yes or no to this agent's refinements since the last standup (ADOPT-05): declined ones say why.
+    const decided = changesets.filter((cs) => cs.author === me).flatMap((cs) => [...(cs.adopted ?? []).map((d) => ({ ...d, outcome: 'adopted' })), ...(cs.declined ?? []).map((d) => ({ ...d, outcome: 'declined' }))])
+      .filter((d) => !last || d.at > last.at).map((d) => ({ item: d.key, title: title(d.key), outcome: d.outcome, by: d.by, at: d.at, ...(d.reason ? { reason: d.reason } : {}) }));
     const unsaved = pending.filter((n) => n.sync && n.sync !== 'saving').map((n) => ({ item: keyOf(n), title: n.title, state: n.sync }));
     const holding = held.map((item) => ({ item, title: title(item), behaviours: mine.filter((c) => c.item === item).map((c) => c.behaviour), until: mine.find((c) => c.item === item).until }));
 
@@ -267,6 +270,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       ...(last ? { last_connected: last.at, away: span(now - Date.parse(last.at)) } : {}),
       addressed_to_you: {
         ...(answered.length ? { answered: answered.map((c) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text })) } : {}),
+        ...(decided.length ? { your_refinements_decided: decided.slice(-SHOWN) } : {}),
         ...(fresh.filter((c) => watched.has(c.itemKey)).length ? { new_comments: fresh.filter((c) => watched.has(c.itemKey)).slice(-SHOWN).map((c) => ({ item: c.itemKey, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })) } : {}),
       },
       you_hold: holding,

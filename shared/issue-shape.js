@@ -219,3 +219,33 @@ export function editableOf(node) {
 
 /** "None", "n/a" or nothing: no open questions. Mirrors the mapper's reading (api/engine/lifecycle.mjs). */
 export const hasOpenQuestions = (content) => Boolean(contentOf(content)) && !/^(none|n\/a|no open questions)\b/i.test(contentOf(content));
+
+// ---- A refinement against the spec (#13 ADOPT-02) ----------------------------------------------
+
+/**
+ * What a refinement changes in an item, readably: its title, each behaviour (matched by ID) and each other
+ * section, as added, changed or removed. Unchanged parts are left out.
+ * @param {{ title: string, markdown: string }} adopted  the item as the spec holds it
+ * @param {{ title: string, markdown: string }} proposed the refinement's version
+ * @returns {{ title: { before: string, after: string } | null, behaviours: { id: string, change: string, before: string, after: string }[], sections: { name: string, change: string, before: string, after: string }[] }}
+ */
+export function compareItems(adopted, proposed) {
+  const a = parseIssue(adopted.markdown), b = parseIssue(proposed.markdown);
+  const said = (r) => writeBehaviour(r).replace(/^\s*[-*]\s+/, '').replace(/\s+/g, ' ').trim();
+  const rows = (shape) => {
+    const out = new Map();
+    for (const r of parseBehaviours(sectionText(shape, 'Behaviours'))) out.set(r.id || `text:${said(r)}`, said(r));
+    return out;
+  };
+  const changes = (before, after) => [...new Set([...before.keys(), ...after.keys()])].flatMap((k) => {
+    const x = before.get(k) ?? '', y = after.get(k) ?? '';
+    if (x === y) return [];
+    return [{ key: k, change: !x ? 'added' : !y ? 'removed' : 'changed', before: x, after: y }];
+  });
+  const sections = (shape) => new Map([['Head', contentOf(shape.head)], ...shape.sections.filter((s) => s.name !== 'Behaviours').map((s) => [s.name, contentOf(s.raw)])].filter(([, t]) => t));
+  return {
+    title: adopted.title === proposed.title ? null : { before: adopted.title, after: proposed.title },
+    behaviours: changes(rows(a), rows(b)).map(({ key, ...c }) => ({ id: key.startsWith('text:') ? '' : key, ...c })),
+    sections: changes(sections(a), sections(b)).map(({ key, ...c }) => ({ name: key, ...c })),
+  };
+}

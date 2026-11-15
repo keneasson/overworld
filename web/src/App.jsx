@@ -279,6 +279,27 @@ export function App() {
     },
   });
 
+  // Items with someone else's refinement waiting are marked on the map (ADOPT-02), so they can be found.
+  const live = useMemo(() => {
+    const refinements = new Map();
+    const byKey = new Map(editing.others.length && tree ? tree.list.map((x) => [itemKeyOf(x), x]) : []);
+    for (const cs of editing.others)
+      for (const it of cs.items) {
+        const n = !it.new && byKey.get(it.key);
+        if (n) refinements.set(n.id, (refinements.get(n.id) ?? 0) + 1);
+      }
+    return { refinements };
+  }, [editing.others, tree]);
+  // Agents propose through MCP while the map is open: look again when an item opens, and now and then.
+  const { reloadRefinements } = editing;
+  useEffect(() => {
+    if (selectedId) reloadRefinements();
+  }, [selectedId, reloadRefinements]);
+  useEffect(() => {
+    const t = setInterval(() => document.visibilityState === 'visible' && reloadRefinements(), 60000);
+    return () => clearInterval(t);
+  }, [reloadRefinements]);
+
   // The panel's expand handle (EDIT-10): drag to any width, or click to switch between narrow and wide.
   const setWidth = (w) => {
     const next = Math.round(Math.min(Math.max(w, PANEL_MIN), maxWidth()));
@@ -458,6 +479,7 @@ export function App() {
           showLinks={showLinks}
           selectedId={selectedId}
           insets={insets}
+          live={live}
           initialView={initial.view}
           onSelect={onMapSelect}
           onMarker={pick}
@@ -540,7 +562,7 @@ export function App() {
             projection={projection}
             setProjection={setProjection}
           />
-          <Legend lens={lens} tree={tree} />
+          <Legend lens={lens} tree={tree} live={live} />
         </div>
       )}
       {scene && <MapControls onZoom={(f) => mapRef.current?.zoomBy(f)} onOverview={() => mapRef.current?.overview()} />}

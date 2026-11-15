@@ -391,6 +391,43 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
 
     [
       'POST',
+      /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/items\/(issue-\d+|node-[\w-]+)\/(adopt|decline)$/,
+      // A person's yes or no to one item of someone else's refinement (ADOPT-05). Adopting changes the map, and the item
+      // waits for a save like any accepted edit (SYNC-07); declining drops it, with a reason its author sees at standup.
+      // Agents have no tool that reaches this (ADOPT-10).
+      async ({ params: [pid, cid, key, action], body }) => {
+        const cs = await loadChangeset(pid, cid, { open: true });
+        const entry = cs.items.find((it) => it.key === key);
+        if (!entry) throw new HttpError(404, 'That item is not in this refinement');
+        if (entry.new) throw new HttpError(409, 'A new item is adopted with the whole refinement');
+        const now = new Date(clock()).toISOString(); // the agents' clock: its standup reports what was decided since
+        const by = author(body?.by);
+        const { project, nodes } = await loadProject(pid);
+        let changed = [];
+        if (action === 'adopt') {
+          if (conflictsOf({ items: [entry] }, nodes).length) throw Object.assign(new HttpError(409, `Changed since this was proposed: ${entry.nodeTitle}`), { conflicts: [key] });
+          // Open questions keep an item from adoption, as they keep its behaviours from being ready (ADOPT-08).
+          const asked = (await model.comments.list(pid, key)).filter((c) => !c.resolved && c.anchor?.section === 'Open questions');
+          if (openQuestions(entry.after.markdown) || asked.length) throw new HttpError(409, 'It still has open questions: answer them before adopting it');
+          const before = findItem(nodes, key);
+          changed = [markEdited(before, applyTo(before, entry.after, now), stores.forProject(project))];
+          await model.nodes.put(pid, changed);
+          await touchProject(project, nodes.map((n) => (n.id === before.id ? changed[0] : n)));
+        }
+        const decided = { key, nodeTitle: entry.nodeTitle, by, at: now, ...(entry.readyForAdoption?.length ? { readyForAdoption: entry.readyForAdoption } : {}) };
+        if (action === 'adopt') cs.adopted = [...(cs.adopted ?? []), decided];
+        else cs.declined = [...(cs.declined ?? []), { ...decided, reason: text(body?.reason ?? '', 2000, 'reason').trim() }];
+        cs.items = cs.items.filter((it) => it.key !== key);
+        cs.updatedAt = now;
+        // A refinement with nothing left in it is closed: adopted if anything in it was.
+        if (!cs.items.length) Object.assign(cs, cs.adopted?.length ? { status: 'accepted', acceptedAt: now } : { status: 'declined' });
+        await model.changesets.put(pid, cs);
+        return { changeset: cs, nodes: changed };
+      },
+    ],
+
+    [
+      'POST',
       /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/(accept|discard)$/,
       async ({ params: [pid, cid, action] }) => {
         const cs = await loadChangeset(pid, cid, { open: true });

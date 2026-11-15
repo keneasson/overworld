@@ -5,6 +5,7 @@ import {
   RICH_SECTIONS,
   behaviourPrefix,
   blankBehaviour,
+  compareItems,
   isWellFormed,
   nextBehaviourId,
   parseBehaviours,
@@ -130,4 +131,15 @@ test("EDIT-01 the map's 📍 note is never saved as part of the issue", () => {
   const body = `${TEMPLATE}\n\n---\n📍 Placed in api/engine because it names a file there.`;
   assert.deepEqual(splitNote(body), { markdown: TEMPLATE, note: '\n\n---\n📍 Placed in api/engine because it names a file there.' });
   assert.equal(splitNote('A body\n\n---\nwith a rule').note, '');
+});
+
+test('ADOPT-02 a refinement reads against the spec: its title, each behaviour and each section, added, changed or removed', () => {
+  const spec = { title: 'Claims', markdown: 'Part of #1\n\n## Why\n\nAgents collide.\n\n## Behaviours\n\n- CL-01 Given work, when claimed, then it is held.\n- CL-02 Given a claim, when it ends, then it says so.\n\n## Open questions\n\nNone\n' };
+  const proposed = { title: 'Claims that run out', markdown: 'Part of #1\n\n## Why\n\nAgents collide.\n\n## Behaviours\n\n- CL-01 Given work, when claimed, then it is held for two hours.\n- CL-03 Given a held claim, when claimed again, then it lasts longer.\n\n## Acceptance\n\nTwo agents never build the same thing.\n\n## Open questions\n\nNone\n' };
+  const diff = compareItems(spec, proposed);
+  assert.deepEqual(diff.title, { before: 'Claims', after: 'Claims that run out' });
+  assert.deepEqual(diff.behaviours.map((b) => [b.id, b.change]), [['CL-01', 'changed'], ['CL-02', 'removed'], ['CL-03', 'added']]);
+  assert.equal(diff.behaviours[0].after, 'CL-01 Given work, when claimed, then it is held for two hours.');
+  assert.deepEqual(diff.sections.map((x) => [x.name, x.change]), [['Acceptance', 'added']], 'unchanged sections are left out');
+  assert.deepEqual(compareItems(spec, spec), { title: null, behaviours: [], sections: [] });
 });

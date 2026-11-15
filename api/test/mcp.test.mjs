@@ -188,6 +188,23 @@ test('MCP-06 refine and propose open and fill a refinement; an agent marks behav
   assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept/.test(t.name)), 'no tool adopts');
 });
 
+test("ADOPT-05 ADOPT-10 a person adopts or declines an agent's refinement, and the agent hears which, and why, at its standup", async () => {
+  const { agent, rest, pid, clock } = await setup();
+  const a = await agent('Builder');
+  await a.use('standup');
+  clock.now += 60_000;
+  const { refinement } = await a.use('refine', { place: 'issue-10' });
+  await a.use('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: ['CL-01 Given work, when claimed, then it is held for two hours.'] }), ready_for_adoption: ['CL-01'] });
+  await a.use('propose', { refinement, item: 'issue-12', markdown: body({ behaviours: ['BL-01 Given a dependency, when unfinished, then nothing waits.'] }) });
+  await rest('POST', `/api/projects/${pid}/changesets/${refinement}/items/issue-11/adopt`, { by: 'Ken' });
+  await rest('POST', `/api/projects/${pid}/changesets/${refinement}/items/issue-12/decline`, { by: 'Ken', reason: 'Work must wait for its dependency.' });
+  assert.match((await a.use('context', { issue: 'issue-11' })).behaviours[0].text, /two hours/, 'adopted into the spec');
+  assert.match((await a.use('context', { issue: 'issue-12' })).behaviours[0].text, /then this waits/, 'declined: the spec stays');
+  const decided = (await a.use('standup')).addressed_to_you.your_refinements_decided;
+  assert.deepEqual(decided.map((d) => [d.item, d.outcome, d.by, d.reason]), [['issue-11', 'adopted', 'Ken', undefined], ['issue-12', 'declined', 'Ken', 'Work must wait for its dependency.']]);
+  assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept|decline/.test(t.name)), 'the agent itself never adopts');
+});
+
 test('NEW-05 an agent proposes a new item, and it arrives in the refinement the way a person\'s does', async () => {
   const { agent, rest, pid } = await setup();
   const a = await agent('Builder');

@@ -170,10 +170,10 @@ function MapSymbol({ name, size = 14 }) {
 }
 
 // The key to the land (the lens's colours) and to every symbol, fill and badge this map uses (SYM-04).
-export function Legend({ lens, tree }) {
+export function Legend({ lens, tree, live }) {
   const [open, setOpen] = useState(() => !matchMedia('(max-width: 720px)').matches);
   const items = lens.legend(tree);
-  const used = useMemo(() => symbolsInUse(tree), [tree]);
+  const used = useMemo(() => symbolsInUse(tree, live), [tree, live]);
   return (
     <div className={`legend${open ? '' : ' closed'}`}>
       <button className="legend-head" onClick={() => setOpen(!open)} aria-expanded={open}>

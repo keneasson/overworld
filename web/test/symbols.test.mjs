@@ -6,7 +6,7 @@ import { polygonCentroid } from 'd3';
 import { demoProject } from '../../api/seed.mjs';
 import { buildTree, isInside } from '../src/model/tree.js';
 import { LENSES, LENS_BY_ID, statusColor } from '../src/map/lenses.js';
-import { badgesOf, labelFor, symbolsInUse } from '../src/map/labels.js';
+import { badgesOf, labelFor, markersOf, symbolsInUse } from '../src/map/labels.js';
 import { SYMBOL_NAMES, symbolPath } from '../src/map/symbols.js';
 import { buildScene } from '../src/map/scene.js';
 import { fogPatches, hitTest, roads, thresholds } from '../src/map/renderer.js';
@@ -62,6 +62,15 @@ test('SYM-02 FOG-01 a symbol is filled by its status, and the Fog lens puts poor
   assert.ok(deep.length > 0 && deep.every((p) => p.n !== mixed && isInside(p.n, mixed) && p.w > 0.02), 'over its unknown parts, each as thick as its own fog');
   assert.ok(!deep.some((p) => mixed.children.some((ch) => fog.fog(ch) === 0 && isInside(p.n, ch))), 'none over its charted parts');
   assert.deepEqual(patches.map((p) => p.n), [mixed], 'too small on screen to tell its parts apart: one patch');
+});
+
+test('ADOPT-02 an item with a refinement waiting for adoption is marked on the map, and its region counts it', () => {
+  const tree = buildTree([root, item('epic', 'root'), item('a', 'epic', { body: LONG }), item('b', 'epic', { body: LONG })]);
+  const live = { refinements: new Map([['a', 1]]) };
+  assert.deepEqual(badgesOf(tree.byId.get('a'), live), [{ type: 'refine', count: 1 }]);
+  assert.deepEqual(badgesOf(tree.byId.get('a')), [], 'nothing waiting, no mark');
+  assert.ok(markersOf(tree.byId.get('epic'), live).some((m) => m.type === 'refine' && m.count === 1 && m.target === 'a'), 'the region holds it, and leads to it');
+  assert.ok(symbolsInUse(tree, live).badges.some((b) => b.symbol === 'refine'), 'the legend explains it');
 });
 
 test('SYM-03 badges show pull requests, agents, comments and open questions, and questions never change the terrain', () => {
