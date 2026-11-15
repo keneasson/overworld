@@ -6,7 +6,7 @@
 
 import { APP_NAME } from '../shared/brand.js';
 import { ROOT_ID, ValidationError } from '../shared/schema.js';
-import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { editableOf, hasOpenQuestions, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { Refused } from './agents.mjs';
 import { behavioursOf, blockersOf, buildingOf, isFinished, keyOf, nextWork, stateOf } from './work.mjs';
 
@@ -295,7 +295,8 @@ export function createMcp({ model, agents, call, log = console }) {
           const known = new Set(behavioursOf({ ...node, title: proposed.title, body: proposed.markdown, url: '' }).map((b) => b.id));
           const unknown = ready.filter((id) => !known.has(id));
           if (unknown.length) throw new ValidationError(`Not behaviours of this item: ${unknown.join(', ')}`);
-          if (sectionText(parseIssue(proposed.markdown), 'Open questions').replace(/^none\.?$/i, '')) throw new Refused('It still has open questions, so its behaviours can\'t be ready for adoption yet');
+          // Read the way the map and adoption read it: "None. (Decided …)" has no open questions (ADOPT-08).
+          if (hasOpenQuestions(sectionText(parseIssue(proposed.markdown), 'Open questions'))) throw new Refused('It still has open questions, so its behaviours can\'t be ready for adoption yet');
           item.readyForAdoption = ready;
           await model.changesets.put(pid, changeset);
         }

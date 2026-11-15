@@ -8,6 +8,8 @@ const SAVE_AFTER_MS = 700;
 const SYNC_POLL_MS = 2000; // while a save is on its way to GitHub
 const SYNC_POLL_TRIES = 20;
 const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
+// Who a changeset is by, as the API writes it: a person's name, or "Name (id)" for an agent.
+const authorOf = (name) => String(name ?? '').trim().slice(0, 80) || 'Someone';
 
 /**
  * Editing the project's items in the panel, one at a time (#41 EDIT-09, EDIT-13). Every edit goes into the
@@ -16,6 +18,7 @@ const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
  */
 export function useItemEditing({ projectId, tree, setComments, onAccepted, onRemoved, reloadNodes, toast, fail }) {
   const [changeset, setChangeset] = useState(null);
+  const [others, setOthers] = useState([]); // open refinements by someone else: an agent or another person (ADOPT-02)
   const [drafts, setDrafts] = useState(() => new Map());
   const [generation, setGeneration] = useState(0); // remounts the documents after an accept or a discard
   const [conflicts, setConflicts] = useState(() => new Set());
@@ -26,6 +29,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
   const pending = useRef(new Map());
   const csPromise = useRef(null);
   const polls = useRef(null);
+  const mine = useRef(null);
+  mine.current = changeset?.id ?? null;
 
   // Pick up where the project was left: its open changeset.
   useEffect(() => {
@@ -33,14 +38,18 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     let cancelled = false;
     csPromise.current = null;
     setChangeset(null);
+    setOthers([]);
     setDrafts(new Map());
     setConflicts(new Set());
     api
       .listChangesets(projectId)
       .then(({ changesets }) => {
         if (cancelled) return;
-        const open = changesets.filter((c) => c.status === 'open').at(-1) ?? null;
+        // Yours is the open one you wrote; anyone else's is a refinement to look at and adopt or decline.
+        const all = changesets.filter((c) => c.status === 'open');
+        const open = all.filter((c) => c.author === authorOf(storage.get(NAME))).at(-1) ?? null;
         setChangeset(open);
+        setOthers(all.filter((c) => c !== open));
         if (open) {
           csPromise.current = Promise.resolve(open);
           setDrafts(new Map(open.items.map((it) => [it.key, it.after])));
@@ -59,6 +68,39 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     },
     [],
   );
+
+  // Pick up refinements made since: an agent proposes through MCP while the map is open.
+  const reloadRefinements = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const { changesets } = await api.listChangesets(projectId);
+      setOthers(changesets.filter((c) => c.status === 'open' && c.id !== mine.current));
+    } catch (err) {
+      fail(err);
+    }
+  }, [projectId, fail]);
+
+  // Adopt or decline one item of someone else's refinement (ADOPT-05). Adopting changes the map and waits for a save.
+  async function decide(cs, key, action, reason = '') {
+    setBusy(true);
+    try {
+      const res = await api.decideChangesetItem(projectId, cs.id, key, action, { by: name, reason });
+      setOthers((os) => os.map((o) => (o.id === res.changeset.id ? res.changeset : o)).filter((o) => o.status === 'open'));
+      if (res.nodes.length) {
+        onAccepted(res.nodes);
+        setGeneration((g) => g + 1);
+        toast('Adopted. Save to send it to GitHub.');
+      } else toast('Declined');
+      return true;
+    } catch (err) {
+      fail(err);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+  const adopt = (cs, key) => decide(cs, key, 'adopt');
+  const decline = (cs, key, reason) => decide(cs, key, 'decline', reason);
 
   const ensureChangeset = useCallback(() => {
     csPromise.current ??= api.createChangeset(projectId, { author: name }).then(({ changeset: cs }) => {
@@ -242,5 +284,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     storage.set(NAME, v || null);
   };
 
-  return { changeset, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, flush };
 }

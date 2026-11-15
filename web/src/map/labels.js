@@ -6,8 +6,8 @@ import { hasOpenQuestions, parseIssue, sectionText, splitNote } from '@shared/is
 import { STATUS_FILLS, statusColor, statusKey } from './lenses.js';
 
 // Badges in the order they sit beside a symbol.
-export const BADGES = ['pull', 'agent', 'comment', 'question'];
-export const BADGE_LABEL = { pull: 'Open pull request', agent: 'Agent working on it', comment: 'Unresolved comments', question: 'Open questions' };
+export const BADGES = ['pull', 'agent', 'refine', 'comment', 'question'];
+export const BADGE_LABEL = { pull: 'Open pull request', agent: 'Agent working on it', comment: 'Unresolved comments', question: 'Open questions', refine: 'Refinement waiting for adoption' };
 export const KIND_SYMBOL_LABEL = { project: 'Project', area: 'Area', epic: 'Epic', feature: 'Feature', story: 'Story', task: 'Task', bug: 'Bug', behavior: 'Behaviour' };
 
 /** The title without the "#12 " an issue's title starts with on the map. */
@@ -28,7 +28,7 @@ export function openQuestionCount(n) {
 
 /**
  * The badges an item carries, in order, each with its count.
- * @param {object} live   what the map knows beyond the nodes, by node id: { agents: Map<id, n>, comments: Map<id, n> }
+ * @param {object} live   what the map knows beyond the nodes, by node id: { agents, comments, refinements: Map<id, n> }
  */
 export function badgesOf(n, live = {}) {
   const counts = {
@@ -36,6 +36,7 @@ export function badgesOf(n, live = {}) {
     pull: n.status === 'done' || n.status === 'rejected' ? 0 : (n.pulls?.length ?? 0),
     agent: live.agents?.get(n.id) ?? 0,
     comment: live.comments?.get(n.id) ?? 0,
+    refine: live.refinements?.get(n.id) ?? 0,
     question: openQuestionCount(n),
   };
   return BADGES.filter((b) => counts[b] > 0).map((type) => ({ type, count: counts[type] }));
@@ -44,7 +45,7 @@ export function badgesOf(n, live = {}) {
 // ---------- markers: what a place holds (#46) ----------
 
 // In the order they sit beside a symbol: what needs someone first.
-export const MARKERS = ['fire', 'fog', 'question', 'pull', 'agent', 'comment'];
+export const MARKERS = ['fire', 'fog', 'question', 'refine', 'pull', 'agent', 'comment'];
 export const MARKER_LABEL = { fire: 'Open bug', fog: 'Fog: behaviour nobody has defined yet', ...BADGE_LABEL };
 const CODE_FIRE_LABEL = 'Code with an open bug';
 const PRIORITY = { P0: 0, P1: 1, P2: 2, P3: 3 };
@@ -61,13 +62,16 @@ function ownCounts(n, live) {
 }
 
 const rollups = new WeakMap();
+const liveRollups = new WeakMap(); // one cache per `live`: it is rebuilt whenever what the map knows changes
 /**
  * What an item holds (MARK-02), and for a region everything inside it rolled up into one marker per kind
  * with a count (MARK-04): [{ type, count, target, on }]. `target` is the item choosing the marker goes to
  * (the most urgent bug, else the first in map order); `on` is 'code' when an open bug sits in code (MARK-03).
  */
 export function markersOf(n, live) {
-  if (!live && rollups.has(n)) return rollups.get(n);
+  if (live && !liveRollups.has(live)) liveRollups.set(live, new WeakMap());
+  const cache = live ? liveRollups.get(live) : rollups;
+  if (cache.has(n)) return cache.get(n);
   const totals = new Map();
   const add = (type, count, item) => {
     const t = totals.get(type);
@@ -86,7 +90,7 @@ export function markersOf(n, live) {
     const { rank, ...m } = totals.get(t);
     return t === 'fire' && isCode(n) ? { ...m, on: 'code' } : m;
   });
-  if (!live) rollups.set(n, out);
+  cache.set(n, out);
   return out;
 }
 

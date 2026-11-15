@@ -337,6 +337,50 @@ test('NEW-03 a new item is on the map at once, needing improvement, and a refres
   assert.equal((await call('POST', `/api/projects/${pid}/save`, {})).body.saved.length, 0, 'a save leaves it alone until it is adopted');
 });
 
+test("ADOPT-02 ADOPT-05 a person adopts an item of someone else's refinement: the item takes its text and waits for a save, and who adopted it is recorded", async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const proposed = four.replace('then it is a token.', 'then it is a token, never a number.');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: proposed });
+  assert.doesNotMatch((await map()).find((n) => n.title.startsWith('#4 ')).body, /never a number/, 'the spec is unchanged until adoption');
+
+  const res = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' });
+  assert.equal(res.status, 200);
+  const adopted = (await map()).find((n) => n.title.startsWith('#4 '));
+  assert.match(adopted.body, /never a number/);
+  assert.equal(adopted.sync, 'unsaved', 'adopting sends nothing to GitHub: a save does');
+  assert.equal(res.body.changeset.status, 'accepted', 'nothing left in it, so the refinement closes');
+  assert.equal(res.body.changeset.adopted[0].by, 'Ken');
+  assert.ok(res.body.changeset.adopted[0].at);
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'adopted once');
+});
+
+test('ADOPT-05 a person declines an item of a refinement: it is dropped, the spec stays, and the reason is kept', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think about the vibe', markdown: 'Vibes only.' });
+  const before = await map();
+  const res = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-5/decline`, { by: 'Ken', reason: 'Too vague.' });
+  assert.equal(res.body.changeset.status, 'declined');
+  assert.deepEqual(res.body.changeset.declined.map((d) => [d.key, d.by, d.reason]), [['issue-5', 'Ken', 'Too vague.']]);
+  assert.deepEqual(await map(), before);
+});
+
+test("ADOPT-08 an item of a refinement that still has open questions can't be adopted", async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('None.', '- Which vault?') });
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'a question in its text');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('a token.', 'a token, kept.') });
+  const { comment } = (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text: 'Which vault?' })).body;
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'a question asked on it');
+  assert.doesNotMatch((await map()).find((n) => n.title.startsWith('#4 ')).body, /kept/);
+  await call('PATCH', `/api/projects/${pid}/comments/issue-4/${comment.id}`, { resolved: true });
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200, 'answered, it can be adopted');
+});
+
 test('NEW-06 a new item dropped before adoption, or in a discarded refinement, is gone and never reaches GitHub', async () => {
   const { shop, call, pid, node, map } = await shopProject();
   const count = shop.issues.length;
