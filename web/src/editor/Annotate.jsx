@@ -1,13 +1,40 @@
 // The comment box and the thread (#15): the same in the editor and on the map. The box is headed by where the
 // annotation goes and quotes what was picked (NOTE-10), offers the fixed kinds (NOTE-01) and a Change's value
-// (NOTE-02), and posts with ⌘/Ctrl+Enter (NOTE-12).
+// (NOTE-02), and posts with ⌘/Ctrl+Enter (NOTE-12). Everything said is written and shown like the document (EDIT-15).
 
-import { useState } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import { NOTE_KINDS, NOTE_KIND_HINT, NOTE_KIND_LABEL, answers, initials, isColour, kindOf } from '@shared/annotations.js';
 import { Icon } from '../components/Icon.jsx';
+import { commentHtml } from './comment-text.js';
+
+const TextBox = lazy(() => import('./TextBox.jsx'));
 
 const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const posts = (e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey);
+
+/** A box to write in, formatted like the document; a plain one does the same job while the editor loads. */
+function Box({ value, onChange, onSubmit, label, placeholder, autoFocus, className }) {
+  const plain = (
+    <textarea
+      autoFocus={autoFocus}
+      aria-label={label}
+      rows={2}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => posts(e) && (e.preventDefault(), onSubmit())}
+      placeholder={placeholder}
+      maxLength={4000}
+    />
+  );
+  return (
+    <Suspense fallback={plain}>
+      <TextBox value={value} onChange={onChange} onSubmit={onSubmit} label={label} placeholder={placeholder} autoFocus={autoFocus} className={className} />
+    </Suspense>
+  );
+}
+
+/** What was said, as the markdown it was written in, mentions standing out (NOTE-14). */
+const SaidText = ({ text }) => <div className="comment-text" dangerouslySetInnerHTML={{ __html: commentHtml(text) }} />;
 
 /** What the annotation is about: where, then the words, the image, or what kind of thing it is. */
 function About({ heading, quote, what, src }) {
@@ -65,15 +92,13 @@ export function Composer({ heading, quote, what, src, onPost, onCancel }) {
           </button>
         ))}
       </div>
-      <textarea
+      <Box
         autoFocus
-        aria-label="Write a comment"
-        rows={2}
+        label="Write a comment"
         value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => posts(e) && post(e)}
+        onChange={setText}
+        onSubmit={post}
         placeholder={`${kind === 'question' ? 'Ask…' : kind === 'change' ? 'What to change… e.g. Make this blue' : kind === 'refactor' ? 'What to refactor, and to what…' : 'Comment…'} @Claude hands it to an agent`}
-        maxLength={4000}
       />
       {kind === 'change' && (
         <label className="note-value-field">
@@ -116,11 +141,6 @@ function Status({ c }) {
   return lines;
 }
 
-/** Mentions stand out in what was said (NOTE-14). */
-function Words({ text }) {
-  return text.split(/(@[A-Za-z][\w.-]*)/g).map((part, i) => (i % 2 ? <span key={i} className="note-mention">{part}</span> : part));
-}
-
 function Said({ c, children }) {
   return (
     <div className={`comment${c.resolved ? ' resolved' : ''}`}>
@@ -132,9 +152,7 @@ function Said({ c, children }) {
         <time dateTime={c.createdAt}>{when(c.createdAt)}</time>
         {children}
       </div>
-      <p>
-        <Words text={c.text} />
-      </p>
+      <SaidText text={c.text} />
       {c.refinement && <p className="note-status">Proposed in refinement {c.refinement}, waiting for adoption on this item.</p>}
     </div>
   );
@@ -212,14 +230,13 @@ export function Thread({ heading, quote, what, src, moved, thread, you, onReply,
         <Said key={c.id} c={c} />
       ))}
       <form className="comment-form" onSubmit={reply}>
-        <textarea
-          aria-label={answering ? 'Answer' : 'Reply'}
-          rows={1}
+        <Box
+          className="reply"
+          label={answering ? 'Answer' : 'Reply'}
           value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => posts(e) && reply(e)}
+          onChange={setText}
+          onSubmit={reply}
           placeholder={answering ? 'Answer… goes to an agent to apply (⌘/Ctrl+Enter posts)' : 'Reply… (⌘/Ctrl+Enter posts)'}
-          maxLength={4000}
         />
         <button type="submit" disabled={!text.trim() || busy}>
           Reply

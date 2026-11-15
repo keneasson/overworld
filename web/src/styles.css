@@ -2426,6 +2426,13 @@ span.note-kind {
   margin-top: 2px;
   overflow-wrap: anywhere;
 }
+.comment .comment-text p {
+  margin: 0 0 4px;
+  white-space: normal;
+}
+.comment .comment-text p:last-child {
+  margin-bottom: 0;
+}
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) .text-box-text {
     background: #2a2a2a;

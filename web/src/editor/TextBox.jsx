@@ -12,13 +12,13 @@ import { SelectionMenu } from './SelectionMenu.jsx';
 /** `value` and `onChange` are markdown; `onSubmit` runs on ⌘/Ctrl+Enter. */
 export default function TextBox({ value, onChange, onSubmit, label, placeholder = '', autoFocus = false, className = '' }) {
   const live = useRef({});
-  live.current = { onChange, onSubmit };
+  live.current = { onChange, onSubmit, placeholder };
   const said = useRef(value);
   const editor = useEditor({
     extensions: [
       ...EXTENSIONS,
       Markdown,
-      Placeholder.configure({ placeholder }),
+      Placeholder.configure({ placeholder: () => live.current.placeholder }),
       Extension.create({ name: 'post', addKeyboardShortcuts: () => ({ 'Mod-Enter': () => (live.current.onSubmit?.(), true) }) }),
     ],
     content: value,
@@ -36,6 +36,10 @@ export default function TextBox({ value, onChange, onSubmit, label, placeholder 
     said.current = value;
     editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false });
   }, [editor, value]);
+  // A new placeholder (the comment's kind changed) shows straight away.
+  useEffect(() => {
+    if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr.setSelection(editor.state.selection));
+  }, [editor, placeholder]);
   return (
     <div className={`text-box ${className}`}>
       {editor && <SelectionMenu editor={editor} />}
