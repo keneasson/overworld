@@ -8,6 +8,7 @@ import { APP_NAME } from '../shared/brand.js';
 import { ROOT_ID, ValidationError } from '../shared/schema.js';
 import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { Refused } from './agents.mjs';
+import { awaitsApplying } from './answers.mjs';
 import { behavioursOf, blockersOf, buildingOf, isFinished, keyOf, nextWork, stateOf } from './work.mjs';
 
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26'];
@@ -160,13 +161,15 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     next_work: {
-      description: 'Behaviours ready to build that nobody has claimed, grouped by issue and in priority order. Work waiting on an unfinished dependency is left out; context(issue) says what blocks it.',
+      description: 'Behaviours ready to build that nobody has claimed, grouped by issue and in priority order. Work waiting on an unfinished dependency is left out; context(issue) says what blocks it. Answered questions waiting to be written into the spec come first, each with its prompt.',
       input: { limit: { type: 'number', description: 'How many issues, at most (default 5).' } },
       async run({ pid }, args) {
         const { nodes } = await mapOf(pid);
         const { work, blocked } = nextWork(nodes, (await agents.liveClaims(pid)).live);
         const limit = Math.min(50, Math.max(1, Number(args.limit) || 5));
-        return { work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}) };
+        // An answer its asker hasn't come back for is anyone's to apply (ANSWER-03).
+        const answers = (await agents.answersToApply(pid, { nodes })).filter((a) => a.forAnyone).slice(0, limit).map(answerOf);
+        return { ...(answers.length ? { answers_to_apply: answers } : {}), work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}) };
       },
     },
 
@@ -203,7 +206,8 @@ export function createMcp({ model, agents, call, log = console }) {
           }),
           acceptance: sectionText(shape, 'Acceptance') || undefined,
           out_of_scope: sectionText(shape, 'Out of scope') || undefined,
-          open_questions: [sectionText(shape, 'Open questions'), ...open.filter((c) => c.anchor?.section === 'Open questions').map((c) => `${c.text} (${c.author})`)].filter((q) => q && !/^none\.?$/i.test(q)),
+          open_questions: [sectionText(shape, 'Open questions'), ...open.filter((c) => c.anchor?.section === 'Open questions').map((c) => `${c.text} (${c.author})${awaitsApplying(c) ? ': answered, waiting to be applied' : ''}`)].filter((q) => q && !/^none\.?$/i.test(q)),
+          ...(open.some(awaitsApplying) ? { answers_to_apply: (await agents.answersToApply(pid, { nodes, comments })).map(answerOf) } : {}),
           discussion: {
             open: open.filter((c) => c.anchor?.section !== 'Open questions').slice(-10).map((c) => ({ on: c.anchor?.behaviour ?? c.anchor?.section, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
             ...(comments.length - open.length ? { resolved: `${comments.length - open.length} resolved comments` } : {}),
@@ -265,6 +269,8 @@ export function createMcp({ model, agents, call, log = console }) {
         title: { type: 'string', description: 'Leave out to keep it.' },
         markdown: { type: 'string', description: 'The full new markdown. Leave out to keep it.' },
         ready_for_adoption: ids('Behaviour IDs whose conversation has converged.'),
+        answers: ids('Ids of the answered questions this proposal applies; they resolve when it is adopted.'),
+        item_ready: { type: 'boolean', description: 'With answers: the item is ready once adopted, because nothing else is open.' },
         request_key: requestKey,
       },
       required: ['refinement', 'item'],
@@ -288,7 +294,8 @@ export function createMcp({ model, agents, call, log = console }) {
           item.readyForAdoption = ready;
           await model.changesets.put(pid, changeset);
         }
-        return { refinement: changeset.id, item: keyOf(node), proposed: Boolean(item), ready_for_adoption: item?.readyForAdoption ?? [] };
+        const applies = await agents.applyAnswers(pid, changeset, item, { answers: list(args.answers), ready: args.item_ready });
+        return { refinement: changeset.id, item: keyOf(node), proposed: Boolean(item), ready_for_adoption: item?.readyForAdoption ?? [], ...applies };
       },
     },
 
@@ -393,6 +400,8 @@ export function createMcp({ model, agents, call, log = console }) {
 }
 
 const list = (v) => (Array.isArray(v) ? v.map(String).filter(Boolean) : v ? [String(v)] : []);
+
+const answerOf = (a) => ({ item: a.question.itemKey, question_id: a.question.id, question: a.question.text, answer: a.question.answer.text, answered_by: a.question.answer.by, ...(a.asker && !a.forAnyone ? { held_for: a.asker } : {}), prompt: a.prompt() });
 
 const noteOf = (n) => ({ item: n.itemKey, at: n.at, by: `${n.agentName} (${n.agentId})`, behaviours: n.behaviours, ...(n.reason === 'expired' ? { expired: true } : {}), note: n.note });
 

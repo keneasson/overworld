@@ -1804,6 +1804,65 @@ button.danger.armed {
   opacity: 0.4;
   cursor: default;
 }
+.answer {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid #b06000;
+}
+.answer-state {
+  flex: 1;
+  text-align: right;
+  color: #b06000;
+  font-weight: 600;
+}
+.answer-state.applied {
+  color: #137333;
+}
+.answer-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.answer-form textarea {
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid #e8d9a8;
+  border-radius: 6px;
+  background: #fff;
+  color: #202124;
+  font: inherit;
+  resize: vertical;
+}
+.answer-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.answer-prompt textarea {
+  max-height: 320px;
+  font: 12px/1.45 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+.answer-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+.answer-actions button[type='submit'] {
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 15px;
+  background: #b06000;
+  color: #fff;
+  font-weight: 600;
+}
+.answer-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .conflict {
   margin: 0;
   padding: 8px 10px;
@@ -1841,6 +1900,17 @@ button.danger.armed {
   :root:not([data-theme='light']) .comment-list .anchor {
     background: #3a3220;
     color: #fdd663;
+  }
+  :root:not([data-theme='light']) .answer-form textarea {
+    background: #2a2a2a;
+    color: #e8eaed;
+    border-color: #5a4d2c;
+  }
+  :root:not([data-theme='light']) .answer-state {
+    color: #fdd663;
+  }
+  :root:not([data-theme='light']) .answer-state.applied {
+    color: #81c995;
   }
   :root:not([data-theme='light']) .comment-head time {
     color: #c9b27a;

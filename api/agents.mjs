@@ -5,6 +5,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ValidationError, newId } from '../shared/schema.js';
 import { nextWork, behavioursOf, blockersOf, isWork, keyOf } from './work.mjs';
+import { awaitsApplying, promptOf } from './answers.mjs';
+import { openQuestions } from './engine/lifecycle.mjs';
 
 const CALLS_PER_MINUTE = 120;
 const CLAIM_MINUTES = { default: 120, max: 480 };
@@ -176,6 +178,47 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     return { released: released.map((c) => c.behaviour), items };
   }
 
+  /**
+   * Answers waiting to be written into the spec (ANSWER-03). Each is for the agent that asked it, for a claim's length
+   * after it was answered or last handed to that agent; after that, or when a person asked it, it is any agent's work.
+   * One already being applied in an open refinement is nobody else's.
+   */
+  async function answersToApply(projectId, { nodes, comments, changesets } = {}) {
+    [nodes, comments, changesets] = await Promise.all([nodes ?? model.projects.getWithNodes(projectId).then((d) => d.nodes), comments ?? model.comments.list(projectId), changesets ?? model.changesets.list(projectId)]);
+    const open = new Set(changesets.filter((cs) => cs.status === 'open').map((cs) => cs.id));
+    const agentIds = new Set((await model.agents.list(projectId)).map((a) => a.id));
+    const hold = CLAIM_MINUTES.default * 60_000;
+    return comments.filter((c) => awaitsApplying(c) && !open.has(c.answer.refinement)).map((c) => {
+      const askedBy = c.author.match(/\((a[\w-]+)\)$/)?.[1];
+      const asker = agentIds.has(askedBy) ? askedBy : null;
+      const heldUntil = asker ? Date.parse(c.answer.handedAt ?? c.answer.at) + hold : 0;
+      return { question: c, asker, forAnyone: clock() > heldUntil, prompt: () => promptOf({ nodes, comments: comments.filter((x) => x.itemKey === c.itemKey), question: c }) };
+    });
+  }
+
+  /**
+   * A proposal that applies answers (ANSWER-04): it names the questions it settles, and can ask for the item to be ready.
+   * Adopting it resolves them (answers.mjs, settleAnswers). Returns what the proposal now applies.
+   */
+  async function applyAnswers(projectId, changeset, item, { answers = [], ready } = {}) {
+    if (!answers.length && ready == null) return {};
+    if (!item) throw new Refused('Nothing is proposed for this item, so it applies no answer');
+    const live = new Set((await model.changesets.list(projectId)).filter((cs) => cs.status === 'open').map((cs) => cs.id));
+    const taken = [];
+    for (const id of answers) {
+      const c = await model.comments.get(projectId, { itemKey: item.key, id });
+      if (!c || !awaitsApplying(c)) throw new ValidationError(`${id} isn't an answered question on this item`);
+      if (c.answer.refinement && c.answer.refinement !== changeset.id && live.has(c.answer.refinement)) throw new Refused(`${id} is already being applied in refinement ${c.answer.refinement}`);
+      taken.push(c);
+    }
+    if (ready && openQuestions(item.after.markdown)) throw new Refused('Its Open questions section still has something in it, so it can\'t be ready');
+    item.answers = [...new Set([...(item.answers ?? []), ...answers])];
+    if (ready != null) item.itemReady = Boolean(ready);
+    await model.changesets.put(projectId, changeset);
+    for (const c of taken) await model.comments.put(projectId, { ...c, answer: { ...c.answer, refinement: changeset.id } });
+    return { answers: item.answers, item_ready: Boolean(item.itemReady) };
+  }
+
   /** A standing decision or correction for the project, attributed to whoever made it (MCP-10). */
   async function remember(projectId, by, text) {
     const fact = { id: newId(), at: iso(), text: said(text ?? '', 2000, 'fact'), by };
@@ -243,8 +286,13 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const notesOn = Object.fromEntries(await Promise.all([...watched].map(async (i) => [i, await model.handoffs.list(projectId, i)])));
     const title = (key) => data.nodes.find((n) => keyOf(n) === key)?.title ?? key;
 
-    // Answered: open at the last standup, or asked since, and resolved now. Each is reported once.
-    const answered = last ? asked.filter((c) => c.resolved && ((last.openQuestions ?? []).includes(c.id) || c.createdAt > last.at)) : [];
+    // Answered and waiting to be applied: addressed to the agent that asked, with the prompt, until it is (ANSWER-03).
+    // It is handed over again each standup, so it stays this agent's for a claim's length after it last came back.
+    const toApply = (await answersToApply(projectId, { nodes: data.nodes, comments, changesets })).filter((a) => a.asker === agent.id);
+    for (const a of toApply) await model.comments.put(projectId, { ...a.question, answer: { ...a.question.answer, handedAt: iso(now) } });
+    // Resolved: open at the last standup, or asked since, and resolved now. Each is reported once.
+    const resolvedNow = last ? asked.filter((c) => c.resolved && ((last.openQuestions ?? []).includes(c.id) || c.createdAt > last.at)) : [];
+    const answered = [...toApply.map((a) => ({ c: a.question, prompt: a.prompt() })), ...resolvedNow.map((c) => ({ c }))];
     const fresh = last ? comments.filter((c) => c.author !== me && c.createdAt > last.at) : [];
     // Claims that ran out: noticed just now, or since the last standup (each left a note on its item).
     const ranOut = [...new Map([...expired.filter((c) => c.owner === agent.id).map((c) => ({ behaviour: c.behaviour, item: c.item, at: c.until })),
@@ -266,7 +314,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       mode,
       ...(last ? { last_connected: last.at, away: span(now - Date.parse(last.at)) } : {}),
       addressed_to_you: {
-        ...(answered.length ? { answered: answered.map((c) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text })) } : {}),
+        ...(answered.length ? { answered: answered.map(({ c, prompt }) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text, ...(prompt ? { question_id: c.id, answer: c.answer.text, answered_by: c.answer.by, prompt } : {}) })) } : {}),
         ...(fresh.filter((c) => watched.has(c.itemKey)).length ? { new_comments: fresh.filter((c) => watched.has(c.itemKey)).slice(-SHOWN).map((c) => ({ item: c.itemKey, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })) } : {}),
       },
       you_hold: holding,
@@ -299,13 +347,13 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         remembered: (await model.facts.list(projectId)).map((f) => ({ fact: f.text, by: f.by?.name, at: f.at.slice(0, 10) })),
       };
     }
-    report.first_step = firstStep({ mode, git, ranOut, answered, holding, work, refinements, title });
+    report.first_step = firstStep({ mode, git, ranOut, answered: answered.map(({ c, prompt }) => ({ title: title(c.itemKey), prompt })), holding, work, refinements });
 
     await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !c.resolved).map((c) => c.id) } });
     return report;
   }
 
-  return { callsPerMinute, standup, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
+  return { callsPerMinute, standup, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
 }
 
 /** How the local copy and GitHub differ, from what the agent saw: null when it sent nothing. */
@@ -327,11 +375,13 @@ function gitOf(local) {
   };
 }
 
-/** One suggestion: unfinished local work first, then catching up, then answers, then held work, then the next work. */
-function firstStep({ mode, git, ranOut, answered, holding, work, refinements, title }) {
+/** One suggestion: unfinished local work first, then catching up, then answers to apply or read, then held work, then the next work. */
+function firstStep({ mode, git, ranOut, answered, holding, work, refinements }) {
+  const apply = answered.filter((a) => a.prompt);
   const local = git && (git.uncommitted?.length || git.unpushed?.length || git.ahead);
   if (local && ranOut.length && !holding.length) return `You have local work on ${git.branch ?? 'this branch'} and your claim on ${ranOut.map((c) => c.behaviour).join(', ')} ran out: claim it again, or hand it off, before you carry on.`;
   if (git?.behind) return `Pull first: ${git.behind} commit${git.behind === 1 ? '' : 's'} on GitHub you don't have yet.`;
+  if (apply.length) return `Apply the answer to your question on ${apply[0].title}: follow its prompt in addressed_to_you.answered${apply.length > 1 ? `, then the other ${apply.length - 1}` : ''}.`;
   if (local) return `Finish what's local on ${git.branch ?? 'this branch'}: ${git.uncommitted?.length ? 'commit, then ' : ''}push.`;
   if (answered.length) return `Read the answer${answered.length === 1 ? '' : 's'} on ${[...new Set(answered.map((a) => a.title))].join(', ')}.`;
   if (holding.length) return `Carry on with ${holding[0].title} (${holding[0].behaviours.join(', ')}); your claim holds until ${holding[0].until}.`;
