@@ -43,7 +43,7 @@ function AnswerForm({ question, onAnswer, onPrompt, onCancel }) {
     try {
       const p = await onPrompt(question, text.trim());
       setBuilt(p);
-      setPrompt((was) => was ?? p);
+      setPrompt(p);
     } catch {
       // The editor's toast says what went wrong.
     } finally {

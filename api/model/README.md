@@ -74,7 +74,7 @@ agents' tokens first. The token itself is never stored.
 | Save a changeset (edits, accept, discard) | `changesets.put(projectId, changeset)` | PutItem |
 | Every comment in a project, by item then time | `comments.list(projectId)` | Query `begins_with(SK, COMMENT#)` |
 | One item's comment thread | `comments.list(projectId, itemKey)` | Query `begins_with(SK, COMMENT#<itemKey>#)` |
-| Add, resolve or delete a comment | `comments.get` / `put` / `delete` | GetItem, PutItem, DeleteItem |
+| Add, answer, resolve or delete a comment | `comments.get` / `put` / `delete` | GetItem, PutItem, DeleteItem |
 | Has a one-off thing happened? | `flags.has(name)`, `flags.set(name)` | GetItem, PutItem |
 | A project's summary, without its map | `projects.get(id)` | GetItem |
 | One node (an issue's is `issue-<number>`) | `nodes.get(projectId, id)` | GetItem |
