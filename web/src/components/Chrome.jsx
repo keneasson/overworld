@@ -310,9 +310,23 @@ export function LayerButton({ scene, lensId, setLens, showLinks, setShowLinks, p
   );
 }
 
-export function MapControls({ onZoom, onOverview }) {
+/**
+ * The one way in to commenting (#15 NOTE-10): switched on, whatever is pointed at or tapped, in the text or on the map,
+ * is outlined to comment on (NOTE-15). It stays on after each comment; Esc or the control itself switches it off (NOTE-16).
+ */
+export function CommentToggle({ on, onToggle }) {
+  return (
+    <button type="button" className={`comment-toggle${on ? ' on' : ''}`} aria-pressed={on} onClick={onToggle} title={on ? 'Stop commenting (Esc)' : 'Comment on anything: words, a paragraph, an image or a place on the map'}>
+      <Icon name="comment" size={18} />
+      <span>Comment</span>
+    </button>
+  );
+}
+
+export function MapControls({ onZoom, onOverview, children }) {
   return (
     <div className="map-controls">
+      {children}
       <button onClick={onOverview} aria-label="Zoom all the way out" title="Whole project">
         <Icon name="globe" />
       </button>

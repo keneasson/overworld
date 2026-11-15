@@ -9,6 +9,7 @@ import { ROOT_ID, ValidationError } from '../shared/schema.js';
 import { editableOf, hasOpenQuestions, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { Refused } from './agents.mjs';
 import { awaitsApplying } from './answers.mjs';
+import { isQuestion, kindOf, whereOf } from '../shared/annotations.js';
 import { behavioursOf, blockersOf, buildingOf, isFinished, keyOf, nextWork, stateOf } from './work.mjs';
 
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26'];
@@ -206,10 +207,10 @@ export function createMcp({ model, agents, call, log = console }) {
           }),
           acceptance: sectionText(shape, 'Acceptance') || undefined,
           out_of_scope: sectionText(shape, 'Out of scope') || undefined,
-          open_questions: [sectionText(shape, 'Open questions'), ...open.filter((c) => c.anchor?.section === 'Open questions').map((c) => `${c.text} (${c.author})${awaitsApplying(c) ? ': answered, waiting to be applied' : ''}`)].filter((q) => q && !/^none\.?$/i.test(q)),
+          open_questions: [sectionText(shape, 'Open questions'), ...open.filter(isQuestion).map((c) => `${c.text} (${c.author})${awaitsApplying(c) ? ': answered, waiting to be applied' : ''}`)].filter((q) => q && !/^none\.?$/i.test(q)),
           ...(open.some(awaitsApplying) ? { answers_to_apply: (await agents.answersToApply(pid, { nodes, comments })).map(answerOf) } : {}),
           discussion: {
-            open: open.filter((c) => c.anchor?.section !== 'Open questions').slice(-10).map((c) => ({ on: c.anchor?.behaviour ?? c.anchor?.section, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
+            open: open.filter((c) => !isQuestion(c)).slice(-10).map((c) => ({ on: whereOf(c.anchor), ...(c.anchor?.quote ? { quoting: c.anchor.quote.slice(0, 300) } : {}), kind: kindOf(c), ...(c.value ? { value: c.value } : {}), by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
             ...(comments.length - open.length ? { resolved: `${comments.length - open.length} resolved comments` } : {}),
           },
           handoff_notes: notes.slice(-5).map(noteOf),

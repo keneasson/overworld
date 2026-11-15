@@ -89,6 +89,14 @@ test('EDIT-01 an issue opens as one document, and an edit in it changes only tha
   assert.equal(fromDocument(missing, opened, opened.replace('## Out of scope', '## Out of scope\n\n- Live cursors.')), TEMPLATE);
 });
 
+test('EDIT-01 NOTE-15 an image is in the document where it was written, so it can be commented on, and an edit beside it keeps it', () => {
+  const why = 'The checkout today: ![the old checkout](https://example.com/old.png "Before") and its button.';
+  assert.equal(throughEditor(why), why);
+  assert.equal(throughEditor(why.replace('today', 'right now')), why.replace('today', 'right now'));
+  const alone = 'Before.\n\n![a mock-up](https://example.com/new.png)\n\nAfter.';
+  assert.equal(throughEditor(alone), alone, 'an image on its own line too');
+});
+
 test('EDIT-01 template hints are not content, and go once the section is written', () => {
   const shape = parseIssue('## Behaviours\n\n<!-- One per line -->\n');
   assert.equal(sectionText(shape, 'Behaviours'), '');

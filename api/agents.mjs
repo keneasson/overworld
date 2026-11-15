@@ -5,7 +5,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ValidationError, newId } from '../shared/schema.js';
 import { nextWork, behavioursOf, blockersOf, isWork, keyOf } from './work.mjs';
-import { awaitsApplying, promptOf } from './answers.mjs';
+import { awaitsApplying, isQuestion, promptOf } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 
 const CALLS_PER_MINUTE = 120;
@@ -282,7 +282,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     ]);
     const held = [...new Set(mine.map((c) => c.item))];
     // Items this agent cares about: what it holds now, what it held last time, and where it asked questions.
-    const asked = comments.filter((c) => c.author === me && c.anchor?.section === 'Open questions');
+    const asked = comments.filter((c) => c.author === me && isQuestion(c));
     const watched = new Set([...held, ...(last?.items ?? []), ...asked.map((c) => c.itemKey)]);
     const notesOn = Object.fromEntries(await Promise.all([...watched].map(async (i) => [i, await model.handoffs.list(projectId, i)])));
     const title = (key) => data.nodes.find((n) => keyOf(n) === key)?.title ?? key;

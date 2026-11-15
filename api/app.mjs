@@ -10,7 +10,8 @@ import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './e
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
-import { answerPrompt, isQuestion, settleAnswers } from './answers.mjs';
+import { answerPrompt, settleAnswers } from './answers.mjs';
+import { NOTE_KINDS, annotationOf, cleanAnchor, isQuestion } from '../shared/annotations.js';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
@@ -413,7 +414,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (action === 'adopt') {
           if (conflictsOf({ items: [entry] }, nodes).length) throw Object.assign(new HttpError(409, `Changed since this was proposed: ${entry.nodeTitle}`), { conflicts: [key] });
           // Open questions keep an item from adoption, as they keep its behaviours from being ready (ADOPT-08).
-          const asked = (await model.comments.list(pid, key)).filter((c) => !c.resolved && c.anchor?.section === 'Open questions');
+          const asked = (await model.comments.list(pid, key)).filter((c) => !c.resolved && isQuestion(c));
           if (openQuestions(entry.after.markdown) || asked.length) throw new HttpError(409, 'It still has open questions: answer them before adopting it');
           const before = findItem(nodes, key);
           changed = [markEdited(before, applyTo(before, entry.after, now), stores.forProject(project))];
@@ -475,24 +476,41 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       },
     ],
 
-    // ---- Comments, anchored to a section or a behaviour of one item ----
+    // ---- Annotations (#15): comments with a kind, anchored to the words, block, section or place they are about ----
 
-    ['GET', /^\/api\/projects\/([\w-]+)\/comments$/, async ({ params: [pid] }) => ({ comments: await model.comments.list(pid) })],
-    // One item's thread: the web app loads comments only for what is open, never a whole project's.
-    ['GET', /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)$/, async ({ params: [pid, itemKey] }) => ({ comments: await model.comments.list(pid, itemKey) })],
+    ['GET', /^\/api\/projects\/([\w-]+)\/comments$/, async ({ params: [pid] }) => ({ comments: (await model.comments.list(pid)).map(annotationOf) })],
+    // One item's threads: the web app loads comments only for what is open, never a whole project's.
+    ['GET', /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)$/, async ({ params: [pid, itemKey] }) => ({ comments: (await model.comments.list(pid, itemKey)).map(annotationOf) })],
 
     [
       'POST',
       /^\/api\/projects\/([\w-]+)\/comments$/,
+      // A new annotation is its own thread (NOTE-11); a reply joins one, on the same anchor. Only a Change carries a value (NOTE-02).
       async ({ params: [pid], body }) => {
         await loadProject(pid);
         const itemKey = String(body?.itemKey ?? '');
         if (!KEY.test(itemKey)) throw new ValidationError('itemKey: expected issue-<number> or node-<id>');
-        const a = body?.anchor ?? {};
-        const anchor = a.behaviour ? { behaviour: text(a.behaviour, 40, 'anchor.behaviour') } : { section: text(a.section ?? 'Why', 60, 'anchor.section') };
         const said = text(body?.text ?? '', 4000, 'text').trim();
         if (!said) throw new ValidationError('text: required');
-        const comment = { id: commentId(), itemKey, anchor, text: said, author: author(body?.author), resolved: false, createdAt: new Date(clock()).toISOString() };
+        if (body?.kind != null && !NOTE_KINDS.includes(body.kind)) throw new ValidationError(`kind: one of ${NOTE_KINDS.join(', ')}`);
+        const root = body?.replyTo ? await model.comments.get(pid, { itemKey, id: String(body.replyTo) }) : null;
+        if (body?.replyTo && !root) throw new HttpError(404, 'The thread to reply in is gone');
+        const anchor = root ? root.anchor : cleanAnchor(body?.anchor ?? {});
+        const kind = root ? 'comment' : (body?.kind ?? (anchor.section === 'Open questions' ? 'question' : 'comment'));
+        const value = body?.value == null ? '' : text(body.value, 200, 'value').trim();
+        if (value && kind !== 'change') throw new ValidationError('value: only a Change carries a value');
+        const comment = {
+          id: commentId(),
+          itemKey,
+          anchor,
+          kind,
+          ...(root ? { replyTo: root.id } : {}),
+          text: said,
+          ...(value ? { value } : {}),
+          author: author(body?.author),
+          resolved: false,
+          createdAt: new Date(clock()).toISOString(),
+        };
         await model.comments.put(pid, comment);
         return { comment };
       },
@@ -507,7 +525,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (!comment) throw new HttpError(404, 'Comment not found');
         comment.resolved = Boolean(body?.resolved);
         await model.comments.put(pid, comment);
-        return { comment };
+        return { comment: annotationOf(comment) };
       },
     ],
 
@@ -531,7 +549,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const answer = { text: said, by, at: new Date(clock()).toISOString(), ...(asked && asked !== built.trim() ? { prompt: asked } : {}) };
         const comment = { ...question, answer };
         await model.comments.put(pid, comment);
-        return { comment, prompt: answer.prompt ?? built };
+        return { comment: annotationOf(comment), prompt: answer.prompt ?? built };
       },
     ],
 

@@ -9,6 +9,7 @@ import { parseRepo, importGitHub } from '../github.mjs';
 import { sanitizeNode } from '../../shared/schema.js';
 import { behaviourPrefix, editableOf, isWellFormed, itemKeyOf, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '../../shared/issue-shape.js';
 import { fakeShop } from './fake-github.mjs';
+import { threadsOf } from '../../shared/annotations.js';
 
 async function setup(accessKey = 'secret-key') {
   const dir = await mkdtemp(join(tmpdir(), 'projectmap-'));
@@ -183,11 +184,12 @@ async function shopProject() {
   const shop = fakeShop();
   shop.issues[3].body = 'Part of #1.\n\n## Why\n\nCards need tokens.\n\n## Behaviours\n\n- PAY-10 Given a card, when saved, then it is a token.\n\n## Acceptance\n\n## Out of scope\n\n## Open questions\n\nNone.\n';
   const dir = await mkdtemp(join(tmpdir(), 'projectmap-'));
-  const api = createApi({ model: await createModel({ DATA_FILE: join(dir, 'db.json') }), accessKey: 'k', fetchImpl: shop.fetch, log: { error() {} } });
+  const model = await createModel({ DATA_FILE: join(dir, 'db.json') });
+  const api = createApi({ model, accessKey: 'k', fetchImpl: shop.fetch, log: { error() {} } });
   const call = (method, path, body) => api({ method, path, body, headers: { 'x-projectmap-key': 'k' } });
   const { project, nodes } = (await call('POST', '/api/import/github', { repo: 'octo/shop' })).body;
   const node = (n) => nodes.find((x) => x.title.startsWith(`#${n} `));
-  return { shop, call, pid: project.id, nodes, node, map: async () => (await call('GET', `/api/projects/${project.id}`)).body.nodes };
+  return { shop, model, call, pid: project.id, nodes, node, map: async () => (await call('GET', `/api/projects/${project.id}`)).body.nodes };
 }
 
 test('EDIT-03 edits to several items collect into one changeset, accepted together', async () => {
@@ -278,11 +280,11 @@ test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', 
   await call('POST', `/api/projects/${pid}/refresh`, {});
   const { comments } = (await call('GET', `/api/projects/${pid}/comments`)).body;
   assert.deepEqual(
-    comments.map((c) => [c.itemKey, c.anchor, c.text, c.author]),
+    comments.map((c) => [c.itemKey, c.anchor.behaviour ?? c.anchor.section, c.text, c.author]),
     [
-      ['issue-4', { behaviour: 'PAY-10' }, 'Which vault?', 'QA'],
-      ['issue-4', { section: 'Why' }, 'Agreed.', 'Someone'],
-      ['issue-40', { section: 'Why' }, 'Elsewhere.', 'Someone'],
+      ['issue-4', 'PAY-10', 'Which vault?', 'QA'],
+      ['issue-4', 'Why', 'Agreed.', 'Someone'],
+      ['issue-40', 'Why', 'Elsewhere.', 'Someone'],
     ],
   );
   const id = a.body.comment.id;
@@ -290,6 +292,58 @@ test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', 
   assert.equal((await call('DELETE', `/api/projects/${pid}/comments/issue-4/${id}`)).status, 200);
   assert.equal((await call('DELETE', `/api/projects/${pid}/comments/issue-4/${id}`)).status, 404);
   assert.equal((await call('GET', `/api/projects/${pid}/comments`)).body.comments.length, 2);
+});
+
+test('NOTE-01 NOTE-02 an annotation has a kind and sits on what it is about; a Change keeps its value apart from the words', async () => {
+  const { call, pid, map } = await shopProject();
+  const before = (await map()).find((n) => n.title.startsWith('#4 ')).body;
+  const post = (body) => call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', ...body });
+  const on = { on: 'word', section: 'Why', quote: 'tokens', prefix: 'Cards need ', suffix: '.' };
+  const change = await post({ kind: 'change', anchor: on, text: 'Make this blue', value: ' #EEAA18 ', author: 'Ken' });
+  assert.equal(change.status, 201, JSON.stringify(change.body));
+  const c = change.body.comment;
+  assert.deepEqual([c.kind, c.anchor.quote, c.text, c.value], ['change', 'tokens', 'Make this blue', '#EEAA18']);
+  for (const kind of ['question', 'problem', 'refactor', 'comment']) assert.equal((await post({ kind, anchor: { on: 'section', section: 'Why' }, text: kind })).status, 201);
+  assert.equal((await post({ kind: 'praise', anchor: on, text: 'x' })).status, 400, 'the kinds are fixed');
+  assert.equal((await post({ kind: 'problem', anchor: on, text: 'x', value: 'blue' })).status, 400, 'only a Change carries a value');
+  assert.equal((await post({ anchor: { on: 'phrase', section: 'Why' }, text: 'x' })).status, 400, 'words are quoted');
+  assert.equal((await post({ anchor: { on: 'image', section: 'Why', src: 'https://x/c.png', quote: 'a cat' }, text: 'Too dark' })).status, 201);
+  assert.equal((await post({ anchor: { on: 'place' }, text: 'This region is crowded' })).status, 201);
+  const { comments } = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body;
+  assert.deepEqual(comments.map((x) => x.kind), ['change', 'question', 'problem', 'refactor', 'comment', 'comment', 'comment']);
+  assert.deepEqual(comments.slice(-2).map((x) => x.anchor.on), ['image', 'place']);
+  assert.equal((await map()).find((n) => n.title.startsWith('#4 ')).body, before, 'annotating leaves the issue alone');
+});
+
+test('NOTE-09 comments made before annotations are Comment annotations in the same place, and none is lost', async () => {
+  const { call, model, pid } = await shopProject();
+  const old = [
+    { id: '00000001aaaa', itemKey: 'issue-4', anchor: { behaviour: 'PAY-10' }, text: 'Which vault?', author: 'QA', resolved: false, createdAt: '2026-11-01T00:00:00.000Z' },
+    { id: '00000002aaaa', itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.', author: 'Ken', resolved: true, createdAt: '2026-11-02T00:00:00.000Z' },
+    { id: '00000003aaaa', itemKey: 'issue-4', anchor: { section: 'Open questions' }, text: 'Which provider?', author: 'Builder (a1)', resolved: false, createdAt: '2026-11-03T00:00:00.000Z' },
+  ];
+  for (const c of old) await model.comments.put(pid, c);
+  const { comments } = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body;
+  assert.deepEqual(
+    comments.map((c) => [c.text, c.kind, c.anchor.on, c.anchor.behaviour ?? c.anchor.section, c.resolved]),
+    [
+      ['Which vault?', 'comment', 'behaviour', 'PAY-10', false],
+      ['Agreed.', 'comment', 'section', 'Why', true],
+      ['Which provider?', 'question', 'section', 'Open questions', false],
+    ],
+  );
+});
+
+test('NOTE-11 each annotation is its own thread at its own words, and a reply stays in its thread', async () => {
+  const { call, pid } = await shopProject();
+  const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', ...body })).body.comment;
+  const first = await post({ kind: 'question', anchor: { on: 'word', section: 'Open questions', quote: 'vault' }, text: 'Which one?' });
+  const second = await post({ kind: 'question', anchor: { on: 'word', section: 'Open questions', quote: 'provider' }, text: 'Stripe?' });
+  const reply = await post({ replyTo: first.id, text: 'The PCI one.', author: 'Ken' });
+  assert.deepEqual([reply.anchor, reply.replyTo, reply.kind], [first.anchor, first.id, 'comment']);
+  assert.equal((await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', replyTo: 'gone', text: 'x' })).status, 404);
+  const threads = threadsOf((await call('GET', `/api/projects/${pid}/comments/issue-4`)).body.comments);
+  assert.deepEqual(threads.map((t) => [t.root.id, t.root.anchor.quote, t.replies.map((r) => r.text)]), [[first.id, 'vault', ['The PCI one.']], [second.id, 'provider', []]]);
 });
 
 const newItem = async (call, pid, cid, parentId, kind, extra = {}) => {

@@ -2,11 +2,39 @@
 // markdown passes through them. The tests run the same pipeline in Node, so what they prove holds
 // for the editor in the browser.
 
+import { Node } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import Paragraph from '@tiptap/extension-paragraph';
 import { MarkdownManager } from '@tiptap/markdown';
 
+// Images in an issue (screenshots, mock-ups) show where they are and are saved as they were written, so they can be
+// commented on (#15 NOTE-15) and an edit nearby never drops them.
+const Image = Node.create({
+  name: 'image',
+  inline: true,
+  group: 'inline',
+  atom: true,
+  draggable: false,
+  addAttributes: () => ({ src: { default: null }, alt: { default: '' }, title: { default: null } }),
+  parseHTML: () => [{ tag: 'img[src]' }],
+  renderHTML: ({ HTMLAttributes }) => ['img', { ...HTMLAttributes, loading: 'lazy' }],
+  renderText: ({ node }) => node.attrs.alt ?? '',
+  markdownTokenName: 'image',
+  parseMarkdown: (token) => ({ type: 'image', attrs: { src: token.href, alt: token.text ?? '', title: token.title || null } }),
+  renderMarkdown: (node) => `![${node.attrs.alt ?? ''}](${node.attrs.src}${node.attrs.title ? ` "${node.attrs.title}"` : ''})`,
+});
+
+// A paragraph that is only an image stays a paragraph holding it, so the image is inline wherever it is written.
+const ImageParagraph = Paragraph.extend({
+  parseMarkdown: (token, helpers) => {
+    const tokens = token.tokens || [];
+    if (tokens.length === 1 && tokens[0].type === 'image') return helpers.createNode('paragraph', undefined, helpers.parseInline(tokens));
+    return Paragraph.config.parseMarkdown(token, helpers);
+  },
+});
+
 // "## " starts a section of the issue; "### " and smaller are headings inside one.
-export const EXTENSIONS = [StarterKit.configure({ heading: { levels: [2, 3, 4] }, link: { openOnClick: false, autolink: true } })];
+export const EXTENSIONS = [StarterKit.configure({ heading: { levels: [2, 3, 4] }, link: { openOnClick: false, autolink: true }, paragraph: false }), ImageParagraph, Image];
 
 let manager = null;
 const md = () => (manager ??= new MarkdownManager({ extensions: EXTENSIONS }));

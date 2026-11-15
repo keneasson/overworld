@@ -7,13 +7,13 @@ import { drawMap, hitTest, markerAt, nodeView, overviewView, thresholds, fitScal
  * the parent hears about focus changes and selection through callbacks.
  */
 export const MapView = forwardRef(function MapView(
-  { scene, lens, showLinks, selectedId, insets, initialView, live, onSelect, onMarker, onFocus, onView },
+  { scene, lens, showLinks, selectedId, insets, initialView, live, commenting = false, outlineId = null, onSelect, onMarker, onCommentPick, onFocus, onView },
   ref,
 ) {
   const canvasRef = useRef(null);
   const st = useRef({ transform: zoomIdentity, w: 0, h: 0, dpr: 1, hoverId: null, info: null, frame: 0, ready: false });
   const props = useRef({});
-  props.current = { scene, lens, showLinks, selectedId, insets, live, onSelect, onMarker, onFocus, onView };
+  props.current = { scene, lens, showLinks, selectedId, insets, live, commenting, outlineId, onSelect, onMarker, onCommentPick, onFocus, onView };
   const zoomRef = useRef(null);
 
   const view = () => {
@@ -40,7 +40,7 @@ export const MapView = forwardRef(function MapView(
     const ctx = canvas.getContext('2d');
     const ins = p.insets ?? {};
     const center = [(ins.left ?? 0) + (s.w - (ins.left ?? 0)) / 2, (ins.top ?? 0) + (s.h - (ins.top ?? 0) - (ins.bottom ?? 0)) / 2];
-    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, hoverId: s.hoverId, showLinks: p.showLinks, live: p.live, center, insets: ins, time: still() ? 0 : performance.now() / 1000 });
+    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, hoverId: s.hoverId ?? (p.commenting ? p.outlineId : null), showLinks: p.showLinks, live: p.live, center, insets: ins, time: still() ? 0 : performance.now() / 1000 });
     // Fog drifts: while any is on screen, redraw a few times a second. Nothing moves for people who ask for less motion.
     if (s.info?.drifting && !still() && !s.drift) s.drift = setTimeout(() => ((s.drift = 0), schedule()), 50);
     if (s.info && s.info.focusId !== s.lastFocus) {
@@ -152,16 +152,33 @@ export const MapView = forwardRef(function MapView(
         s.hoverId = id;
         schedule();
       }
-      canvas.style.cursor = id ? 'pointer' : 'grab';
+      canvas.style.cursor = id ? (props.current.commenting ? 'cell' : 'pointer') : 'grab';
     };
-    const onLeave = () => {
+    // A finger leaving the screen is not the pointer leaving the map: the outline a tap made stays (NOTE-15).
+    const onLeave = (e) => {
+      if (e.pointerType !== 'mouse') return;
       s.hoverId = null;
       schedule();
+    };
+    let lastPointer = 'mouse';
+    const onDown = (e) => {
+      lastPointer = e.pointerType;
     };
     const onClick = (e) => {
       const sc = props.current.scene;
       if (!sc || e.defaultPrevented) return;
       const [px, py] = pointer(e);
+      // With the Comment control on, a click picks the place outlined; on a touch screen the first tap outlines it (NOTE-15).
+      if (props.current.commenting) {
+        const id = hitTest(sc, view(), s.info, px, py);
+        if (lastPointer !== 'mouse' && id !== s.hoverId) {
+          s.hoverId = id;
+          schedule();
+          return;
+        }
+        if (id) props.current.onCommentPick?.(id, e.clientX, e.clientY);
+        return;
+      }
       // A marker goes straight to what it counts (MARK-05); anywhere else selects what is under the pointer.
       const marker = markerAt(s.info, px, py);
       if (marker && props.current.onMarker) props.current.onMarker(marker);
@@ -185,6 +202,7 @@ export const MapView = forwardRef(function MapView(
     };
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerleave', onLeave);
+    canvas.addEventListener('pointerdown', onDown);
     canvas.addEventListener('click', onClick);
     canvas.addEventListener('keydown', onKey);
     return () => {
@@ -192,6 +210,7 @@ export const MapView = forwardRef(function MapView(
       sel.on('.zoom', null);
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerleave', onLeave);
+      canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('click', onClick);
       canvas.removeEventListener('keydown', onKey);
       cancelAnimationFrame(s.frame);
@@ -205,7 +224,8 @@ export const MapView = forwardRef(function MapView(
     updateExtent();
     schedule();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, lens, showLinks, selectedId, insets, live]);
+    if (!commenting) st.current.hoverId = null;
+  }, [scene, lens, showLinks, selectedId, insets, live, commenting, outlineId]);
 
   return <canvas ref={canvasRef} className="map-canvas" tabIndex={0} aria-label="Project map. Scroll or pinch to zoom, drag to pan." />;
 });

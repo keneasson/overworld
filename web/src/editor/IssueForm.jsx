@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { Markdown } from '@tiptap/markdown';
 import { Placeholder } from '@tiptap/extensions';
 import { behaviourPrefix, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
+import { initials, kindOf, threadsOf, whereOf } from '@shared/annotations.js';
 import { EXTENSIONS } from './rich-text.js';
 import { fromDocument, sectionAt, toDocument } from './document.js';
 import { IssueShape, refreshNotes } from './shape-extension.js';
+import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './targets.js';
+import { Composer, Thread } from './Annotate.jsx';
 import { Icon } from '../components/Icon.jsx';
+
+const TAP = 10; // a touch that moves less than this is a tap, not a scroll
 
 const HINTS = {
   Why: 'The problem, for whom, and why now.',
@@ -26,165 +31,51 @@ const TOOLS = [
   ['numbered', 'Numbered list', (c) => c.toggleOrderedList(), 'orderedList'],
 ];
 
-const anchorKey = (a) => (a.behaviour ? `b:${a.behaviour}` : `s:${a.section}`);
-const isQuestion = (c) => c.anchor?.section === 'Open questions';
+const LABEL = { phrase: 'these words', paragraph: 'this paragraph', image: 'this image' };
+const labelOf = (t) => (t.on === 'word' ? `“${t.anchor.quote}”` : t.on === 'behaviour' ? t.anchor.behaviour : t.on === 'section' ? t.anchor.section : LABEL[t.on]);
+const below = (rects) => Math.max(0, ...rects.map((r) => r.top + r.height));
 
-/**
- * Writing an answer under a question (ANSWER-01), and the prompt it goes out with, to read and change first (ANSWER-05).
- * The prompt is built by the server, so it is the one an agent gets; left as built, it is built again when it goes.
- */
-function AnswerForm({ question, onAnswer, onPrompt, onCancel }) {
-  const [text, setText] = useState(question.answer?.text ?? '');
-  const [prompt, setPrompt] = useState(question.answer?.prompt ?? null);
-  const [built, setBuilt] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const showPrompt = async () => {
-    setBusy(true);
-    try {
-      const p = await onPrompt(question, text.trim());
-      setBuilt(p);
-      setPrompt(p);
-    } catch {
-      // The editor's toast says what went wrong.
-    } finally {
-      setBusy(false);
-    }
-  };
-  const send = async (e) => {
-    e?.preventDefault();
-    if (!text.trim() || busy) return;
-    setBusy(true);
-    const changed = prompt != null && prompt !== built ? prompt : undefined;
-    if (await onAnswer(question, text.trim(), changed)) onCancel();
-    setBusy(false);
-  };
-  return (
-    <form className="answer-form" onSubmit={send}>
-      <textarea
-        autoFocus
-        aria-label="Write the answer"
-        rows={2}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && send(e)}
-        placeholder="The answer… (⌘/Ctrl+Enter sends)"
-        maxLength={4000}
-      />
-      {prompt != null && (
-        <label className="answer-prompt">
-          <span>The prompt an agent gets. Change it if you like.</span>
-          <textarea aria-label="The prompt an agent gets" rows={8} value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={40000} />
-        </label>
-      )}
-      <div className="answer-actions">
-        <button type="button" className="link-btn" onClick={onCancel}>
-          Cancel
-        </button>
-        <button type="button" className="link-btn" disabled={!text.trim() || busy} onClick={showPrompt}>
-          {prompt == null ? 'See the prompt' : 'Build it again'}
-        </button>
-        <button type="submit" disabled={!text.trim() || busy}>
-          Send answer
-        </button>
-      </div>
-    </form>
-  );
-}
-
-/** A comment thread on one section or behaviour, opened from its marker in the text. */
-function Thread({ anchor, comments, onPost, onResolve, onAnswer, onAnswerPrompt, onClose }) {
-  const [text, setText] = useState('');
-  const [answering, setAnswering] = useState(null); // the question being answered
-  const post = (e) => {
-    e?.preventDefault();
-    if (!text.trim()) return;
-    onPost(text.trim());
-    setText('');
-  };
-  return (
-    <div className="thread" role="dialog" aria-label={`Comments on ${anchor.behaviour ?? anchor.section}`}>
-      <div className="thread-head">
-        <strong>{anchor.behaviour ?? anchor.section}</strong>
-        <button type="button" className="icon-btn small" aria-label="Close comments" onClick={onClose}>
-          <Icon name="close" size={14} />
-        </button>
-      </div>
-      {comments.map((c) => (
-        <div key={c.id} className={`comment${c.resolved ? ' resolved' : ''}`}>
-          <div className="comment-head">
-            <strong>{c.author}</strong>
-            <time dateTime={c.createdAt}>{new Date(c.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time>
-            {isQuestion(c) && !c.resolved && onAnswer && answering !== c.id && (
-              <button type="button" className="link-btn" onClick={() => setAnswering(c.id)}>
-                {c.answer ? 'Change answer' : 'Answer'}
-              </button>
-            )}
-            <button type="button" className="link-btn" onClick={() => onResolve(c, !c.resolved)}>
-              {c.resolved ? 'Reopen' : 'Resolve'}
-            </button>
-          </div>
-          <p>{c.text}</p>
-          {c.answer && answering !== c.id && (
-            <div className="answer">
-              <div className="comment-head">
-                <strong>Answer · {c.answer.by}</strong>
-                <span className={`answer-state${c.resolved ? ' applied' : ''}`}>{c.resolved ? (c.answer.appliedAt ? 'Applied' : 'Resolved') : 'Waiting to be applied'}</span>
-              </div>
-              <p>{c.answer.text}</p>
-            </div>
-          )}
-          {answering === c.id && <AnswerForm question={c} onAnswer={onAnswer} onPrompt={onAnswerPrompt} onCancel={() => setAnswering(null)} />}
-        </div>
-      ))}
-      <form className="comment-form" onSubmit={post}>
-        <textarea
-          autoFocus
-          aria-label="Write a comment"
-          rows={2}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && post(e)}
-          placeholder="Comment on this… (⌘/Ctrl+Enter posts)"
-          maxLength={4000}
-        />
-        <button type="submit" disabled={!text.trim()}>
-          Comment
-        </button>
-      </form>
-    </div>
-  );
+/** The outline around what a comment would be on (NOTE-15): a box per line of words, or one around a block. */
+function Outline({ rects, picked }) {
+  return rects.map((r, i) => <span key={i} className={`note-outline${picked ? ' picked' : ''}`} style={{ left: r.left - 2, top: r.top - 1, width: r.width + 4, height: r.height + 2 }} />);
 }
 
 /**
  * One item as one document (EDIT-01): the title, the head, then each section as a heading.
  * `value` is { title, markdown }, and `onChange` gets the same, with unchanged sections written back exactly as they came.
+ * With the Comment control on (`commenting`, #15 NOTE-10), the text stops being editable and pointing at it outlines
+ * what a comment would be on; a click, or a second tap, opens the comment box there.
  */
-export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, onComment, onResolve, onAnswer, onAnswerPrompt, conflict }) {
+export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, onChange, onComment, onResolve, onAnswer, onAnswerPrompt, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [title, setTitle] = useState(value.title);
-  const [thread, setThread] = useState(null); // { anchor, top }
+  const [thread, setThread] = useState(null); // { id, top }
+  const [hover, setHover] = useState(null); // the target outlined, with its rects
+  const [picked, setPicked] = useState(null); // the target the comment box is open on
   const wrap = useRef(null);
   const opened = useRef(null);
   const live = useRef({});
-  live.current = { title, areaTexts, onChange };
+  live.current = { title, areaTexts, onChange, hover, picked, commenting };
+  const itemLabel = issueNumber ? `#${issueNumber}` : title || 'This item';
 
   const nextId = () => {
     const doc = editor.getMarkdown();
     const rows = parseBehaviours(sectionText(parseIssue(doc), 'Behaviours'));
     return nextBehaviourId(behaviourPrefix(rows, live.current.title), [...live.current.areaTexts, doc]);
   };
-  const onThread = (anchor, button) => {
+  const onThread = (id, button) => {
     const box = wrap.current.getBoundingClientRect();
     const at = button.getBoundingClientRect();
-    setThread((t) => (t && anchorKey(t.anchor) === anchorKey(anchor) ? null : { anchor, top: at.bottom - box.top + 4 }));
+    setPicked(null);
+    setThread((t) => (t?.id === id ? null : { id, top: at.bottom - box.top + 4 }));
   };
 
   const editor = useEditor({
     extensions: [
       ...EXTENSIONS,
       Markdown,
-      IssueShape.configure({ nextId: () => nextId(), onThread: (a, b) => onThread(a, b) }),
+      IssueShape.configure({ nextId: () => nextId(), onThread: (id, b) => onThread(id, b) }),
       Placeholder.configure({
         showOnlyCurrent: false,
         placeholder: ({ editor: e, node, pos }) => {
@@ -204,12 +95,105 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, o
     onUpdate: ({ editor: e }) => opened.current != null && live.current.onChange({ title: live.current.title, markdown: fromDocument(original, opened.current, e.getMarkdown()) }),
   });
 
-  const counts = useMemo(() => {
-    const m = new Map();
-    for (const c of comments) if (!c.resolved) m.set(anchorKey(c.anchor), (m.get(anchorKey(c.anchor)) ?? 0) + 1);
-    return m;
-  }, [comments]);
-  useEffect(() => refreshNotes(editor, counts), [editor, counts]);
+  // Each annotation is its own thread (NOTE-11), marked at its words (NOTE-13); the open one is highlighted.
+  const threads = useMemo(() => threadsOf(comments), [comments]);
+  useEffect(() => refreshNotes(editor, threads.map((t) => t.root), thread?.id ?? null), [editor, threads, thread?.id]);
+
+  const withRects = (t) => t && { ...t, rects: rectsOf(editor.view, t, wrap.current.getBoundingClientRect()) };
+  const pick = (t) => {
+    window.getSelection?.()?.removeAllRanges();
+    setHover(null);
+    setThread(null);
+    setPicked(withRects(t));
+  };
+
+  // The Comment control (NOTE-15): the pointer outlines what it is over; a click picks it, and dragging across words
+  // picks exactly those. On a touch screen a tap outlines, and a second tap on the same thing picks it.
+  useEffect(() => {
+    if (!editor) return undefined;
+    // The view mounts after the editor exists (and again under StrictMode), so it is looked up as each event arrives.
+    const viewNow = () => {
+      try {
+        return editor.isDestroyed || !editor.view.dom ? null : editor.view;
+      } catch {
+        return null;
+      }
+    };
+    const editable = () => !live.current.commenting && viewNow() && (editor.setEditable(true, false), true);
+    if (!commenting) {
+      editable() || setTimeout(editable);
+      setHover(null);
+      setPicked(null);
+      return undefined;
+    }
+    const still = () => live.current.commenting && viewNow() && (editor.setEditable(false, false), true);
+    still() || setTimeout(still);
+    const el = wrap.current;
+    const inText = (e) => Boolean(e.target.closest?.('.issue-doc-text'));
+    let down = null;
+    let touchy = false;
+    const busy = () => Boolean(live.current.picked);
+    const move = (e) => {
+      const view = viewNow();
+      if (e.pointerType !== 'mouse' || e.buttons || busy() || !view) return;
+      const t = inText(e) ? targetAt(view, e.clientX, e.clientY) : null;
+      if (t?.key !== live.current.hover?.key) setHover(withRects(t));
+    };
+    const leave = (e) => e.pointerType === 'mouse' && !busy() && setHover(null);
+    const pointerDown = (e) => {
+      if (!inText(e)) return;
+      touchy = e.pointerType !== 'mouse';
+      down = { x: e.clientX, y: e.clientY, touch: touchy };
+    };
+    const pointerUp = (e) => {
+      const d = down;
+      down = null;
+      const view = viewNow();
+      if (!d || !view || busy() || e.target.closest?.('.note-marker')) return;
+      const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+      const words = selectedTarget(view);
+      if (!d.touch) {
+        if (words) pick(words);
+        else if (moved < 5) {
+          const t = targetAt(view, e.clientX, e.clientY);
+          if (t) pick(t);
+        }
+        return;
+      }
+      if (words) return setHover({ ...withRects(words), touch: true });
+      if (moved >= TAP) return;
+      const t = targetAt(view, e.clientX, e.clientY);
+      if (t && t.key === live.current.hover?.key) pick(t);
+      else setHover(t && { ...withRects(t), touch: true });
+    };
+    // A long press selects words on a phone; dragging its handles changes them.
+    const selection = () => {
+      const view = viewNow();
+      if (!touchy || busy() || !view) return;
+      const words = selectedTarget(view);
+      if (words) setHover({ ...withRects(words), touch: true });
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerleave', leave);
+    el.addEventListener('pointerdown', pointerDown);
+    el.addEventListener('pointerup', pointerUp);
+    document.addEventListener('selectionchange', selection);
+    return () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerleave', leave);
+      el.removeEventListener('pointerdown', pointerDown);
+      el.removeEventListener('pointerup', pointerUp);
+      document.removeEventListener('selectionchange', selection);
+    };
+  }, [editor, commenting]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The outline follows the text when markers or the panel's width move it.
+  useLayoutEffect(() => {
+    if (!picked || !editor) return undefined;
+    const ro = new ResizeObserver(() => setPicked((p) => p && withRects(p)));
+    ro.observe(wrap.current);
+    return () => ro.disconnect();
+  }, [picked?.key, editor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const active = useEditorState({ editor, selector: ({ editor: e }) => Object.fromEntries(TOOLS.map(([, , , mark]) => [mark, Boolean(e?.isActive(mark))])) });
 
@@ -219,8 +203,14 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, o
     onChange({ title: t, markdown });
   };
 
+  const open = thread && threads.find((t) => t.root.id === thread.id);
+  const openAt = open && editor && open.root.anchor?.on !== 'place' ? rangeOf(editor.state.doc, open.root.anchor ?? {}) : null;
+  const onMap = threads.filter((t) => t.root.anchor?.on === 'place');
+  const about = picked && editor ? describe(editor.view, picked) : null;
+  const wider = hover?.touch && editor ? widen(editor.view, hover) : null;
+
   return (
-    <div className="issue-doc" ref={wrap}>
+    <div className={`issue-doc${commenting ? ' commenting' : ''}`} ref={wrap}>
       {conflict && (
         <p className="conflict" role="alert">
           This changed on GitHub after you started editing it. Your version is kept here; compare it with the source before accepting.
@@ -232,6 +222,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, o
         rows={1}
         maxLength={190}
         value={title}
+        readOnly={commenting}
         onChange={(e) => setTitleText(e.target.value.replace(/\n/g, ' '))}
         onKeyDown={(e) => {
           if (e.key !== 'Enter') return;
@@ -239,8 +230,24 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, o
           editor?.commands.focus('start');
         }}
       />
+      {onMap.length > 0 && (
+        <div className="note-row">
+          <span>On the map</span>
+          {onMap.map((t) => (
+            <button
+              key={t.root.id}
+              type="button"
+              className={`note-marker kind-${kindOf(t.root)}${t.root.resolved ? ' resolved' : ''}`}
+              aria-label={`${t.root.author} on the map: ${t.root.text.slice(0, 80)}`}
+              onClick={(e) => onThread(t.root.id, e.currentTarget)}
+            >
+              {initials(t.root.author)}
+            </button>
+          ))}
+        </div>
+      )}
       {editor && (
-        <BubbleMenu editor={editor} className="selection-menu">
+        <BubbleMenu editor={editor} className="selection-menu" shouldShow={({ editor: e, state }) => !live.current.commenting && e.isEditable && !state.selection.empty}>
           {TOOLS.map(([icon, label, run, mark]) => (
             <button
               key={icon}
@@ -258,12 +265,46 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, o
         </BubbleMenu>
       )}
       <EditorContent editor={editor} />
-      {thread && (
+      <div className="note-layer" aria-hidden="true">
+        {hover && !picked && <Outline rects={hover.rects} />}
+        {picked && <Outline rects={picked.rects} picked />}
+      </div>
+      {hover?.touch && !picked && (
+        <div className="note-chip" style={{ top: below(hover.rects) + 6 }}>
+          <button type="button" className="note-chip-go" onClick={() => pick(hover)}>
+            <Icon name="comment" size={14} /> Comment on {labelOf(hover)}
+          </button>
+          {wider && (
+            <button type="button" className="link-btn" onClick={() => setHover({ ...withRects(wider), touch: true })}>
+              Wider
+            </button>
+          )}
+        </div>
+      )}
+      {picked && about && (
+        <div className="thread-pop" style={{ top: below(picked.rects) + 6 }}>
+          <Composer
+            key={picked.key}
+            heading={`${itemLabel} · ${about.where}`}
+            quote={about.quote}
+            what={about.what}
+            src={about.src}
+            onPost={(text, extra) => onComment(picked.anchor, text, extra)}
+            onCancel={() => setPicked(null)}
+          />
+        </div>
+      )}
+      {open && (
         <div className="thread-pop" style={{ top: thread.top }}>
           <Thread
-            anchor={thread.anchor}
-            comments={comments.filter((c) => anchorKey(c.anchor) === anchorKey(thread.anchor))}
-            onPost={(text) => onComment(thread.anchor, text)}
+            key={open.root.id}
+            heading={`${itemLabel} · ${whereOf(open.root.anchor)}`}
+            quote={open.root.anchor?.quote}
+            what={open.root.anchor?.on === 'section' ? 'The whole section' : open.root.anchor?.on === 'place' ? title : null}
+            src={open.root.anchor?.src}
+            moved={openAt?.moved}
+            thread={open}
+            onReply={(text) => onComment(open.root.anchor, text, { replyTo: open.root.id })}
             onResolve={onResolve}
             onAnswer={onAnswer}
             onAnswerPrompt={onAnswerPrompt}

@@ -5,11 +5,11 @@
 import { STATUS_LABEL } from '../shared/schema.js';
 import { editableOf, itemKeyOf } from '../shared/issue-shape.js';
 import { openQuestions } from './engine/lifecycle.mjs';
+import { isQuestion, whereOf } from '../shared/annotations.js';
 
 const SIBLINGS_SHOWN = 30;
 
-/** Is this comment an open question: anchored in Open questions and not resolved? */
-export const isQuestion = (c) => c.anchor?.section === 'Open questions';
+export { isQuestion };
 /** Answered, and waiting for an agent to write the answer into the spec (ANSWER-01). */
 export const awaitsApplying = (c) => isQuestion(c) && Boolean(c.answer) && !c.resolved;
 
@@ -39,12 +39,13 @@ export function answerPrompt({ nodes, comments, question, answer, answeredBy }) 
   const { title, markdown } = editableOf(node);
   const next = wouldBecome(node, comments, question);
   const textQuestions = openQuestions(markdown);
-  const where = question.anchor?.behaviour ? `behaviour ${question.anchor.behaviour}` : 'Open questions';
+  const where = question.anchor?.behaviour ? `behaviour ${question.anchor.behaviour}` : whereOf(question.anchor);
   return [
     `An open question on ${node.title} (${key}) has been answered. Write the answer into the spec. This prompt holds everything you need.`,
     '',
     `The question, in ${where}, asked by ${question.author}:`,
     quote(question.text),
+    ...(question.anchor?.quote ? ['It is about these words there:', quote(question.anchor.quote)] : []),
     '',
     `The answer${answeredBy ? `, from ${answeredBy}` : ''}:`,
     quote(answer),
