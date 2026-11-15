@@ -521,6 +521,11 @@ button {
 .pill-fog {
   background: #80868b;
 }
+.pill-new {
+  background: transparent;
+  color: var(--accent, #1a73e8);
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
 .kind {
   display: inline-block;
   padding: 1px 7px;

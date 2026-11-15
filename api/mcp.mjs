@@ -258,37 +258,48 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     propose: {
-      description: "Propose an item's new text inside a refinement: its title and the whole markdown, in the strict issue shape. Optionally mark behaviours ready for adoption. Nothing changes on the map until a person adopts it.",
+      description: "Propose an item's new text inside a refinement: its title and the whole markdown, in the strict issue shape. Optionally mark behaviours ready for adoption. Nothing changes in the spec until a person adopts it. To propose a new item, give `parent` and `kind` in place of `item`: it appears on the map at once, in the refinement, needing improvement.",
       input: {
         refinement: { type: 'string', description: 'From refine().' },
-        item: { ...place, description: 'The item to change.' },
+        item: { ...place, description: 'The item to change. Leave out for a new item.' },
+        parent: { ...place, description: 'For a new item: where it goes. Its markdown starts from the template, already Part of the parent.' },
+        kind: { type: 'string', enum: ['epic', 'feature', 'story', 'task', 'bug'], description: 'For a new item: what it is (default task).' },
         title: { type: 'string', description: 'Leave out to keep it.' },
         markdown: { type: 'string', description: 'The full new markdown. Leave out to keep it.' },
         ready_for_adoption: ids('Behaviour IDs whose conversation has converged.'),
         request_key: requestKey,
       },
-      required: ['refinement', 'item'],
+      required: ['refinement'],
       changes: true,
       async run({ pid }, args) {
-        const node = find((await mapOf(pid)).nodes, args.item);
+        const cid = encodeURIComponent(String(args.refinement));
+        let node;
+        if (args.item == null) {
+          // A new item arrives in the refinement the same way a person's does (NEW-05).
+          if (args.parent == null) throw new ValidationError('Give the item to change, or a parent and kind for a new one');
+          const parent = find((await mapOf(pid)).nodes, args.parent);
+          node = (await api('POST', `/api/projects/${pid}/changesets/${cid}/new`, { parentId: parent.id, kind: args.kind, title: args.title, markdown: args.markdown })).node;
+        } else node = find((await mapOf(pid)).nodes, args.item);
         const current = editableOf(node);
         const before = await model.changesets.get(pid, String(args.refinement));
         const pending = before?.items.find((it) => it.key === keyOf(node))?.after ?? current;
         const title = args.title ?? pending.title;
         const markdown = args.markdown ?? pending.markdown;
-        const { changeset } = await api('PUT', `/api/projects/${pid}/changesets/${encodeURIComponent(String(args.refinement))}/items`, { key: keyOf(node), title, markdown });
+        const res = await api('PUT', `/api/projects/${pid}/changesets/${cid}/items`, { key: keyOf(node), title, markdown });
+        const { changeset } = res;
         const ready = list(args.ready_for_adoption);
         const item = changeset.items.find((it) => it.key === keyOf(node));
+        const proposed = item?.new ? editableOf(res.node) : item?.after;
         if (ready.length) {
           if (!item) throw new Refused('Nothing is proposed for this item, so nothing can be ready for adoption');
-          const known = new Set(behavioursOf({ ...node, title: item.after.title, body: item.after.markdown, url: '' }).map((b) => b.id));
+          const known = new Set(behavioursOf({ ...node, title: proposed.title, body: proposed.markdown, url: '' }).map((b) => b.id));
           const unknown = ready.filter((id) => !known.has(id));
           if (unknown.length) throw new ValidationError(`Not behaviours of this item: ${unknown.join(', ')}`);
-          if (sectionText(parseIssue(item.after.markdown), 'Open questions').replace(/^none\.?$/i, '')) throw new Refused('It still has open questions, so its behaviours can\'t be ready for adoption yet');
+          if (sectionText(parseIssue(proposed.markdown), 'Open questions').replace(/^none\.?$/i, '')) throw new Refused('It still has open questions, so its behaviours can\'t be ready for adoption yet');
           item.readyForAdoption = ready;
           await model.changesets.put(pid, changeset);
         }
-        return { refinement: changeset.id, item: keyOf(node), proposed: Boolean(item), ready_for_adoption: item?.readyForAdoption ?? [] };
+        return { refinement: changeset.id, item: keyOf(node), ...(item?.new ? { new: true } : {}), proposed: Boolean(item), ready_for_adoption: item?.readyForAdoption ?? [] };
       },
     },
 

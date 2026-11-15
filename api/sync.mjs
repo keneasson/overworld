@@ -111,6 +111,9 @@ export function keepPending(freshNodes, pending, store) {
     if (kept.sync === 'conflict' && old.sync !== 'conflict') conflicts.push(itemKeyOf(old));
     byId.set(old.id, kept);
   }
+  // An item made here whose place is gone from the store's map waits at the top, rather than nowhere.
+  const root = freshNodes.find((n) => n.parentId == null);
+  for (const n of byId.values()) if (n.parentId != null && !byId.has(n.parentId) && root) byId.set(n.id, { ...n, parentId: root.id });
   return { nodes: [...byId.values()], conflicts };
 }
 
@@ -149,6 +152,13 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
     return text.replace(NEW_REF, (whole, id) => mentions.get(id) ?? whole);
   }
 
+  /** Does this text still mention an item made here that is saved and not yet created in the store? */
+  async function waitsForNew(projectId, store, text, job) {
+    const ids = new Set([...text.matchAll(NEW_REF)].map(([, id]) => id));
+    if (!ids.size) return false;
+    return (await model.jobs.list(projectId)).some((j) => j.id !== job.id && !j.ref && ids.has(j.nodeId));
+  }
+
   /** Take one saved item to the store, and say what happened. A new item's create is written down first, so a crash can't make two. */
   async function syncItem(projectId, store, job) {
     const guard = `${GUARD}:${job.key}`;
@@ -165,6 +175,12 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
           ref = (await store.create(want, { guard, epic: job.epic })).ref;
         }
         await model.jobs.put(projectId, { ...job, ref });
+        // It mentions an item still on its way in (an epic and its children, say): come back for it once that one is there.
+        if (await waitsForNew(projectId, store, want.markdown, job)) {
+          const node = await model.nodes.get(projectId, job.nodeId);
+          if (node && !store.refOf(node)) await model.nodes.put(projectId, [store.placed(node, ref)]);
+          return { outcome: 'later', ref };
+        }
       }
       const item = await store.read(ref);
       const theirs = store.version(item);
@@ -249,6 +265,7 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
           log.warn?.(`sync ${projectId}: ${err.message}; next try ${nextAttemptAt}`);
           return { status: 'retrying', until: nextAttemptAt };
         }
+        if (result.outcome === 'later') continue; // created, with its ref kept on the job; its text is written after the others are in
         await finish(projectId, store, job, result, all);
       }
       return { status: 'synced' };

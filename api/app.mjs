@@ -2,15 +2,17 @@
 // Used by the Lambda handler in AWS and by the Vite dev server locally.
 
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
+import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
+import { issueOf, newItemMarkdown, placeOf } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
-import { applyTo, conflictsOf, editableOf, findItem, same } from './edits.mjs';
+import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './edits.mjs';
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
+import { openQuestions } from './engine/lifecycle.mjs';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -137,6 +139,43 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     return cs;
   }
 
+  /**
+   * Drop a refinement's new items, and anything inside them: they never reach the store (NEW-06).
+   * @returns {Promise<{ deleted: string[], updated: object[] }>}
+   */
+  async function dropNew(pid, nodes, ids) {
+    const doomed = new Set(ids.flatMap((id) => (nodes.some((n) => n.id === id) ? subtreeIds(nodes, id) : [])));
+    if (!doomed.size) return { deleted: [], updated: [] };
+    return removeNodes(pid, nodes, doomed);
+  }
+
+  /** Delete nodes, the links to them, and any refinement's mention of them. */
+  async function removeNodes(pid, nodes, doomed) {
+    await model.nodes.delete(pid, [...doomed]);
+    const now = new Date().toISOString();
+    const updated = nodes
+      .filter((n) => !doomed.has(n.id) && n.links?.some((l) => doomed.has(l.to)))
+      .map((n) => ({ ...n, links: n.links.filter((l) => !doomed.has(l.to)), updatedAt: now }));
+    if (updated.length) await model.nodes.put(pid, updated);
+    const gone = new Set(nodes.filter((n) => doomed.has(n.id)).map(itemKeyOf));
+    for (const cs of await model.changesets.list(pid)) {
+      if (cs.status !== 'open' || !cs.items.some((it) => it.new && gone.has(it.key))) continue;
+      await model.changesets.put(pid, { ...cs, items: cs.items.filter((it) => !(it.new && gone.has(it.key))), updatedAt: now });
+    }
+    const { project } = await loadProject(pid);
+    await touchProject(project, nodes.filter((n) => !doomed.has(n.id)).map((n) => updated.find((u) => u.id === n.id) ?? n));
+    return { deleted: [...doomed], updated };
+  }
+
+  /** How a new item's head names its parent: the store's mention, an issue number, #new-<id> for one made here, or nothing for a plain area. */
+  function partOf(store, parent) {
+    const ref = store?.refOf(parent);
+    if (ref) return store.mention(ref);
+    const issue = issueOf(parent);
+    if (issue) return `#${issue.number}`;
+    return parent.refinement || parent.sync ? `#new-${parent.id}` : '';
+  }
+
   const routes = [
     ['GET', /^\/api\/health$/, async () => ({ ok: true, auth: Boolean(expected) }), { public: true }],
 
@@ -244,16 +283,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (nid === ROOT_ID) throw new ValidationError('the project root cannot be deleted');
         const { project, nodes } = await loadProject(pid);
         if (!nodes.some((n) => n.id === nid)) throw new HttpError(404, 'Node not found');
-        const doomed = new Set(subtreeIds(nodes, nid));
-        await model.nodes.delete(pid, [...doomed]);
-        const now = new Date().toISOString();
-        const updated = nodes
-          .filter((n) => !doomed.has(n.id) && n.links?.some((l) => doomed.has(l.to)))
-          .map((n) => ({ ...n, links: n.links.filter((l) => !doomed.has(l.to)), updatedAt: now }));
-        if (updated.length) await model.nodes.put(pid, updated);
-        const remaining = nodes.filter((n) => !doomed.has(n.id));
-        const updatedProject = await touchProject(project, remaining);
-        return { deleted: [...doomed], updated, project: updatedProject };
+        const { deleted, updated } = await removeNodes(pid, nodes, new Set(subtreeIds(nodes, nid)));
+        return { deleted, updated, project: await model.projects.get(project.id) };
       },
     ],
 
@@ -288,6 +319,17 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (!node) throw new HttpError(404, 'No such item on the map');
         const after = version(body, 'item');
         if (!after.title) throw new ValidationError('title: required');
+        if (node.refinement && node.refinement !== cs.id) throw new HttpError(409, 'This item is new in another refinement: it changes there until that one is adopted');
+        if (node.refinement) {
+          // A new item has no spec to protect: its edits change it in place, and everyone sees them (NEW-03).
+          const changed = { ...applyTo(node, after, new Date().toISOString()), status: node.status };
+          if (/^Kind:\s*Epic\b/im.test(after.markdown)) changed.kind = 'epic';
+          await model.nodes.put(pid, [changed]);
+          cs.items = cs.items.map((it) => (it.key === key ? { ...it, nodeTitle: changed.title } : it));
+          cs.updatedAt = changed.updatedAt;
+          await model.changesets.put(pid, cs);
+          return { changeset: cs, node: changed };
+        }
         const at = cs.items.findIndex((it) => it.key === key);
         const base = at >= 0 ? cs.items[at].base : editableOf(node);
         if (same(base, after)) {
@@ -302,25 +344,81 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
 
     [
       'POST',
+      /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/new$/,
+      // A new item in an area (NEW-01): on the map at once, in the strict shape's template, part of this refinement (NEW-02).
+      async ({ params: [pid, cid], body }) => {
+        const cs = await loadChangeset(pid, cid, { open: true });
+        const { project, nodes } = await loadProject(pid);
+        const parent = nodes.find((n) => n.id === body?.parentId) ?? findItem(nodes, String(body?.parentId ?? '')) ?? nodes.find((n) => n.id === cs.scopeId);
+        if (!parent) throw new HttpError(404, 'No such place on the map');
+        const kind = KINDS.includes(body?.kind) && !['project', 'area'].includes(body.kind) ? body.kind : 'task';
+        const now = new Date().toISOString();
+        const title = text(body?.title ?? '', 200, 'title').trim() || `New ${kind}`;
+        const markdown = body?.markdown != null ? text(body.markdown, 19000, 'markdown') : newItemMarkdown({ kind, partOf: partOf(stores.forProject(project), parent), place: placeOf(editableOf(parent).markdown) });
+        const id = newId();
+        const node = { ...applyTo({ ...sanitizeNode({ kind, title, status: 'idea', tags: kind === 'story' ? ['new-feature'] : [] }), id, parentId: parent.id, createdAt: now }, { title, markdown }, now), status: 'idea', refinement: cs.id };
+        await model.nodes.put(pid, [node]);
+        cs.items.push({ key: itemKeyOf(node), nodeTitle: node.title, new: true });
+        cs.updatedAt = now;
+        await model.changesets.put(pid, cs);
+        await touchProject(project, [...nodes, node]);
+        return { changeset: cs, node };
+      },
+      { status: 201 },
+    ],
+
+    [
+      'DELETE',
+      /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/items\/(issue-\d+|node-[\w-]+)$/,
+      // Take an item out of a refinement: its edits go, and a new item goes altogether, never reaching the store (NEW-06).
+      async ({ params: [pid, cid, key] }) => {
+        const cs = await loadChangeset(pid, cid, { open: true });
+        const entry = cs.items.find((it) => it.key === key);
+        if (!entry) throw new HttpError(404, 'That item is not in this refinement');
+        if (!entry.new) {
+          cs.items = cs.items.filter((it) => it.key !== key);
+          cs.updatedAt = new Date().toISOString();
+          await model.changesets.put(pid, cs);
+          return { changeset: cs, deleted: [], updated: [] };
+        }
+        const { nodes } = await loadProject(pid);
+        const node = findItem(nodes, key);
+        const dropped = await dropNew(pid, nodes, node ? [node.id] : []);
+        if (!node) await model.changesets.put(pid, { ...cs, items: cs.items.filter((it) => it.key !== key) });
+        return { changeset: await model.changesets.get(pid, cid), ...dropped };
+      },
+    ],
+
+    [
+      'POST',
       /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/(accept|discard)$/,
       async ({ params: [pid, cid, action] }) => {
         const cs = await loadChangeset(pid, cid, { open: true });
         const now = new Date().toISOString();
         if (action === 'discard') {
+          // The refinement's new items go with it (NEW-06).
+          const { nodes } = await loadProject(pid);
+          const made = nodes.filter((n) => n.refinement === cs.id).map((n) => n.id);
+          const { deleted, updated } = await dropNew(pid, nodes, made);
           Object.assign(cs, { status: 'discarded', updatedAt: now });
           await model.changesets.put(pid, cs);
-          return { changeset: cs, nodes: [] };
+          return { changeset: cs, nodes: updated, deleted };
         }
         if (!cs.items.length) throw new ValidationError('nothing to accept: this changeset has no edits');
         const { project, nodes } = await loadProject(pid);
+        const untitled = nodes.filter((n) => n.refinement === cs.id && !editableOf(n).title.trim());
+        if (untitled.length) throw new ValidationError('every new item needs a title');
         const conflicts = conflictsOf(cs, nodes);
         if (conflicts.length) throw Object.assign(new HttpError(409, `Changed since you started editing: ${conflicts.map((c) => c.nodeTitle).join(', ')}`), { conflicts: conflicts.map((c) => c.key) });
         // Accepting changes the map. Items from a store are then unsaved: nothing reaches the store until a save (SYNC-07).
         const store = stores.forProject(project);
-        const changed = cs.items.map((it) => {
+        const edits = cs.items.filter((it) => !it.new).map((it) => {
           const before = findItem(nodes, it.key);
           return markEdited(before, applyTo(before, it.after, now), store);
         });
+        // New items join the spec, and wait for a save like any accepted edit: a save creates them in the store (NEW-04).
+        const adopted = nodes.filter((n) => n.refinement === cs.id).map(({ refinement, ...n }) => ({ ...n, status: openQuestions(editableOf(n).markdown) ? 'needs_decision' : n.status, updatedAt: now, ...(store ? { sync: 'unsaved' } : {}) }));
+        const changed = [...adopted, ...edits];
         await model.nodes.put(pid, changed);
         const byId = new Map(changed.map((n) => [n.id, n]));
         await touchProject(project, nodes.map((n) => byId.get(n.id) ?? n));

@@ -8,6 +8,7 @@ import { LENS_BY_ID } from './map/lenses.js';
 import { Breadcrumbs, Chips, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
 import { Details, Results } from './components/Panel.jsx';
 import { useItemEditing } from './editor/useItemEditing.js';
+import { isMapped } from './editor/items.js';
 import { Drawer, Unlock } from './components/Drawer.jsx';
 import { ConnectAgent } from './components/ConnectAgent.jsx';
 import { Icon } from './components/Icon.jsx';
@@ -261,7 +262,13 @@ export function App() {
     fail,
     onAccepted: (nodes) => {
       const byId = new Map(nodes.map((n) => [n.id, n]));
-      replaceNodes((ns) => ns.map((n) => byId.get(n.id) ?? n));
+      replaceNodes((ns) => [...ns.map((n) => byId.get(n.id) ?? n), ...nodes.filter((n) => !ns.some((x) => x.id === n.id))]);
+    },
+    onRemoved: (ids, updated = []) => {
+      const gone = new Set(ids);
+      const byId = new Map(updated.map((n) => [n.id, n]));
+      replaceNodes((ns) => ns.filter((n) => !gone.has(n.id)).map((n) => byId.get(n.id) ?? n));
+      setSelectedId((id) => (gone.has(id) ? null : id));
     },
     reloadNodes: async () => {
       const pid = data.project.id;
@@ -323,7 +330,17 @@ export function App() {
   }
 
   // A new item opens in the panel at once, its title ready to write over: there is no form to fill first.
+  // On a map read from GitHub it is part of the open refinement, in the strict shape's template, until it is adopted (NEW-01).
   async function add(parentId, kind) {
+    if (isMapped(tree)) {
+      const node = await editing.addItem(parentId, kind);
+      if (!node) return;
+      replaceNodes((ns) => [...ns, node]);
+      setSelectedId(node.id);
+      pendingFly.current = node.id;
+      toast(`Added a new ${KIND_LABEL[kind].toLowerCase()}. Accept to adopt it, or discard to drop it.`);
+      return;
+    }
     setBusy(true);
     try {
       const { nodes } = await api.createNode(data.project.id, { parentId, kind, title: `New ${KIND_LABEL[kind].toLowerCase()}`, tags: kind === 'story' ? ['new-feature'] : [] });
@@ -339,6 +356,11 @@ export function App() {
   }
 
   async function remove(node) {
+    if (node.refinement) {
+      const deleted = await editing.drop(node);
+      if (deleted) toast(`Dropped ${deleted.length === 1 ? `“${node.title}”` : `${deleted.length} new items`}`);
+      return;
+    }
     setBusy(true);
     try {
       const res = await api.deleteNode(data.project.id, node.id);
