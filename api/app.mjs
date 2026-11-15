@@ -3,7 +3,7 @@
 
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
-import { issueOf, newItemMarkdown, placeOf } from '../shared/issue-shape.js';
+import { issueOf, newItemMarkdown, parseIssue, placeOf, writeIssue } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
 import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './edits.mjs';
@@ -11,7 +11,7 @@ import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
 import { answerPrompt, settleAnswers } from './answers.mjs';
-import { NOTE_KINDS, annotationOf, cleanAnchor, isQuestion, mentionsOf } from '../shared/annotations.js';
+import { NOTE_KINDS, NOTE_KIND_LABEL, annotationOf, cleanAnchor, isQuestion, kindOf, mentionsOf, openByItem, whereOf } from '../shared/annotations.js';
 import { addresseesOf, settleNotes } from './notes.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
@@ -483,6 +483,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     // ---- Annotations (#15): comments with a kind, anchored to the words, block, section or place they are about ----
 
     ['GET', /^\/api\/projects\/([\w-]+)\/comments$/, async ({ params: [pid] }) => ({ comments: (await model.comments.list(pid)).map(annotationOf) })],
+    // What the map badges (NOTE-03, NOTE-04): open annotations of each kind, by item, without sending every thread.
+    ['GET', /^\/api\/projects\/([\w-]+)\/notes$/, async ({ params: [pid] }) => ({ open: openByItem(await model.comments.list(pid)) })],
     // One item's threads: the web app loads comments only for what is open, never a whole project's.
     ['GET', /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)$/, async ({ params: [pid, itemKey] }) => ({ comments: (await model.comments.list(pid, itemKey)).map(annotationOf) })],
 
@@ -547,7 +549,23 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       async ({ params: [pid, itemKey, id], body }) => {
         const comment = await model.comments.get(pid, { itemKey, id });
         if (!comment) throw new HttpError(404, 'Comment not found');
-        comment.resolved = Boolean(body?.resolved);
+        // Dealing with an annotation (NOTE-05): answered, applied (naming the commit, pull request or version that did
+        // it) or declined with a reason. It stays in the item's history either way, and reopening keeps what was said.
+        const outcome = body?.outcome;
+        if (outcome != null && !['answered', 'applied', 'declined', 'resolved'].includes(outcome)) throw new ValidationError('outcome: answered, applied, declined or resolved');
+        const at = new Date(clock()).toISOString();
+        if (outcome) {
+          const reason = text(body?.reason ?? '', 2000, 'reason').trim();
+          if (outcome === 'declined' && !reason) throw new ValidationError('reason: say why it is declined');
+          const link = text(body?.link ?? '', 300, 'link').trim();
+          comment.outcome = { state: outcome, by: author(body?.by), at, ...(reason ? { reason } : {}), ...(link ? { link } : {}) };
+          comment.resolved = true;
+        } else {
+          comment.resolved = Boolean(body?.resolved);
+          if (!comment.resolved && comment.outcome) comment.outcome = undefined;
+        }
+        comment.history = [...(comment.history ?? []), { state: comment.resolved ? (comment.outcome?.state ?? 'resolved') : 'reopened', by: author(body?.by), at }];
+        if (comment.resolved) await model.inbox.delete(pid, id);
         await model.comments.put(pid, comment);
         return { comment: annotationOf(comment) };
       },
@@ -575,6 +593,42 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         await model.comments.put(pid, comment);
         return { comment: annotationOf(comment), prompt: answer.prompt ?? built };
       },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/promote$/,
+      // A Problem or a Refactor becomes a child task in the strict shape, linked back to the annotation (NOTE-06). The
+      // task is new in the person's refinement, like any item they add (NEW-01), and the annotation says where it went.
+      async ({ params: [pid, itemKey, id], body }) => {
+        const note = await model.comments.get(pid, { itemKey, id });
+        if (!note) throw new HttpError(404, 'Comment not found');
+        if (!['problem', 'refactor'].includes(kindOf(note)) || note.replyTo) throw new ValidationError('only a Problem or a Refactor becomes a task');
+        if (note.resolved) throw new HttpError(409, 'This annotation is already dealt with');
+        const { project, nodes } = await loadProject(pid);
+        const parent = findItem(nodes, itemKey);
+        if (!parent) throw new HttpError(404, 'Its item is no longer on the map');
+        const by = author(body?.by);
+        const call = async (method, path, b) => {
+          const res = await handle({ method, path, body: b, trusted: true });
+          if (res.status >= 400) throw new HttpError(res.status, res.body?.error ?? 'Failed');
+          return res.body;
+        };
+        const cid = body?.changeset ? String(body.changeset) : (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: parent.id, author: by })).changeset.id;
+        const first = note.text.split('\n')[0].replace(/@[A-Za-z][\w.-]*\s*/g, '').trim();
+        const title = `${NOTE_KIND_LABEL[kindOf(note)]}: ${first}`.slice(0, 120);
+        const template = newItemMarkdown({ kind: 'task', partOf: partOf(stores.forProject(project), parent), place: placeOf(editableOf(parent).markdown) });
+        const said = note.anchor?.quote ? ` at “${note.anchor.quote.slice(0, 200)}”` : '';
+        const why = `${note.author} raised this ${NOTE_KIND_LABEL[kindOf(note)]} on ${parent.title}, in ${whereOf(note.anchor)}${said}:\n\n${note.text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nFrom annotation ${note.id} on ${itemKey}.`;
+        const markdown = writeIssue(parseIssue(template), { Why: why });
+        const { node, changeset } = await call('POST', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/new`, { parentId: parent.id, kind: 'task', title, markdown });
+        const at = new Date(clock()).toISOString();
+        const comment = { ...note, resolved: true, outcome: { state: 'promoted', by, at, task: itemKeyOf(node), title: node.title }, history: [...(note.history ?? []), { state: 'promoted', by, at }] };
+        await model.comments.put(pid, comment);
+        await model.inbox.delete(pid, id);
+        return { comment: annotationOf(comment), node, changeset };
+      },
+      { status: 201 },
     ],
 
     [

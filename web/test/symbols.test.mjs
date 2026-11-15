@@ -9,6 +9,7 @@ import { LENSES, LENS_BY_ID, statusColor } from '../src/map/lenses.js';
 import { badgesOf, labelFor, markersOf, symbolsInUse } from '../src/map/labels.js';
 import { SYMBOL_NAMES, symbolPath } from '../src/map/symbols.js';
 import { buildScene } from '../src/map/scene.js';
+import { openByItem } from '@shared/annotations.js';
 import { fogPatches, hitTest, roads, thresholds } from '../src/map/renderer.js';
 
 const root = { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' };
@@ -97,6 +98,30 @@ test('SYM-03 badges show pull requests, agents, comments and open questions, and
       assert.equal(Boolean(lens.hatch?.(n)), Boolean(lens.hatch?.(m)), `${lens.name} hatches ${n.id} the same`);
     }
   }
+});
+
+test('NOTE-03 NOTE-04 open annotations badge their item by kind with the number open, a Question joins the "?" until answered, and a Comment adds none', () => {
+  const tree = buildTree([root, item('epic', 'root'), item('a', 'epic', { body: '## Open questions\n- Who signs off?' }), item('b', 'epic')]);
+  const comments = [
+    { id: '1', itemKey: 'node-a', kind: 'question', text: 'Which vault?' },
+    { id: '2', itemKey: 'node-a', kind: 'question', text: 'Which provider?', answer: { text: 'Stripe' } },
+    { id: '3', itemKey: 'node-a', kind: 'problem', text: 'Confusing' },
+    { id: '4', itemKey: 'node-a', kind: 'problem', text: 'Missing label' },
+    { id: '5', itemKey: 'node-a', kind: 'change', text: 'Make this blue', value: '#EEAA18' },
+    { id: '6', itemKey: 'node-a', kind: 'refactor', text: 'Use our graph', resolved: true },
+    { id: '7', itemKey: 'node-b', kind: 'comment', text: 'Nice' },
+    { id: '8', itemKey: 'node-a', replyTo: '3', kind: 'comment', text: 'Agreed' },
+  ];
+  const open = openByItem(comments);
+  const live = { notes: new Map(Object.entries(open).map(([k, v]) => [k.replace('node-', ''), v])) };
+  assert.deepEqual(badgesOf(tree.byId.get('a'), live), [
+    { type: 'problem', count: 2 },
+    { type: 'change', count: 1 },
+    { type: 'question', count: 2 },
+  ]);
+  assert.deepEqual(badgesOf(tree.byId.get('b'), live), [], 'a Comment expects nothing, so it marks nothing');
+  assert.ok(markersOf(tree.byId.get('epic'), live).some((m) => m.type === 'problem' && m.count === 2 && m.target === 'a'), 'a region rolls them up');
+  assert.deepEqual(symbolsInUse(tree, live).badges.map((b) => b.symbol), ['problem', 'change', 'question'], 'the legend explains them');
 });
 
 test('SYM-04 the legend lists every symbol and badge in use on the map and nothing else', () => {

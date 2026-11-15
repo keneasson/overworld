@@ -4,7 +4,7 @@ import { BubbleMenu } from '@tiptap/react/menus';
 import { Markdown } from '@tiptap/markdown';
 import { Placeholder } from '@tiptap/extensions';
 import { behaviourPrefix, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
-import { initials, kindOf, threadsOf, whereOf } from '@shared/annotations.js';
+import { NOTE_KIND_LABEL, OUTCOME_LABEL, initials, kindOf, threadsOf, whereOf } from '@shared/annotations.js';
 import { EXTENSIONS } from './rich-text.js';
 import { fromDocument, sectionAt, toDocument } from './document.js';
 import { IssueShape, refreshNotes } from './shape-extension.js';
@@ -46,7 +46,7 @@ function Outline({ rects, picked }) {
  * With the Comment control on (`commenting`, #15 NOTE-10), the text stops being editable and pointing at it outlines
  * what a comment would be on; a click, or a second tap, opens the comment box there.
  */
-export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, onChange, onComment, onResolve, onAnswer, onAnswerPrompt, conflict }) {
+export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, onChange, onComment, onResolve, onSettle, onPromote, onAnswer, onAnswerPrompt, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [title, setTitle] = useState(value.title);
@@ -206,6 +206,8 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
   const open = thread && threads.find((t) => t.root.id === thread.id);
   const openAt = open && editor && open.root.anchor?.on !== 'place' ? rangeOf(editor.state.doc, open.root.anchor ?? {}) : null;
   const onMap = threads.filter((t) => t.root.anchor?.on === 'place');
+  // Dealt with stays in the item's history (NOTE-05).
+  const settled = threads.filter((t) => t.root.resolved);
   const about = picked && editor ? describe(editor.view, picked) : null;
   const wider = hover?.touch && editor ? widen(editor.view, hover) : null;
 
@@ -245,6 +247,23 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
             </button>
           ))}
         </div>
+      )}
+      {settled.length > 0 && (
+        <details className="note-history">
+          <summary>
+            {settled.length} annotation{settled.length === 1 ? '' : 's'} dealt with
+          </summary>
+          <ul>
+            {settled.map(({ root: c }) => (
+              <li key={c.id}>
+                <button type="button" className="link-btn" onClick={(e) => onThread(c.id, e.currentTarget)}>
+                  <span className={`note-initials kind-${kindOf(c)}`}>{initials(c.author)}</span> {NOTE_KIND_LABEL[kindOf(c)]}: {c.text.slice(0, 60)}
+                </button>
+                <span className="note-outcome">{OUTCOME_LABEL[c.outcome?.state ?? 'resolved']}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {editor && (
         <BubbleMenu editor={editor} className="selection-menu" shouldShow={({ editor: e, state }) => !live.current.commenting && e.isEditable && !state.selection.empty}>
@@ -306,6 +325,8 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
             thread={open}
             onReply={(text) => onComment(open.root.anchor, text, { replyTo: open.root.id })}
             onResolve={onResolve}
+            onSettle={onSettle}
+            onPromote={onPromote}
             onAnswer={onAnswer}
             onAnswerPrompt={onAnswerPrompt}
             onClose={() => setThread(null)}

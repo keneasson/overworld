@@ -120,6 +120,29 @@ export function threadsOf(comments) {
   return [...threads.values()];
 }
 
+// What became of an annotation (NOTE-05): answered, applied (naming what did it), declined with a reason, or promoted
+// to a task of its own (NOTE-06). A Comment is just resolved.
+export const OUTCOMES = ['answered', 'applied', 'declined', 'promoted', 'resolved'];
+export const OUTCOME_LABEL = { answered: 'Answered', applied: 'Applied', declined: 'Declined', promoted: 'Promoted to a task', resolved: 'Resolved' };
+
+/** Is this annotation still asking for something? A question stops asking once it has an answer (NOTE-03). */
+export const isOpen = (c) => !c.replyTo && !c.resolved && !(kindOf(c) === 'question' && c.answer);
+
+/**
+ * Open annotations of each kind but Comment, by item (NOTE-03, NOTE-04): what the map badges.
+ * @returns {Record<string, { question?: number, problem?: number, change?: number, refactor?: number }>}
+ */
+export function openByItem(comments) {
+  const out = {};
+  for (const c of comments) {
+    const kind = kindOf(c);
+    if (kind === 'comment' || !isOpen(c)) continue;
+    const counts = (out[c.itemKey] ??= {});
+    counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  return out;
+}
+
 /** Who a comment mentions (NOTE-14): each @name once, in order. */
 export const mentionsOf = (text = '') => [...new Set([...String(text).matchAll(/(?:^|[^\w@])@([A-Za-z][\w.-]*)/g)].map((m) => m[1].replace(/[.-]+$/, '')))];
 /** "@Claude" (or "@agent") is any agent, whichever comes first. */

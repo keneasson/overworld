@@ -346,6 +346,46 @@ test('NOTE-11 each annotation is its own thread at its own words, and a reply st
   assert.deepEqual(threads.map((t) => [t.root.id, t.root.anchor.quote, t.replies.map((r) => r.text)]), [[first.id, 'vault', ['The PCI one.']], [second.id, 'provider', []]]);
 });
 
+test('NOTE-05 an annotation is answered, applied naming what did it, or declined with a reason, and stays in the item’s history', async () => {
+  const { call, pid } = await shopProject();
+  const post = async (kind, text) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', kind, anchor: { on: 'section', section: 'Why' }, text })).body.comment;
+  const settle = (c, body) => call('PATCH', `/api/projects/${pid}/comments/issue-4/${c.id}`, { by: 'Ken', ...body });
+  const [q, change, problem] = [await post('question', 'Which vault?'), await post('change', 'Say tokens, not numbers'), await post('problem', 'Confusing')];
+  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].question, 1, 'open, so the map badges it');
+  await settle(q, { outcome: 'answered' });
+  await settle(change, { outcome: 'applied', link: 'https://github.com/octo/shop/pull/9' });
+  assert.equal((await settle(problem, { outcome: 'declined' })).status, 400, 'a decline says why');
+  await settle(problem, { outcome: 'declined', reason: 'It reads fine to customers.' });
+  const { comments } = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body;
+  assert.deepEqual(
+    comments.map((c) => [c.resolved, c.outcome.state, c.outcome.link ?? c.outcome.reason ?? null, c.outcome.by]),
+    [
+      [true, 'answered', null, 'Ken'],
+      [true, 'applied', 'https://github.com/octo/shop/pull/9', 'Ken'],
+      [true, 'declined', 'It reads fine to customers.', 'Ken'],
+    ],
+  );
+  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'], undefined, 'dealt with, so no longer badged');
+  const reopened = (await settle(problem, { resolved: false })).body.comment;
+  assert.deepEqual(reopened.history.map((h) => h.state), ['declined', 'reopened'], 'what happened to it is kept');
+});
+
+test('NOTE-06 a Problem or a Refactor is promoted to a child task in the strict shape, linked back to the annotation', async () => {
+  const { call, pid, node } = await shopProject();
+  const post = async (kind) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', kind, anchor: { on: 'word', section: 'Why', quote: 'tokens' }, text: 'Refactor this to use our vault client' })).body.comment;
+  const refactor = await post('refactor');
+  assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${(await post('change')).id}/promote`, {})).status, 400, 'only a Problem or a Refactor');
+  const res = await call('POST', `/api/projects/${pid}/comments/issue-4/${refactor.id}/promote`, { by: 'Ken' });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  const { node: task, comment } = res.body;
+  const md = editableOf(task).markdown;
+  assert.deepEqual([task.kind, task.parentId, task.title], ['task', node(4).id, 'Refactor: Refactor this to use our vault client']);
+  assert.ok(isWellFormed(parseIssue(md)), 'in the strict shape');
+  assert.match(md, /^Part of #4/);
+  assert.match(md, new RegExp(`From annotation ${refactor.id} on issue-4\\.`));
+  assert.deepEqual([comment.resolved, comment.outcome.state, comment.outcome.task], [true, 'promoted', itemKeyOf(task)]);
+});
+
 const newItem = async (call, pid, cid, parentId, kind, extra = {}) => {
   const res = await call('POST', `/api/projects/${pid}/changesets/${cid}/new`, { parentId, kind, ...extra });
   assert.equal(res.status, 201, JSON.stringify(res.body));

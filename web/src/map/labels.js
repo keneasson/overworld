@@ -6,8 +6,18 @@ import { hasOpenQuestions, parseIssue, sectionText, splitNote } from '@shared/is
 import { STATUS_FILLS, statusColor, statusKey } from './lenses.js';
 
 // Badges in the order they sit beside a symbol.
-export const BADGES = ['pull', 'agent', 'refine', 'comment', 'question'];
-export const BADGE_LABEL = { pull: 'Open pull request', agent: 'Agent working on it', comment: 'Unresolved comments', question: 'Open questions', refine: 'Refinement waiting for adoption' };
+// Annotations (#15) badge by kind: a Question joins the "?" badge, and Problems, Changes and Refactors have their own (NOTE-04).
+export const BADGES = ['pull', 'agent', 'refine', 'comment', 'problem', 'change', 'refactor', 'question'];
+export const BADGE_LABEL = {
+  pull: 'Open pull request',
+  agent: 'Agent working on it',
+  comment: 'Unresolved comments',
+  question: 'Open questions',
+  refine: 'Refinement waiting for adoption',
+  problem: 'Problems raised',
+  change: 'Changes asked for',
+  refactor: 'Refactors asked for',
+};
 export const KIND_SYMBOL_LABEL = { project: 'Project', area: 'Area', epic: 'Epic', feature: 'Feature', story: 'Story', task: 'Task', bug: 'Bug', behavior: 'Behaviour' };
 
 /** The title without the "#12 " an issue's title starts with on the map. */
@@ -28,16 +38,22 @@ export function openQuestionCount(n) {
 
 /**
  * The badges an item carries, in order, each with its count.
- * @param {object} live   what the map knows beyond the nodes, by node id: { agents, comments, refinements: Map<id, n> }
+ * @param {object} live   what the map knows beyond the nodes, by node id: { agents, comments, refinements: Map<id, n>,
+ *                        notes: Map<id, { question, problem, change, refactor }> } (open annotations, NOTE-03 NOTE-04)
  */
 export function badgesOf(n, live = {}) {
+  const notes = live.notes?.get(n.id) ?? {};
   const counts = {
+    problem: notes.problem ?? 0,
+    change: notes.change ?? 0,
+    refactor: notes.refactor ?? 0,
     // Pull requests that close an item still matter while the item is open; a done item's are history.
     pull: n.status === 'done' || n.status === 'rejected' ? 0 : (n.pulls?.length ?? 0),
     agent: live.agents?.get(n.id) ?? 0,
     comment: live.comments?.get(n.id) ?? 0,
     refine: live.refinements?.get(n.id) ?? 0,
-    question: openQuestionCount(n),
+    // A Question annotation is a question until it is answered, like one written in Open questions (NOTE-03).
+    question: openQuestionCount(n) + (notes.question ?? 0),
   };
   return BADGES.filter((b) => counts[b] > 0).map((type) => ({ type, count: counts[type] }));
 }
@@ -45,7 +61,7 @@ export function badgesOf(n, live = {}) {
 // ---------- markers: what a place holds (#46) ----------
 
 // In the order they sit beside a symbol: what needs someone first.
-export const MARKERS = ['fire', 'fog', 'question', 'refine', 'pull', 'agent', 'comment'];
+export const MARKERS = ['fire', 'fog', 'question', 'problem', 'change', 'refactor', 'refine', 'pull', 'agent', 'comment'];
 export const MARKER_LABEL = { fire: 'Open bug', fog: 'Fog: behaviour nobody has defined yet', ...BADGE_LABEL };
 const CODE_FIRE_LABEL = 'Code with an open bug';
 const PRIORITY = { P0: 0, P1: 1, P2: 2, P3: 3 };

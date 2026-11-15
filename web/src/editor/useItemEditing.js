@@ -286,6 +286,37 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
+  // Dealing with an annotation (NOTE-05): answered, applied with what did it, or declined with a reason.
+  const replace = (next) => setComments((cs) => cs.map((x) => (x.id === next.id && x.itemKey === next.itemKey ? next : x)));
+  async function settle(c, body) {
+    try {
+      replace((await api.settleComment(projectId, c, { by: name, ...body })).comment);
+      return true;
+    } catch (err) {
+      fail(err);
+      return false;
+    }
+  }
+  // A Problem or Refactor becomes a child task, new in this changeset like any item added here (NOTE-06).
+  async function promote(c) {
+    setBusy(true);
+    try {
+      await flush();
+      const cs = await ensureChangeset();
+      const res = await api.promoteComment(projectId, c, { changeset: cs.id, by: name });
+      setChangeset(res.changeset);
+      onAccepted([res.node]);
+      replace(res.comment);
+      toast(`Made it a task: “${res.node.title}”. Accept to adopt it.`);
+      return res.node;
+    } catch (err) {
+      fail(err);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Answering a question (ANSWER-01): it waits, unresolved, for an agent to apply it. The prompt can be read and changed first (ANSWER-05).
   const answerPrompt = async (c, text) => (await api.answerPrompt(projectId, c, { text, author: name })).prompt;
   async function answer(c, text, prompt) {
@@ -305,5 +336,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     storage.set(NAME, v || null);
   };
 
-  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, answer, answerPrompt, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, settle, promote, answer, answerPrompt, flush };
 }
