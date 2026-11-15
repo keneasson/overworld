@@ -1316,6 +1316,24 @@ button.danger.armed {
 }
 
 /* ---------- overlays ---------- */
+.update-chip {
+  position: absolute;
+  z-index: 61;
+  left: 50%;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #323232;
+  color: #fff;
+  font: inherit;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
 .toasts {
   position: absolute;
   z-index: 60;
