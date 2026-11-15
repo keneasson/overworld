@@ -2366,3 +2366,75 @@ span.note-kind {
 .note-history .note-log-reply {
   padding-left: 26px;
 }
+
+/* A comment, reply or answer written like the document (EDIT-15). */
+.text-box {
+  flex: 1;
+  min-width: 0;
+}
+.text-box-text {
+  min-height: 2.6em;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 6px 9px;
+  border: 1px solid #e8d9a8;
+  border-radius: 6px;
+  background: #fff;
+  color: #202124;
+  outline: none;
+  overflow-wrap: anywhere;
+}
+.text-box-text:focus {
+  border-color: #b06000;
+}
+.text-box.reply .text-box-text {
+  min-height: 0;
+}
+.text-box-text > *,
+.comment-text > * {
+  margin: 0 0 4px;
+}
+.text-box-text > :last-child,
+.comment-text > :last-child {
+  margin-bottom: 0;
+}
+.text-box-text ul,
+.text-box-text ol,
+.comment-text ul,
+.comment-text ol {
+  padding-left: 20px;
+}
+.text-box-text code,
+.comment-text code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  font-size: 0.92em;
+}
+.text-box-text a,
+.comment-text a {
+  color: var(--accent);
+}
+.text-box-text .is-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: var(--muted);
+  pointer-events: none;
+}
+.comment-text {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .text-box-text {
+    background: #2a2a2a;
+    color: #e8eaed;
+    border-color: #5a4d2c;
+  }
+}
+:root[data-theme='dark'] .text-box-text {
+  background: #2a2a2a;
+  color: #e8eaed;
+  border-color: #5a4d2c;
+}
