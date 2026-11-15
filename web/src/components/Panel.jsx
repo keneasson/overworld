@@ -4,8 +4,8 @@ import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
 import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
-import { editableOf, issueOf, itemKeyOf } from '@shared/issue-shape.js';
-import { isEditable } from '../editor/items.js';
+import { compareItems, editableOf, hasOpenQuestions, issueOf, itemKeyOf, parseIssue, sectionText } from '@shared/issue-shape.js';
+import { isEditable, isMapped } from '../editor/items.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
 
@@ -97,6 +97,108 @@ function EditBar({ editing }) {
   );
 }
 
+const CHANGE_LABEL = { added: 'Added', changed: 'Changed', removed: 'Removed' };
+const when = (iso) => {
+  const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (!Number.isFinite(mins)) return '';
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 48 * 60) return `${Math.round(mins / 60)} h ago`;
+  return new Date(iso).toLocaleDateString();
+};
+
+/** One change in a refinement: what the spec says now, struck through, and what is proposed. */
+function Change({ label, change, before, after, ready }) {
+  return (
+    <li className={`change change-${change}`}>
+      <div className="change-head">
+        <span className="change-label">{label}</span>
+        <span className={`change-kind change-kind-${change}`}>{CHANGE_LABEL[change]}</span>
+        {ready && (
+          <span className="pill pill-ready" title="The conversation has converged: marked ready for adoption">
+            Ready for adoption
+          </span>
+        )}
+      </div>
+      {before && <del className="change-before">{before}</del>}
+      {after && <ins className="change-after">{after}</ins>}
+    </li>
+  );
+}
+
+/**
+ * Someone else's refinement of this item (ADOPT-02): who proposed it and when, what it changes against the spec,
+ * which behaviours are ready for adoption (ADOPT-04), and the person's yes or no (ADOPT-05). Open questions keep it
+ * from adoption (ADOPT-08).
+ */
+function Refinement({ cs, item, node, editing }) {
+  const [declining, setDeclining] = useState(false);
+  const [reason, setReason] = useState('');
+  const diff = useMemo(() => compareItems(editableOf(node), item.after), [node, item.after]);
+  const ready = new Set(item.readyForAdoption ?? []);
+  const questions = hasOpenQuestions(sectionText(parseIssue(item.after.markdown), 'Open questions'));
+  const nothing = !diff.title && !diff.behaviours.length && !diff.sections.length;
+  const key = item.key;
+  return (
+    <section className="refinement" aria-label={`Refinement by ${cs.author}`}>
+      <div className="refinement-head">
+        <Icon name="edit" size={16} />
+        <span>
+          Refinement by <strong>{cs.author}</strong> · {when(cs.updatedAt)}
+        </span>
+      </div>
+      <p className="refinement-note">The spec is unchanged until it is adopted. This is what it proposes:</p>
+      {nothing ? (
+        <p className="empty-note">It proposes the item as it already is.</p>
+      ) : (
+        <ul className="changes">
+          {diff.title && <Change label="Title" change="changed" before={diff.title.before} after={diff.title.after} />}
+          {diff.behaviours.map((b, i) => (
+            <Change key={`b${b.id || i}`} label={b.id || 'Behaviour'} change={b.change} before={b.before} after={b.after} ready={ready.has(b.id)} />
+          ))}
+          {diff.sections.map((c) => (
+            <Change key={`s${c.name}`} label={c.name === 'Head' ? 'Part of · Kind · Place' : c.name} change={c.change} before={c.before} after={c.after} />
+          ))}
+        </ul>
+      )}
+      {ready.size > 0 && (
+        <p className="refinement-ready">
+          Ready for adoption: {[...ready].join(', ')}
+        </p>
+      )}
+      {questions && <p className="refinement-blocked">It still has open questions. Answer them before adopting it.</p>}
+      {declining ? (
+        <div className="refinement-decline">
+          <textarea aria-label="Why decline (optional)" placeholder="Why not? (optional: its author sees this)" value={reason} maxLength={2000} rows={2} onChange={(e) => setReason(e.target.value)} />
+          <div className="edit-actions">
+            <button type="button" onClick={() => setDeclining(false)} disabled={editing.busy}>
+              Keep it
+            </button>
+            <button type="button" className="armed" onClick={() => editing.decline(cs, key, reason)} disabled={editing.busy}>
+              Decline
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="edit-actions">
+          <button type="button" onClick={() => setDeclining(true)} disabled={editing.busy}>
+            Decline…
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => editing.adopt(cs, key)}
+            disabled={editing.busy || questions}
+            title={questions ? 'Answer its open questions first' : 'Adopt it: the item takes this text, and waits for a save to reach GitHub'}
+          >
+            <Icon name="check" size={16} /> Adopt
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /**
  * One item, open beside the map, and edited where it is (#41 EDIT-09): its text is the document editor, its
  * properties change in place (EDIT-11), and comments sit on what they are about. The panel only ever holds this
@@ -107,11 +209,16 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
   const s = node.stats;
   const key = itemKeyOf(node);
   const issue = issueOf(node);
-  const editable = isEditable(tree, node);
+  // A new item changes only in the refinement it was made in (NEW-02).
+  const theirs = Boolean(node.refinement) && node.refinement !== editing.changeset?.id;
+  const editable = isEditable(tree, node) && !theirs;
   const path = pathOf(node).slice(0, -1);
   const incoming = tree.incoming.get(node.id) ?? [];
-  const childKind = CHILD_KIND[node.kind] ?? 'task';
+  // On a map read from GitHub everything added is an issue: under the project or an area, that starts with an epic.
+  const childKind = isMapped(tree) && ['project', 'area'].includes(node.kind) ? 'epic' : (CHILD_KIND[node.kind] ?? 'task');
   const isRoot = node.depth === 0;
+  // Other people's and agents' proposed edits to this item (ADOPT-02); their new items show as new, below.
+  const proposals = editing.others.flatMap((cs) => cs.items.filter((it) => it.key === key && !it.new && it.after).map((it) => ({ cs, item: it })));
   // Every behaviour already written, drafts included, so a new behaviour's ID never collides.
   const texts = useMemo(() => (editable ? tree.list.map((n) => editing.drafts.get(itemKeyOf(n))?.markdown ?? n.body ?? '') : []), [editable, tree, editing.drafts]);
   const readOnly = (
@@ -144,6 +251,16 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
         <HealthPill health={s.health} />
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
         {s.vague && <span className="pill pill-fog">Poorly defined</span>}
+        {node.refinement && (
+          <span className="pill pill-new" title={theirs ? 'New in someone else’s refinement: it changes there until it is adopted.' : 'New in your refinement: Accept adopts it, Discard drops it.'}>
+            New · needs improvement
+          </span>
+        )}
+        {proposals.length > 0 && (
+          <span className="pill pill-refine" title="Someone else has proposed a change to this item: see it below">
+            Refinement proposed
+          </span>
+        )}
         <SyncBadge node={node} />
       </div>
 
@@ -174,17 +291,20 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
             Source
           </a>
         )}
-        {!isRoot && (
+        {!isRoot && !theirs && (
           <button className={confirmDelete ? 'armed' : ''} onClick={() => (confirmDelete ? onDelete(node) : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
             <span className="action-icon danger">
               <Icon name="trash" />
             </span>
-            {confirmDelete ? `Delete${node.children.length ? ` ${node.stats.items}` : ''}?` : 'Delete'}
+            {node.refinement ? (confirmDelete ? 'Drop it?' : 'Drop') : confirmDelete ? `Delete${node.children.length ? ` ${node.stats.items}` : ''}?` : 'Delete'}
           </button>
         )}
       </div>
 
       <EditBar editing={editing} />
+      {proposals.map(({ cs, item }) => (
+        <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} />
+      ))}
       <div className="doc" onFocusCapture={onDocFocus}>
         {editable ? (
           <Suspense fallback={readOnly}>

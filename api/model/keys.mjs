@@ -6,7 +6,7 @@
 //   Flag      APP             FLAG#<name>
 //   Changeset PROJECT#<id>    CHANGESET#<changesetId>
 //   Comment   PROJECT#<id>    COMMENT#<itemKey>#<commentId>
-//   Node with a sync state             PENDING#<id> <itemKey>  sparse: only nodes not yet in line with their store
+//   Node with a sync state, or new in a refinement   PENDING#<id> <itemKey>  sparse: only nodes not yet in line with their store
 //   Sync job  PROJECT#<id>    JOB#<savedAt>#<itemKey>   the outbox: a saved item still to reach its store
 //   Lease     PROJECT#<id>    LEASE#sync         who is syncing this project, until when
 //   Budget    PROJECT#<id>    LEASE#budget       the project's recent writes to its store (SYNC-10)

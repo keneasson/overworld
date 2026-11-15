@@ -86,6 +86,27 @@ function rewrap(raw, content, last) {
   return (filled ? raw.match(/^\s*/)[0] : '\n\n') + body + (filled ? raw.match(/\s*$/)[0] : last ? '\n' : '\n\n');
 }
 
+// ---- A new item ------------------------------------------------------------------------------
+
+const TEMPLATE_HINTS = {
+  Why: '<!-- The problem, for whom, and why now. -->',
+  Behaviours: '<!-- One per line, each with an ID: AREA-01 Given … when … then … -->',
+  'Open questions': '<!-- While anything is listed here, the issue needs a decision before work starts. -->',
+};
+const KIND_WORD = { epic: 'Epic', feature: 'Feature', story: 'Story', task: 'Task', bug: 'Bug' };
+
+/** The place written in an item's head ("Kind: … · Place: checkout"), or ''. */
+export const placeOf = (markdown = '') => parseIssue(markdown).head.match(/^Kind:.*?·\s*Place:[ \t]*(.*)$/im)?.[1].trim() ?? '';
+
+/**
+ * A new item's markdown: the issue template (.github/ISSUE_TEMPLATE/work.md) in the strict shape (NEW-01).
+ * @param {{ kind: string, partOf?: string, place?: string }} o partOf: how the item refers to its parent ("#12"), if it has one
+ */
+export function newItemMarkdown({ kind, partOf = '', place = '' }) {
+  const head = [partOf ? `Part of ${partOf}` : '', `Kind: ${KIND_WORD[kind] ?? 'Task'} · Place: ${place}`.trimEnd()].filter(Boolean).join('\n');
+  return `${head}\n\n${SECTIONS.map((s) => (TEMPLATE_HINTS[s] ? `## ${s}\n\n${TEMPLATE_HINTS[s]}` : `## ${s}`)).join('\n\n')}\n`;
+}
+
 // ---- Behaviours ----------------------------------------------------------------------------
 
 const ITEM = /^\s*[-*]\s+(.*)$/;
@@ -198,3 +219,33 @@ export function editableOf(node) {
 
 /** "None", "n/a" or nothing: no open questions. Mirrors the mapper's reading (api/engine/lifecycle.mjs). */
 export const hasOpenQuestions = (content) => Boolean(contentOf(content)) && !/^(none|n\/a|no open questions)\b/i.test(contentOf(content));
+
+// ---- A refinement against the spec (#13 ADOPT-02) ----------------------------------------------
+
+/**
+ * What a refinement changes in an item, readably: its title, each behaviour (matched by ID) and each other
+ * section, as added, changed or removed. Unchanged parts are left out.
+ * @param {{ title: string, markdown: string }} adopted  the item as the spec holds it
+ * @param {{ title: string, markdown: string }} proposed the refinement's version
+ * @returns {{ title: { before: string, after: string } | null, behaviours: { id: string, change: string, before: string, after: string }[], sections: { name: string, change: string, before: string, after: string }[] }}
+ */
+export function compareItems(adopted, proposed) {
+  const a = parseIssue(adopted.markdown), b = parseIssue(proposed.markdown);
+  const said = (r) => writeBehaviour(r).replace(/^\s*[-*]\s+/, '').replace(/\s+/g, ' ').trim();
+  const rows = (shape) => {
+    const out = new Map();
+    for (const r of parseBehaviours(sectionText(shape, 'Behaviours'))) out.set(r.id || `text:${said(r)}`, said(r));
+    return out;
+  };
+  const changes = (before, after) => [...new Set([...before.keys(), ...after.keys()])].flatMap((k) => {
+    const x = before.get(k) ?? '', y = after.get(k) ?? '';
+    if (x === y) return [];
+    return [{ key: k, change: !x ? 'added' : !y ? 'removed' : 'changed', before: x, after: y }];
+  });
+  const sections = (shape) => new Map([['Head', contentOf(shape.head)], ...shape.sections.filter((s) => s.name !== 'Behaviours').map((s) => [s.name, contentOf(s.raw)])].filter(([, t]) => t));
+  return {
+    title: adopted.title === proposed.title ? null : { before: adopted.title, after: proposed.title },
+    behaviours: changes(rows(a), rows(b)).map(({ key, ...c }) => ({ id: key.startsWith('text:') ? '' : key, ...c })),
+    sections: changes(sections(a), sections(b)).map(({ key, ...c }) => ({ name: key, ...c })),
+  };
+}

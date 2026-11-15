@@ -8,14 +8,17 @@ const SAVE_AFTER_MS = 700;
 const SYNC_POLL_MS = 2000; // while a save is on its way to GitHub
 const SYNC_POLL_TRIES = 20;
 const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
+// Who a changeset is by, as the API writes it: a person's name, or "Name (id)" for an agent.
+const authorOf = (name) => String(name ?? '').trim().slice(0, 80) || 'Someone';
 
 /**
  * Editing the project's items in the panel, one at a time (#41 EDIT-09, EDIT-13). Every edit goes into the
  * project's open changeset as you type, so picking another item loses nothing; Accept applies them to the map
  * together (EDIT-03), and only Save sends anything to GitHub (SYNC-07), deciding nothing (SYNC-08).
  */
-export function useItemEditing({ projectId, tree, setComments, onAccepted, reloadNodes, toast, fail }) {
+export function useItemEditing({ projectId, tree, setComments, onAccepted, onRemoved, reloadNodes, toast, fail }) {
   const [changeset, setChangeset] = useState(null);
+  const [others, setOthers] = useState([]); // open refinements by someone else: an agent or another person (ADOPT-02)
   const [drafts, setDrafts] = useState(() => new Map());
   const [generation, setGeneration] = useState(0); // remounts the documents after an accept or a discard
   const [conflicts, setConflicts] = useState(() => new Set());
@@ -26,6 +29,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
   const pending = useRef(new Map());
   const csPromise = useRef(null);
   const polls = useRef(null);
+  const mine = useRef(null);
+  mine.current = changeset?.id ?? null;
 
   // Pick up where the project was left: its open changeset.
   useEffect(() => {
@@ -33,14 +38,18 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     let cancelled = false;
     csPromise.current = null;
     setChangeset(null);
+    setOthers([]);
     setDrafts(new Map());
     setConflicts(new Set());
     api
       .listChangesets(projectId)
       .then(({ changesets }) => {
         if (cancelled) return;
-        const open = changesets.filter((c) => c.status === 'open').at(-1) ?? null;
+        // Yours is the open one you wrote; anyone else's is a refinement to look at and adopt or decline.
+        const all = changesets.filter((c) => c.status === 'open');
+        const open = all.filter((c) => c.author === authorOf(storage.get(NAME))).at(-1) ?? null;
         setChangeset(open);
+        setOthers(all.filter((c) => c !== open));
         if (open) {
           csPromise.current = Promise.resolve(open);
           setDrafts(new Map(open.items.map((it) => [it.key, it.after])));
@@ -60,6 +69,39 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     [],
   );
 
+  // Pick up refinements made since: an agent proposes through MCP while the map is open.
+  const reloadRefinements = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const { changesets } = await api.listChangesets(projectId);
+      setOthers(changesets.filter((c) => c.status === 'open' && c.id !== mine.current));
+    } catch (err) {
+      fail(err);
+    }
+  }, [projectId, fail]);
+
+  // Adopt or decline one item of someone else's refinement (ADOPT-05). Adopting changes the map and waits for a save.
+  async function decide(cs, key, action, reason = '') {
+    setBusy(true);
+    try {
+      const res = await api.decideChangesetItem(projectId, cs.id, key, action, { by: name, reason });
+      setOthers((os) => os.map((o) => (o.id === res.changeset.id ? res.changeset : o)).filter((o) => o.status === 'open'));
+      if (res.nodes.length) {
+        onAccepted(res.nodes);
+        setGeneration((g) => g + 1);
+        toast('Adopted. Save to send it to GitHub.');
+      } else toast('Declined');
+      return true;
+    } catch (err) {
+      fail(err);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+  const adopt = (cs, key) => decide(cs, key, 'adopt');
+  const decline = (cs, key, reason) => decide(cs, key, 'decline', reason);
+
   const ensureChangeset = useCallback(() => {
     csPromise.current ??= api.createChangeset(projectId, { author: name }).then(({ changeset: cs }) => {
       setChangeset(cs);
@@ -78,6 +120,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
         const cs = await ensureChangeset();
         const res = await api.putChangesetItem(projectId, cs.id, { key, ...after });
         setChangeset(res.changeset);
+        if (res.node) onAccepted([res.node]); // a new item changes on the map as it is written (NEW-03)
       } catch (err) {
         csPromise.current = null;
         fail(err);
@@ -101,6 +144,49 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
       }, SAVE_AFTER_MS),
     );
   };
+
+  // A new item in an area (NEW-01): it joins the open changeset, the refinement it belongs to (NEW-02), and is on the map at once.
+  async function addItem(parentId, kind) {
+    setBusy(true);
+    try {
+      await flush();
+      const cs = await ensureChangeset();
+      const res = await api.newChangesetItem(projectId, cs.id, { parentId, kind });
+      setChangeset(res.changeset);
+      return res.node;
+    } catch (err) {
+      fail(err);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Take a new item out of the refinement: it is gone, and never reaches GitHub (NEW-06).
+  async function drop(node) {
+    setBusy(true);
+    try {
+      const key = itemKeyOf(node);
+      clearTimeout(timers.current.get(key));
+      timers.current.delete(key);
+      pending.current.delete(key);
+      const cs = await csPromise.current;
+      const res = await api.dropChangesetItem(projectId, cs.id, key);
+      setChangeset(res.changeset);
+      setDrafts((d) => {
+        const next = new Map(d);
+        next.delete(key);
+        return next;
+      });
+      onRemoved(res.deleted, res.updated);
+      return res.deleted;
+    } catch (err) {
+      fail(err);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function reset() {
     csPromise.current = null;
@@ -136,7 +222,10 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
       timers.current.clear();
       pending.current.clear();
       const cs = await csPromise.current;
-      if (cs) await api.discardChangeset(projectId, cs.id);
+      if (cs) {
+        const res = await api.discardChangeset(projectId, cs.id);
+        if (res.deleted?.length) onRemoved(res.deleted, res.nodes);
+      }
       reset();
       toast('Changes discarded');
     } catch (err) {
@@ -146,7 +235,11 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     }
   }
 
-  const edited = useMemo(() => (tree ? tree.list.filter((n) => drafts.has(itemKeyOf(n)) && !same(drafts.get(itemKeyOf(n)), editableOf(n))).map(itemKeyOf) : []), [tree, drafts]);
+  // What Accept would adopt: edited items, and every new item made in this changeset.
+  const edited = useMemo(
+    () => (tree ? tree.list.filter((n) => (changeset && n.refinement === changeset.id) || (!n.refinement && drafts.has(itemKeyOf(n)) && !same(drafts.get(itemKeyOf(n)), editableOf(n)))).map(itemKeyOf) : []),
+    [tree, drafts, changeset],
+  );
   const unsaved = useMemo(() => (tree ? toSave(tree.list) : []), [tree]);
   const onItsWay = tree ? tree.list.filter((n) => n.sync === 'saving').length : 0;
 
@@ -206,5 +299,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, reloa
     storage.set(NAME, v || null);
   };
 
-  return { changeset, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, accept, discard, saveToGithub, comment, resolve, answer, answerPrompt, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, answer, answerPrompt, flush };
 }

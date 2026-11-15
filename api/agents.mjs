@@ -211,7 +211,8 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       if (c.answer.refinement && c.answer.refinement !== changeset.id && live.has(c.answer.refinement)) throw new Refused(`${id} is already being applied in refinement ${c.answer.refinement}`);
       taken.push(c);
     }
-    if (ready && openQuestions(item.after.markdown)) throw new Refused('Its Open questions section still has something in it, so it can\'t be ready');
+    // A new item (#26) keeps its text on its node, and adopting it already holds it back while questions are open.
+    if (ready && item.after && openQuestions(item.after.markdown)) throw new Refused('Its Open questions section still has something in it, so it can\'t be ready');
     item.answers = [...new Set([...(item.answers ?? []), ...answers])];
     if (ready != null) item.itemReady = Boolean(ready);
     await model.changesets.put(projectId, changeset);
@@ -307,6 +308,9 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const { work } = nextWork(data.nodes, live);
     const git = gitOf(local);
     const refinements = changesets.filter((cs) => cs.status === 'open' && cs.author === me).map((cs) => ({ refinement: cs.id, place: data.nodes.find((n) => n.id === cs.scopeId)?.title ?? cs.scopeId, items: cs.items.length }));
+    // People's yes or no to this agent's refinements since the last standup (ADOPT-05): declined ones say why.
+    const decided = changesets.filter((cs) => cs.author === me).flatMap((cs) => [...(cs.adopted ?? []).map((d) => ({ ...d, outcome: 'adopted' })), ...(cs.declined ?? []).map((d) => ({ ...d, outcome: 'declined' }))])
+      .filter((d) => !last || d.at > last.at).map((d) => ({ item: d.key, title: title(d.key), outcome: d.outcome, by: d.by, at: d.at, ...(d.reason ? { reason: d.reason } : {}) }));
     const unsaved = pending.filter((n) => n.sync && n.sync !== 'saving').map((n) => ({ item: keyOf(n), title: n.title, state: n.sync }));
     const holding = held.map((item) => ({ item, title: title(item), behaviours: mine.filter((c) => c.item === item).map((c) => c.behaviour), until: mine.find((c) => c.item === item).until }));
 
@@ -315,6 +319,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       ...(last ? { last_connected: last.at, away: span(now - Date.parse(last.at)) } : {}),
       addressed_to_you: {
         ...(answered.length ? { answered: answered.map(({ c, prompt }) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text, ...(prompt ? { question_id: c.id, answer: c.answer.text, answered_by: c.answer.by, prompt } : {}) })) } : {}),
+        ...(decided.length ? { your_refinements_decided: decided.slice(-SHOWN) } : {}),
         ...(fresh.filter((c) => watched.has(c.itemKey)).length ? { new_comments: fresh.filter((c) => watched.has(c.itemKey)).slice(-SHOWN).map((c) => ({ item: c.itemKey, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })) } : {}),
       },
       you_hold: holding,

@@ -7,13 +7,13 @@ import { drawMap, hitTest, markerAt, nodeView, overviewView, thresholds, fitScal
  * the parent hears about focus changes and selection through callbacks.
  */
 export const MapView = forwardRef(function MapView(
-  { scene, lens, showLinks, selectedId, insets, initialView, onSelect, onMarker, onFocus, onView },
+  { scene, lens, showLinks, selectedId, insets, initialView, live, onSelect, onMarker, onFocus, onView },
   ref,
 ) {
   const canvasRef = useRef(null);
   const st = useRef({ transform: zoomIdentity, w: 0, h: 0, dpr: 1, hoverId: null, info: null, frame: 0, ready: false });
   const props = useRef({});
-  props.current = { scene, lens, showLinks, selectedId, insets, onSelect, onMarker, onFocus, onView };
+  props.current = { scene, lens, showLinks, selectedId, insets, live, onSelect, onMarker, onFocus, onView };
   const zoomRef = useRef(null);
 
   const view = () => {
@@ -40,7 +40,7 @@ export const MapView = forwardRef(function MapView(
     const ctx = canvas.getContext('2d');
     const ins = p.insets ?? {};
     const center = [(ins.left ?? 0) + (s.w - (ins.left ?? 0)) / 2, (ins.top ?? 0) + (s.h - (ins.top ?? 0) - (ins.bottom ?? 0)) / 2];
-    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, hoverId: s.hoverId, showLinks: p.showLinks, center, insets: ins, time: still() ? 0 : performance.now() / 1000 });
+    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, hoverId: s.hoverId, showLinks: p.showLinks, live: p.live, center, insets: ins, time: still() ? 0 : performance.now() / 1000 });
     // Fog drifts: while any is on screen, redraw a few times a second. Nothing moves for people who ask for less motion.
     if (s.info?.drifting && !still() && !s.drift) s.drift = setTimeout(() => ((s.drift = 0), schedule()), 50);
     if (s.info && s.info.focusId !== s.lastFocus) {
@@ -205,7 +205,7 @@ export const MapView = forwardRef(function MapView(
     updateExtent();
     schedule();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, lens, showLinks, selectedId, insets]);
+  }, [scene, lens, showLinks, selectedId, insets, live]);
 
   return <canvas ref={canvasRef} className="map-canvas" tabIndex={0} aria-label="Project map. Scroll or pinch to zoom, drag to pan." />;
 });

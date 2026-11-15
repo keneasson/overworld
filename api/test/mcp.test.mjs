@@ -188,6 +188,41 @@ test('MCP-06 refine and propose open and fill a refinement; an agent marks behav
   assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept/.test(t.name)), 'no tool adopts');
 });
 
+test("ADOPT-05 ADOPT-10 a person adopts or declines an agent's refinement, and the agent hears which, and why, at its standup", async () => {
+  const { agent, rest, pid, clock } = await setup();
+  const a = await agent('Builder');
+  await a.use('standup');
+  clock.now += 60_000;
+  const { refinement } = await a.use('refine', { place: 'issue-10' });
+  await a.use('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: ['CL-01 Given work, when claimed, then it is held for two hours.'] }), ready_for_adoption: ['CL-01'] });
+  await a.use('propose', { refinement, item: 'issue-12', markdown: body({ behaviours: ['BL-01 Given a dependency, when unfinished, then nothing waits.'] }) });
+  await rest('POST', `/api/projects/${pid}/changesets/${refinement}/items/issue-11/adopt`, { by: 'Ken' });
+  await rest('POST', `/api/projects/${pid}/changesets/${refinement}/items/issue-12/decline`, { by: 'Ken', reason: 'Work must wait for its dependency.' });
+  assert.match((await a.use('context', { issue: 'issue-11' })).behaviours[0].text, /two hours/, 'adopted into the spec');
+  assert.match((await a.use('context', { issue: 'issue-12' })).behaviours[0].text, /then this waits/, 'declined: the spec stays');
+  const decided = (await a.use('standup')).addressed_to_you.your_refinements_decided;
+  assert.deepEqual(decided.map((d) => [d.item, d.outcome, d.by, d.reason]), [['issue-11', 'adopted', 'Ken', undefined], ['issue-12', 'declined', 'Ken', 'Work must wait for its dependency.']]);
+  assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept|decline/.test(t.name)), 'the agent itself never adopts');
+});
+
+test('NEW-05 an agent proposes a new item, and it arrives in the refinement the way a person\'s does', async () => {
+  const { agent, rest, pid } = await setup();
+  const a = await agent('Builder');
+  const { refinement } = await a.use('refine', { place: 'issue-15' });
+  const made = await a.use('propose', { refinement, parent: 'issue-15', kind: 'feature', title: 'Epic part one' });
+  assert.equal(made.new, true);
+  const cs = (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((x) => x.id === refinement);
+  assert.deepEqual(cs.items.map((it) => [it.key, it.new]), [[made.item, true]]);
+  const { nodes } = await rest('GET', `/api/projects/${pid}`);
+  const node = nodes.find((n) => `node-${n.id}` === made.item);
+  assert.equal(node.parentId, nodes.find((n) => n.title.startsWith('#15 ')).id);
+  assert.ok(node.body.startsWith('Part of #15\nKind: Feature'), node.body);
+  const markdown = body({ behaviours: ['PART-01 Given a part, when built, then it fits.'] });
+  assert.deepEqual((await a.use('propose', { refinement, item: made.item, markdown, ready_for_adoption: ['PART-01'] })).ready_for_adoption, ['PART-01'], 'then it is refined like any item');
+  assert.equal((await a.use('zoom', { place: 'issue-15' })).children.find((c) => c.key === made.item).state, 'needs improvement');
+  assert.ok(!(await a.use('next_work', {})).work.some((w) => w.item === made.item), 'not work until a person adopts it');
+});
+
 test('MCP-08 prime returns the conventions, standing decisions, remembered facts, and your own claims and handoff notes', async () => {
   const { agent, rest, shop } = await setup();
   shop.tree.push({ path: 'CONTRIBUTING.md', type: 'blob' }, { path: 'CLAUDE.md', type: 'blob' });
@@ -412,4 +447,16 @@ test('CONN-05 after a while away, or many changes by others, the standup regroup
   assert.equal(busy.while_you_were_away.changes, 10);
   assert.ok(busy.while_you_were_away.by_other_agents.every((x) => x.by.startsWith('Reviewer')));
   assert.equal((await a.use('standup')).mode, 'up_to_date');
+});
+
+test('CONN-08 after the standup the agent builds unassisted: blockers go to ask() on the item, never a wait in its own window', async () => {
+  const { agent } = await setup();
+  const a = await agent('Builder');
+  const prompt = (await a.rpc('prompts/get', { name: 'standup' })).result.messages[0].content.text;
+  assert.doesNotMatch(prompt, /wait for me/i);
+  assert.match(prompt, /without waiting/);
+  assert.match(prompt, /ask\(\)/);
+  assert.match(prompt, /handoff\(\)/);
+  const { how_to_work } = await a.use('prime');
+  assert.ok(how_to_work.some((line) => /without waiting/.test(line) && /ask\(/.test(line)), 'how work goes here says so too');
 });

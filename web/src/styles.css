@@ -382,6 +382,106 @@ button {
   background: var(--accent);
   color: var(--surface);
 }
+.edit-actions button:disabled {
+  opacity: 0.5;
+}
+.edit-actions button.armed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+/* Someone else's refinement of the open item (ADOPT-02): the spec against what it proposes. */
+.refinement {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+.refinement-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+.refinement-note,
+.refinement-ready,
+.refinement-blocked {
+  margin: 6px 0;
+  color: var(--muted);
+}
+.refinement-blocked {
+  color: var(--danger);
+}
+.refinement-decline textarea {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.changes {
+  margin: 6px 0;
+  padding: 0;
+  list-style: none;
+}
+.change {
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+}
+.change-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.change-label {
+  font-weight: 600;
+}
+.change-kind {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.change-kind-added {
+  color: #1e8e3e;
+}
+.change-kind-changed {
+  color: var(--accent);
+}
+.change-kind-removed {
+  color: var(--danger);
+}
+.change-before,
+.change-after {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+.change-before {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.change-after {
+  color: var(--text);
+}
+.pill-ready {
+  background: #1e8e3e;
+}
+.pill-refine {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
 .doc {
   margin-bottom: 8px;
 }
@@ -520,6 +620,11 @@ button {
 }
 .pill-fog {
   background: #80868b;
+}
+.pill-new {
+  background: transparent;
+  color: var(--accent, #1a73e8);
+  box-shadow: inset 0 0 0 1.5px currentColor;
 }
 .kind {
   display: inline-block;

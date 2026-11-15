@@ -7,6 +7,7 @@ import { createApi } from '../app.mjs';
 import { createModel } from '../model/index.mjs';
 import { parseRepo, importGitHub } from '../github.mjs';
 import { sanitizeNode } from '../../shared/schema.js';
+import { behaviourPrefix, editableOf, isWellFormed, itemKeyOf, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '../../shared/issue-shape.js';
 import { fakeShop } from './fake-github.mjs';
 
 async function setup(accessKey = 'secret-key') {
@@ -289,4 +290,111 @@ test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', 
   assert.equal((await call('DELETE', `/api/projects/${pid}/comments/issue-4/${id}`)).status, 200);
   assert.equal((await call('DELETE', `/api/projects/${pid}/comments/issue-4/${id}`)).status, 404);
   assert.equal((await call('GET', `/api/projects/${pid}/comments`)).body.comments.length, 2);
+});
+
+const newItem = async (call, pid, cid, parentId, kind, extra = {}) => {
+  const res = await call('POST', `/api/projects/${pid}/changesets/${cid}/new`, { parentId, kind, ...extra });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  return res.body.node;
+};
+
+test('NEW-01 NEW-02 a new item opens in the template, Part of its area, and belongs to the refinement it was made in', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
+  const made = await newItem(call, pid, cs.id, node(1).id, 'feature');
+  const md = editableOf(made).markdown;
+  assert.ok(md.startsWith('Part of #1\nKind: Feature · Place:'), md);
+  assert.ok(isWellFormed(parseIssue(md)), 'every section of the strict shape, in order');
+  assert.equal(made.parentId, node(1).id);
+  assert.equal(made.refinement, cs.id);
+  const listed = (await call('GET', `/api/projects/${pid}/changesets`)).body.changesets.find((c) => c.id === cs.id);
+  assert.deepEqual(listed.items.map((it) => [it.key, it.new]), [[itemKeyOf(made), true]]);
+  const inside = await newItem(call, pid, cs.id, made.id, 'task');
+  assert.ok(editableOf(inside).markdown.startsWith(`Part of #new-${made.id}\n`), 'Part of a new item, until it has a number');
+
+  // Its behaviours get IDs the same way as any item's (EDIT-02).
+  const markdown = md.replace(/## Behaviours\n\n<!--[^\n]*-->/, '## Behaviours\n\n- REFUND-01 Given a refund, when asked, then it is paid.');
+  const res = await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: itemKeyOf(made), title: 'Refunds', markdown });
+  assert.equal(res.status, 200);
+  assert.equal(nextBehaviourId(behaviourPrefix(parseBehaviours(sectionText(parseIssue(markdown), 'Behaviours')), 'Refunds'), (await map()).map((n) => n.body)), 'REFUND-02');
+  const other = (await call('POST', `/api/projects/${pid}/changesets`, {})).body.changeset;
+  assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${other.id}/items`, { key: itemKeyOf(made), title: 'Mine now', markdown })).status, 409, 'it changes only in its own refinement');
+});
+
+test('NEW-03 a new item is on the map at once, needing improvement, and a refresh from GitHub keeps it', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
+  const made = await newItem(call, pid, cs.id, node(1).id, 'story', { title: 'Refund to the saved card' });
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: itemKeyOf(made), title: 'Refund to the card', markdown: editableOf(made).markdown });
+  const seen = (await map()).find((n) => n.id === made.id);
+  assert.equal(seen.title, 'Refund to the card', 'everyone sees its edits as they are made');
+  assert.equal(seen.status, 'idea');
+  assert.equal(seen.sync, undefined, 'nothing to save: it is not in the spec yet');
+  await call('POST', `/api/projects/${pid}/refresh`, {});
+  const after = (await map()).find((n) => n.id === made.id);
+  assert.equal(after?.title, 'Refund to the card');
+  assert.equal(after.parentId, node(1).id, 'in its place');
+  assert.equal((await call('POST', `/api/projects/${pid}/save`, {})).body.saved.length, 0, 'a save leaves it alone until it is adopted');
+});
+
+test("ADOPT-02 ADOPT-05 a person adopts an item of someone else's refinement: the item takes its text and waits for a save, and who adopted it is recorded", async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const proposed = four.replace('then it is a token.', 'then it is a token, never a number.');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: proposed });
+  assert.doesNotMatch((await map()).find((n) => n.title.startsWith('#4 ')).body, /never a number/, 'the spec is unchanged until adoption');
+
+  const res = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' });
+  assert.equal(res.status, 200);
+  const adopted = (await map()).find((n) => n.title.startsWith('#4 '));
+  assert.match(adopted.body, /never a number/);
+  assert.equal(adopted.sync, 'unsaved', 'adopting sends nothing to GitHub: a save does');
+  assert.equal(res.body.changeset.status, 'accepted', 'nothing left in it, so the refinement closes');
+  assert.equal(res.body.changeset.adopted[0].by, 'Ken');
+  assert.ok(res.body.changeset.adopted[0].at);
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'adopted once');
+});
+
+test('ADOPT-05 a person declines an item of a refinement: it is dropped, the spec stays, and the reason is kept', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think about the vibe', markdown: 'Vibes only.' });
+  const before = await map();
+  const res = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-5/decline`, { by: 'Ken', reason: 'Too vague.' });
+  assert.equal(res.body.changeset.status, 'declined');
+  assert.deepEqual(res.body.changeset.declined.map((d) => [d.key, d.by, d.reason]), [['issue-5', 'Ken', 'Too vague.']]);
+  assert.deepEqual(await map(), before);
+});
+
+test("ADOPT-08 an item of a refinement that still has open questions can't be adopted", async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('None.', '- Which vault?') });
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'a question in its text');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('a token.', 'a token, kept.') });
+  const { comment } = (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text: 'Which vault?' })).body;
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'a question asked on it');
+  assert.doesNotMatch((await map()).find((n) => n.title.startsWith('#4 ')).body, /kept/);
+  await call('PATCH', `/api/projects/${pid}/comments/issue-4/${comment.id}`, { resolved: true });
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200, 'answered, it can be adopted');
+});
+
+test('NEW-06 a new item dropped before adoption, or in a discarded refinement, is gone and never reaches GitHub', async () => {
+  const { shop, call, pid, node, map } = await shopProject();
+  const count = shop.issues.length;
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
+  const epic = await newItem(call, pid, cs.id, node(1).id, 'epic');
+  const child = await newItem(call, pid, cs.id, epic.id, 'task');
+  const kept = await newItem(call, pid, cs.id, node(1).id, 'task');
+  const dropped = await call('DELETE', `/api/projects/${pid}/changesets/${cs.id}/items/${itemKeyOf(epic)}`);
+  assert.deepEqual(dropped.body.deleted.sort(), [epic.id, child.id].sort(), 'with what was inside it');
+  assert.deepEqual(dropped.body.changeset.items.map((it) => it.key), [itemKeyOf(kept)]);
+  await call('POST', `/api/projects/${pid}/changesets/${cs.id}/discard`);
+  const ids = new Set((await map()).map((n) => n.id));
+  assert.ok(![epic.id, child.id, kept.id].some((id) => ids.has(id)));
+  await call('POST', `/api/projects/${pid}/refresh`, {});
+  assert.ok(!(await map()).some((n) => n.id === kept.id), 'and a refresh does not bring it back');
+  assert.equal(shop.issues.length, count);
 });
