@@ -207,6 +207,18 @@ const behaviours = [
     },
   ],
   [
+    'LIFE-09 an item saved with its open questions all answered is written as ready, however it came to be waiting on a decision',
+    { strict: true },
+    async (h) => {
+      await h.accept([[4, 'Tokens.\n\n## Open questions\n\nNone.']]);
+      await h.call('PATCH', `/api/projects/${h.pid}/nodes/${h.nodeId(4)}`, { status: 'needs_decision' });
+      await h.save();
+      await h.sync.drain(h.pid);
+      assert.equal(h.stored(4).status, 'ready');
+      if (h.github) assert.deepEqual(h.stored(4).labels, ['status:ready']);
+    },
+  ],
+  [
     "SYNC-08 a save writes each item as it is, with its state in the store's terms",
     { strict: true },
     async (h) => {
