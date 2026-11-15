@@ -2,9 +2,11 @@
 // shape and behaviours without an ID are marked where they are, Given / When / Then are picked out, Enter
 // at the end of a behaviour starts the next one with its ID, and each annotation (#15) is a marker with its
 // author's initials at the words it is about, which stay highlighted (NOTE-13). Nothing here ever blocks typing.
+// A section's heading holds only its name (EDIT-16): every section has a line to type on, and words typed, pasted or
+// Entered into a shape heading go to that line instead.
 
 import { Extension } from '@tiptap/core';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { SECTIONS, hasOpenQuestions } from '@shared/issue-shape.js';
 import { NOTE_KIND_LABEL, initials, kindOf } from '@shared/annotations.js';
@@ -96,6 +98,68 @@ function decorate(doc, opts) {
   return DecorationSet.create(doc, out);
 }
 
+const isSection = (node) => node?.type.name === 'heading' && node.attrs.level === 2;
+const inShape = (node) => isSection(node) && SECTIONS.includes(canonical(node.textContent.trim()));
+
+/** Each section with nothing under it gets an empty line to type on; null when every section has one (EDIT-16). */
+export function withBodies(state) {
+  const at = [];
+  state.doc.forEach((node, offset, index) => {
+    const next = index + 1 < state.doc.childCount ? state.doc.child(index + 1) : null;
+    if (isSection(node) && (!next || isSection(next))) at.push(offset + node.nodeSize);
+  });
+  if (!at.length) return null;
+  const tr = state.tr;
+  for (const pos of at.reverse()) tr.insert(pos, state.schema.nodes.paragraph.create());
+  return tr;
+}
+
+/** Moves the cursor from a section's heading to the first line of its text, making that line if the text starts with something else. */
+function toBody(tr, headingPos) {
+  const heading = tr.doc.nodeAt(headingPos);
+  const after = headingPos + heading.nodeSize;
+  const next = tr.doc.nodeAt(after);
+  if (!(next?.type.name === 'paragraph' && next.content.size === 0)) tr.insert(after, tr.doc.type.schema.nodes.paragraph.create());
+  return tr.setSelection(TextSelection.create(tr.doc, after + 1));
+}
+
+/** The heading's position when the selection is inside a section heading (`shapeOnly`: one the shape names), else null. */
+function headingAt(state, shapeOnly) {
+  const { $from, $to } = state.selection;
+  if ($from.depth !== 1 || $to.depth !== 1 || $from.parent !== $to.parent || !isSection($from.parent)) return null;
+  return shapeOnly && !inShape($from.parent) ? null : $from.before(1);
+}
+
+/** Keeps a section's words out of its heading (EDIT-16). */
+export function sectionBodies() {
+  return new Plugin({
+    appendTransaction: (trs, _, state) => (trs.some((t) => t.docChanged) ? withBodies(state) : null),
+    props: {
+      handleTextInput(view, from, to, text) {
+        const at = headingAt(view.state, true);
+        if (at == null) return false;
+        view.dispatch(toBody(view.state.tr, at).insertText(text).scrollIntoView());
+        return true;
+      },
+      handlePaste(view, _, slice) {
+        const at = headingAt(view.state, true);
+        if (at == null) return false;
+        view.dispatch(toBody(view.state.tr, at).replaceSelection(slice).scrollIntoView());
+        return true;
+      },
+      // Enter in a section's name, or at the end of any section heading, goes to the section's text.
+      handleKeyDown(view, e) {
+        if (e.key !== 'Enter' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return false;
+        const { $from, empty } = view.state.selection;
+        const at = headingAt(view.state, false);
+        if (at == null || !(inShape($from.parent) || (empty && $from.parentOffset === $from.parent.content.size))) return false;
+        view.dispatch(toBody(view.state.tr, at).scrollIntoView());
+        return true;
+      },
+    },
+  });
+}
+
 export const IssueShape = Extension.create({
   name: 'issueShape',
 
@@ -120,6 +184,7 @@ export const IssueShape = Extension.create({
         },
         props: { decorations: (state) => KEY.getState(state) },
       }),
+      sectionBodies(),
     ];
   },
 
