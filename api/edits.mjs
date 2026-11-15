@@ -28,6 +28,8 @@ export function applyTo(node, after, now) {
     updatedAt: now,
   };
   if (openQuestions(after.markdown)) out.status = 'needs_decision';
+  // Its last open question answered, an item that only waited on a decision is ready (LIFE-09).
+  else if (node.status === 'needs_decision') out.status = 'ready';
   return out;
 }
 
