@@ -10,6 +10,7 @@ import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './e
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
+import { answerPrompt, isQuestion, settleAnswers } from './answers.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
@@ -461,7 +462,11 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         await touchProject(project, nodes.map((n) => byId.get(n.id) ?? n));
         Object.assign(cs, { status: 'accepted', acceptedAt: now, updatedAt: now });
         await model.changesets.put(pid, cs);
-        return { changeset: cs, nodes: changed };
+        // Adopting it settles the answers it applied, and an item with nothing else open comes back ready (ANSWER-04).
+        const { resolved, ready } = await settleAnswers(model, pid, cs, changed, now);
+        const marked = ready.filter((n) => n.status !== 'ready').map((n) => markEdited(n, { ...n, status: 'ready', updatedAt: now }, store));
+        if (marked.length) await model.nodes.put(pid, marked);
+        return { changeset: cs, nodes: changed.map((n) => marked.find((m) => m.id === n.id) ?? n), ...(resolved.length ? { resolved } : {}) };
       },
     ],
 
@@ -498,6 +503,30 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         comment.resolved = Boolean(body?.resolved);
         await model.comments.put(pid, comment);
         return { comment };
+      },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/(answer|prompt)$/,
+      // Answer an open question (ANSWER-01), or just see the prompt the answer would go out with (ANSWER-05). The answer
+      // waits, unresolved, for an agent to write it into the spec; the prompt is kept only if the person changed it.
+      async ({ params: [pid, itemKey, id, action], body }) => {
+        const question = await model.comments.get(pid, { itemKey, id });
+        if (!question) throw new HttpError(404, 'Comment not found');
+        if (!isQuestion(question)) throw new ValidationError('only an open question can be answered');
+        if (question.resolved) throw new HttpError(409, 'This question is already resolved');
+        const said = text(body?.text ?? '', 4000, 'text').trim();
+        if (!said) throw new ValidationError('text: required');
+        const by = author(body?.author);
+        const { nodes } = await loadProject(pid);
+        const built = answerPrompt({ nodes, comments: await model.comments.list(pid, itemKey), question, answer: said, answeredBy: by });
+        if (action === 'prompt') return { prompt: built };
+        const asked = body?.prompt == null ? '' : text(body.prompt, 40000, 'prompt').trim();
+        const answer = { text: said, by, at: new Date(clock()).toISOString(), ...(asked && asked !== built.trim() ? { prompt: asked } : {}) };
+        const comment = { ...question, answer };
+        await model.comments.put(pid, comment);
+        return { comment, prompt: answer.prompt ?? built };
       },
     ],
 

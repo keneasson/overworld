@@ -27,10 +27,74 @@ const TOOLS = [
 ];
 
 const anchorKey = (a) => (a.behaviour ? `b:${a.behaviour}` : `s:${a.section}`);
+const isQuestion = (c) => c.anchor?.section === 'Open questions';
+
+/**
+ * Writing an answer under a question (ANSWER-01), and the prompt it goes out with, to read and change first (ANSWER-05).
+ * The prompt is built by the server, so it is the one an agent gets; left as built, it is built again when it goes.
+ */
+function AnswerForm({ question, onAnswer, onPrompt, onCancel }) {
+  const [text, setText] = useState(question.answer?.text ?? '');
+  const [prompt, setPrompt] = useState(question.answer?.prompt ?? null);
+  const [built, setBuilt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const showPrompt = async () => {
+    setBusy(true);
+    try {
+      const p = await onPrompt(question, text.trim());
+      setBuilt(p);
+      setPrompt(p);
+    } catch {
+      // The editor's toast says what went wrong.
+    } finally {
+      setBusy(false);
+    }
+  };
+  const send = async (e) => {
+    e?.preventDefault();
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    const changed = prompt != null && prompt !== built ? prompt : undefined;
+    if (await onAnswer(question, text.trim(), changed)) onCancel();
+    setBusy(false);
+  };
+  return (
+    <form className="answer-form" onSubmit={send}>
+      <textarea
+        autoFocus
+        aria-label="Write the answer"
+        rows={2}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && send(e)}
+        placeholder="The answer… (⌘/Ctrl+Enter sends)"
+        maxLength={4000}
+      />
+      {prompt != null && (
+        <label className="answer-prompt">
+          <span>The prompt an agent gets. Change it if you like.</span>
+          <textarea aria-label="The prompt an agent gets" rows={8} value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={40000} />
+        </label>
+      )}
+      <div className="answer-actions">
+        <button type="button" className="link-btn" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className="link-btn" disabled={!text.trim() || busy} onClick={showPrompt}>
+          {prompt == null ? 'See the prompt' : 'Build it again'}
+        </button>
+        <button type="submit" disabled={!text.trim() || busy}>
+          Send answer
+        </button>
+      </div>
+    </form>
+  );
+}
 
 /** A comment thread on one section or behaviour, opened from its marker in the text. */
-function Thread({ anchor, comments, onPost, onResolve, onClose }) {
+function Thread({ anchor, comments, onPost, onResolve, onAnswer, onAnswerPrompt, onClose }) {
   const [text, setText] = useState('');
+  const [answering, setAnswering] = useState(null); // the question being answered
   const post = (e) => {
     e?.preventDefault();
     if (!text.trim()) return;
@@ -50,11 +114,26 @@ function Thread({ anchor, comments, onPost, onResolve, onClose }) {
           <div className="comment-head">
             <strong>{c.author}</strong>
             <time dateTime={c.createdAt}>{new Date(c.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time>
+            {isQuestion(c) && !c.resolved && onAnswer && answering !== c.id && (
+              <button type="button" className="link-btn" onClick={() => setAnswering(c.id)}>
+                {c.answer ? 'Change answer' : 'Answer'}
+              </button>
+            )}
             <button type="button" className="link-btn" onClick={() => onResolve(c, !c.resolved)}>
               {c.resolved ? 'Reopen' : 'Resolve'}
             </button>
           </div>
           <p>{c.text}</p>
+          {c.answer && answering !== c.id && (
+            <div className="answer">
+              <div className="comment-head">
+                <strong>Answer · {c.answer.by}</strong>
+                <span className={`answer-state${c.resolved ? ' applied' : ''}`}>{c.resolved ? (c.answer.appliedAt ? 'Applied' : 'Resolved') : 'Waiting to be applied'}</span>
+              </div>
+              <p>{c.answer.text}</p>
+            </div>
+          )}
+          {answering === c.id && <AnswerForm question={c} onAnswer={onAnswer} onPrompt={onAnswerPrompt} onCancel={() => setAnswering(null)} />}
         </div>
       ))}
       <form className="comment-form" onSubmit={post}>
@@ -80,7 +159,7 @@ function Thread({ anchor, comments, onPost, onResolve, onClose }) {
  * One item as one document (EDIT-01): the title, the head, then each section as a heading.
  * `value` is { title, markdown }, and `onChange` gets the same, with unchanged sections written back exactly as they came.
  */
-export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, onComment, onResolve, conflict }) {
+export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, onComment, onResolve, onAnswer, onAnswerPrompt, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [title, setTitle] = useState(value.title);
@@ -186,6 +265,8 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, onChange, o
             comments={comments.filter((c) => anchorKey(c.anchor) === anchorKey(thread.anchor))}
             onPost={(text) => onComment(thread.anchor, text)}
             onResolve={onResolve}
+            onAnswer={onAnswer}
+            onAnswerPrompt={onAnswerPrompt}
             onClose={() => setThread(null)}
           />
         </div>

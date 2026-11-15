@@ -203,6 +203,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
       const cs = await csPromise.current;
       const res = await api.acceptChangeset(projectId, cs.id);
       onAccepted(res.nodes);
+      if (res.resolved?.length) setComments((cs) => cs.map((x) => res.resolved.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
       const n = res.changeset.items.length;
       toast(`Accepted ${n} edit${n === 1 ? '' : 's'}. Save to send ${n === 1 ? 'it' : 'them'} to GitHub.`);
       reset();
@@ -279,10 +280,24 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
+  // Answering a question (ANSWER-01): it waits, unresolved, for an agent to apply it. The prompt can be read and changed first (ANSWER-05).
+  const answerPrompt = async (c, text) => (await api.answerPrompt(projectId, c, { text, author: name })).prompt;
+  async function answer(c, text, prompt) {
+    try {
+      const { comment: next } = await api.answerComment(projectId, c, { text, author: name, prompt });
+      setComments((cs) => cs.map((x) => (x.id === next.id && x.itemKey === next.itemKey ? next : x)));
+      toast('Answered. An agent applies it through a refinement for you to adopt.');
+      return true;
+    } catch (err) {
+      fail(err);
+      return false;
+    }
+  }
+
   const setName = (v) => {
     setNameState(v);
     storage.set(NAME, v || null);
   };
 
-  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, resolve, answer, answerPrompt, flush };
 }

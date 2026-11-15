@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4) and the standup (CONN-03 to CONN-05, #34), tested the way an agent uses it: JSON-RPC over HTTP.
+// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34) and applying an answer (ANSWER-01 to ANSWER-05, #68), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -304,6 +304,61 @@ test('MCP-14 every change is recorded with the agent, the time and what changed'
   assert.deepEqual(actions.map((x) => x.tool), ['handoff', 'claim'], 'newest first; reads are not changes');
   assert.ok(actions.every((x) => x.agentId === a.id && x.at === '2030-01-07T10:00:00.000Z'));
   assert.deepEqual(actions[1].change.result.claimed, ['ZOOM-01']);
+});
+
+/** An agent's question on #11, answered by a person in the app. */
+async function answered({ prompt } = {}) {
+  const s = await setup();
+  const a = await s.agent('Builder');
+  await a.use('standup');
+  const { question } = await a.use('ask', { place: 'issue-11', question: 'How long should a claim last?' });
+  const path = `/api/projects/${s.pid}/comments/issue-11/${question}`;
+  const sent = await s.rest('POST', `${path}/answer`, { text: 'Two hours, renewable.', author: 'Ken', prompt });
+  return { ...s, a, question, path, sent };
+}
+
+test('ANSWER-01 ANSWER-02 ANSWER-05 an answer waits under its question to be applied, with one prompt the person can read and change first', async () => {
+  const { rest, pid, path, sent } = await answered();
+  const seen = await rest('POST', `${path}/prompt`, { text: 'Two hours, renewable.', author: 'Ken' });
+  assert.equal(seen.prompt, sent.prompt, 'the person sees the prompt that goes');
+  for (const part of [/How long should a claim last\?/, /in Open questions/, /Two hours, renewable\./, /## Behaviours\n\n- CL-01/, /parent: Web/, /#10 Zoom \(issue-10\), ready/, /would be ready/, /Write the decision where it belongs/, /Clear the question from Open questions/, /behaviours to add/, /Mark the item ready/]) assert.match(sent.prompt, part);
+  const [c] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
+  assert.equal(c.resolved, false, 'answered, not resolved');
+  assert.equal(c.answer.text, 'Two hours, renewable.');
+
+  const edited = await answered({ prompt: `${sent.prompt}\n\nKeep the wording short.` });
+  assert.match(edited.sent.prompt, /Keep the wording short\.$/);
+  assert.match((await edited.a.use('standup')).addressed_to_you.answered[0].prompt, /Keep the wording short\.$/, 'the changed prompt is the one that goes');
+});
+
+test("ANSWER-03 the agent that asked gets the prompt as its first step; once it stays away a claim's length, any agent gets it from next_work", async () => {
+  const { a, agent, clock, question } = await answered();
+  const b = await agent('Reviewer');
+  assert.ok(!(await b.use('next_work')).answers_to_apply, 'it waits for the agent that asked');
+  const r = await a.use('standup');
+  assert.equal(r.addressed_to_you.answered[0].question_id, question);
+  assert.match(r.addressed_to_you.answered[0].prompt, /Two hours, renewable/);
+  assert.match(r.first_step, /^Apply the answer to your question on #11 Claims/);
+  clock.now += 121 * 60_000;
+  const open = (await b.use('next_work')).answers_to_apply;
+  assert.deepEqual(open.map((x) => [x.item, x.question_id]), [['issue-11', question]]);
+  assert.match(open[0].prompt, /propose\(/);
+});
+
+test('ANSWER-04 the answer is applied through a refinement; adopting it resolves the question, and the item comes back ready', async () => {
+  const { a, rest, pid, question } = await answered();
+  await rest('PATCH', `/api/projects/${pid}/nodes/i11`, { status: 'needs_decision' });
+  const { refinement } = await a.use('refine', { place: 'issue-11' });
+  const markdown = body({ behaviours: ['CL-01 Given work, when claimed, then it is held for two hours, and can be held again.', 'CL-02 Given a claim, when it ends, then it says so.'] });
+  const done = await a.use('propose', { refinement, item: 'issue-11', markdown, answers: [question], item_ready: true });
+  assert.deepEqual([done.answers, done.item_ready], [[question], true]);
+  assert.equal((await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments[0].resolved, false, 'unresolved until adopted');
+  const adopted = await rest('POST', `/api/projects/${pid}/changesets/${refinement}/accept`);
+  assert.equal(adopted.nodes[0].status, 'ready');
+  assert.match(adopted.nodes[0].body, /two hours, and can be held again/);
+  const [c] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
+  assert.equal(c.resolved, true);
+  assert.equal(c.answer.appliedBy, refinement);
 });
 
 test('CONN-07 the agents list shows when each agent last called, written at most every few minutes', async () => {
