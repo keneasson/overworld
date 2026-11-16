@@ -420,7 +420,7 @@ function drawBlock(ctx, block, rect, alpha, theme) {
   return hits;
 }
 
-const BADGE_INK = { fire: '#d93025', fog: '#5f6b7a', pull: '#8250df', agent: '#1a73e8', comment: '#e8710a', question: '#8b5cf6' };
+const BADGE_INK = { fire: '#d93025', fog: '#5f6b7a', pull: '#8250df', agent: '#1a73e8', comment: '#e8710a', question: '#8b5cf6', problem: '#d93025', change: '#1a73e8', refactor: '#137333' };
 
 function drawPin(ctx, x, y) {
   ctx.save();

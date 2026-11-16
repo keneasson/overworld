@@ -3,7 +3,7 @@
 // (NOTE-02), and posts with ⌘/Ctrl+Enter (NOTE-12).
 
 import { useState } from 'react';
-import { NOTE_KINDS, NOTE_KIND_HINT, NOTE_KIND_LABEL, initials, isColour, isQuestion, kindOf } from '@shared/annotations.js';
+import { NOTE_KINDS, NOTE_KIND_HINT, NOTE_KIND_LABEL, OUTCOME_LABEL, initials, isColour, isQuestion, kindOf } from '@shared/annotations.js';
 import { Icon } from '../components/Icon.jsx';
 
 const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -157,10 +157,14 @@ function AnswerForm({ question, onAnswer, onPrompt, onCancel }) {
   );
 }
 
-/** Where an annotation addressed to an agent has got to (NOTE-17), or what became of it. */
+/** Where an annotation addressed to an agent has got to (NOTE-17), or what became of it (NOTE-05). */
 function Status({ c }) {
   const o = c.outcome;
-  if (o?.state === 'applied') return <p className="note-status done">Applied when refinement {o.refinement} was adopted{o.by ? `, from ${o.by}` : ''}.</p>;
+  if (o?.state === 'applied' && o.refinement) return <p className="note-status done">Applied when refinement {o.refinement} was adopted{o.by ? `, from ${o.by}` : ''}.</p>;
+  if (o?.state === 'applied') return <p className="note-status done">Applied by {o.by}{o.link ? <> in {/^https?:\/\//.test(o.link) ? <a href={o.link} target="_blank" rel="noopener noreferrer">{o.link}</a> : o.link}</> : ''}.</p>;
+  if (o?.state === 'declined') return <p className="note-status">Declined by {o.by}: {o.reason}</p>;
+  if (o?.state === 'promoted') return <p className="note-status done">Made a task by {o.by}: {o.title}.</p>;
+  if (o) return <p className="note-status done">{OUTCOME_LABEL[o.state] ?? 'Resolved'} by {o.by}.</p>;
   const d = c.delivery;
   if (!d) return null;
   if (d.state === 'waiting') return <p className="note-status">Sent to {d.for === 'any agent' ? 'Claude' : d.for}. No agent is connected: it is the first thing the next one to call gets.</p>;
@@ -193,10 +197,27 @@ function Said({ c, children }) {
 }
 
 /** One annotation's thread (NOTE-11): the annotation, its replies, and a reply box. */
-export function Thread({ heading, quote, what, src, moved, thread, onReply, onResolve, onAnswer, onAnswerPrompt, onClose }) {
+/** The ways an annotation is dealt with, by kind (NOTE-05, NOTE-06); a Comment is just resolved. */
+const DEALS = { question: ['answered', 'declined'], problem: ['applied', 'promoted', 'declined'], change: ['applied', 'declined'], refactor: ['applied', 'promoted', 'declined'], comment: ['resolved'] };
+const DEAL_LABEL = { answered: 'Answered', applied: 'Applied', declined: 'Decline…', promoted: 'Make it a task', resolved: 'Resolve' };
+
+export function Thread({ heading, quote, what, src, moved, thread, onReply, onResolve, onSettle, onPromote, onAnswer, onAnswerPrompt, onClose }) {
   const { root, replies } = thread;
   const [text, setText] = useState('');
   const [answering, setAnswering] = useState(false);
+  const [dealing, setDealing] = useState(null); // 'applied' or 'declined': asking for what did it, or why
+  const [said, setSaid] = useState('');
+  const deal = async (how) => {
+    if (how === 'promoted') return onPromote?.(root);
+    if (how === 'resolved' || how === 'answered' || !onSettle) return onSettle ? onSettle(root, { outcome: how }) : onResolve(root, true);
+    setDealing(how);
+    setSaid('');
+  };
+  const confirm = async (e) => {
+    e?.preventDefault();
+    if (dealing === 'declined' && !said.trim()) return;
+    if (await onSettle(root, { outcome: dealing, ...(dealing === 'declined' ? { reason: said.trim() } : { link: said.trim() }) })) setDealing(null);
+  };
   const [busy, setBusy] = useState(false);
   const kind = kindOf(root);
   const reply = async (e) => {
@@ -225,9 +246,17 @@ export function Thread({ heading, quote, what, src, moved, thread, onReply, onRe
               {root.answer ? 'Change answer' : 'Answer'}
             </button>
           )}
-          <button type="button" className="link-btn" onClick={() => onResolve(root, !root.resolved)}>
-            {root.resolved ? 'Reopen' : 'Resolve'}
-          </button>
+          {root.resolved ? (
+            <button type="button" className="link-btn" onClick={() => (onSettle ? onSettle(root, { resolved: false }) : onResolve(root, false))}>
+              Reopen
+            </button>
+          ) : (
+            DEALS[kind].filter((how) => how !== 'promoted' || onPromote).map((how) => (
+              <button key={how} type="button" className="link-btn" onClick={() => deal(how)}>
+                {DEAL_LABEL[how]}
+              </button>
+            ))
+          )}
           <button type="button" className="icon-btn small" aria-label="Close the thread" onClick={onClose}>
             <Icon name="close" size={14} />
           </button>
@@ -239,6 +268,27 @@ export function Thread({ heading, quote, what, src, moved, thread, onReply, onRe
         <Value value={root.value} />
       </Said>
       <Status c={root} />
+      {dealing && (
+        <form className="answer-form" onSubmit={confirm}>
+          <input
+            autoFocus
+            className="note-deal"
+            aria-label={dealing === 'declined' ? 'Why it is declined' : 'What applied it'}
+            value={said}
+            onChange={(e) => setSaid(e.target.value)}
+            placeholder={dealing === 'declined' ? 'Why not? (needed)' : 'The commit, pull request or version that did it (optional)'}
+            maxLength={dealing === 'declined' ? 2000 : 300}
+          />
+          <div className="answer-actions">
+            <button type="button" className="link-btn" onClick={() => setDealing(null)}>
+              Cancel
+            </button>
+            <button type="submit" disabled={dealing === 'declined' && !said.trim()}>
+              {dealing === 'declined' ? 'Decline' : 'Mark applied'}
+            </button>
+          </div>
+        </form>
+      )}
       {root.answer && !answering && (
         <div className="answer">
           <div className="comment-head">

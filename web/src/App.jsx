@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { itemKeyOf } from '@shared/issue-shape.js';
+import { openByItem } from '@shared/annotations.js';
 import { KIND_LABEL } from '@shared/schema.js';
 import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
@@ -165,9 +166,16 @@ export function App() {
   // Comments load one item at a time, when its details or its editor column open; a large project never
   // pays for every thread up front. `commentsFor` remembers which items it has asked for.
   const commentsFor = useRef(new Set());
+  const [openNotes, setOpenNotes] = useState({}); // open annotations by item and kind, for the map's badges (NOTE-03, NOTE-04)
   useEffect(() => {
     setComments([]);
+    setOpenNotes({});
     commentsFor.current = new Set();
+    if (!projectId) return;
+    api
+      .openNotes(projectId)
+      .then((d) => latest.current.projectId === projectId && setOpenNotes(d.open))
+      .catch(() => {});
   }, [projectId]);
   const loadComments = useCallback(
     (keys) => {
@@ -326,6 +334,12 @@ export function App() {
 
   // Items with someone else's refinement waiting are marked on the map (ADOPT-02), so they can be found.
   const live = useMemo(() => {
+    // Badges for open annotations: the project's counts, with the threads loaded here counted again as they change.
+    const loaded = openByItem(comments);
+    const keys = new Set(comments.map((c) => c.itemKey));
+    const byItem = { ...Object.fromEntries(Object.entries(openNotes).filter(([k]) => !keys.has(k))), ...loaded };
+    const nodeOf = new Map(tree ? tree.list.map((x) => [itemKeyOf(x), x.id]) : []);
+    const notes = new Map(Object.entries(byItem).flatMap(([k, v]) => (nodeOf.has(k) ? [[nodeOf.get(k), v]] : [])));
     const refinements = new Map();
     const byKey = new Map(editing.others.length && tree ? tree.list.map((x) => [itemKeyOf(x), x]) : []);
     for (const cs of editing.others)
@@ -333,8 +347,8 @@ export function App() {
         const n = !it.new && byKey.get(it.key);
         if (n) refinements.set(n.id, (refinements.get(n.id) ?? 0) + 1);
       }
-    return { refinements };
-  }, [editing.others, tree]);
+    return { refinements, notes };
+  }, [editing.others, tree, comments, openNotes]);
   // Agents propose through MCP while the map is open: look again when an item opens, and now and then.
   const { reloadRefinements } = editing;
   useEffect(() => {

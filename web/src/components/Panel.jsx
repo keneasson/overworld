@@ -322,6 +322,8 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
               onChange={(after) => editing.change(key, after)}
               onComment={(anchor, text, extra) => editing.comment(key, anchor, text, extra)}
               onResolve={editing.resolve}
+              onSettle={editing.settle}
+              onPromote={editing.promote}
               onAnswer={editing.answer}
               onAnswerPrompt={editing.answerPrompt}
             />

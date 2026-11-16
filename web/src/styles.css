@@ -2369,3 +2369,49 @@ span.note-kind {
     color: #fdd663;
   }
 }
+.note-history {
+  font-size: 12px;
+  color: var(--muted);
+}
+.note-history summary {
+  cursor: pointer;
+}
+.note-history ul {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.note-history li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.note-history .link-btn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.note-outcome {
+  flex: none;
+  font-weight: 600;
+}
+.note-deal {
+  padding: 6px 9px;
+  border: 1px solid #e8d9a8;
+  border-radius: 6px;
+  background: #fff;
+  color: #202124;
+  font: inherit;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .note-deal {
+    background: #2a2a2a;
+    color: #e8eaed;
+    border-color: #5a4d2c;
+  }
+}
