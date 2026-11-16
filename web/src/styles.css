@@ -2340,3 +2340,32 @@ span.note-kind {
     color: #c9b27a;
   }
 }
+.note-status {
+  margin: 0;
+  font-size: 12px;
+  color: #6b5a2e;
+}
+.note-status.live {
+  color: #1a73e8;
+}
+.note-status.done {
+  color: #137333;
+}
+.note-mention {
+  font-weight: 600;
+  color: #b06000;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .note-status {
+    color: #c9b27a;
+  }
+  :root:not([data-theme='light']) .note-status.live {
+    color: #8ab4f8;
+  }
+  :root:not([data-theme='light']) .note-status.done {
+    color: #81c995;
+  }
+  :root:not([data-theme='light']) .note-mention {
+    color: #fdd663;
+  }
+}

@@ -7,9 +7,10 @@
 import { APP_NAME } from '../shared/brand.js';
 import { ROOT_ID, ValidationError } from '../shared/schema.js';
 import { editableOf, hasOpenQuestions, parseIssue, sectionText } from '../shared/issue-shape.js';
-import { Refused } from './agents.mjs';
+import { Refused, noteOf as addressedOf } from './agents.mjs';
 import { awaitsApplying } from './answers.mjs';
-import { isQuestion, kindOf, whereOf } from '../shared/annotations.js';
+import { isQuestion, kindOf, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
+import { notePrompt } from './notes.mjs';
 import { behavioursOf, blockersOf, buildingOf, isFinished, keyOf, nextWork, stateOf } from './work.mjs';
 
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26'];
@@ -22,6 +23,7 @@ const HOW_TO_WORK = [
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
   'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
+  'People address you in annotations with @Claude. Any tool\'s result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread.',
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
 
@@ -273,6 +275,7 @@ export function createMcp({ model, agents, call, log = console }) {
         markdown: { type: 'string', description: 'The full new markdown. Leave out to keep it.' },
         ready_for_adoption: ids('Behaviour IDs whose conversation has converged.'),
         answers: ids('Ids of the answered questions this proposal applies; they resolve when it is adopted.'),
+        annotations: ids('Ids of the annotations this proposal acts on; they are applied when it is adopted.'),
         item_ready: { type: 'boolean', description: 'With answers: the item is ready once adopted, because nothing else is open.' },
         request_key: requestKey,
       },
@@ -307,8 +310,64 @@ export function createMcp({ model, agents, call, log = console }) {
           item.readyForAdoption = ready;
           await model.changesets.put(pid, changeset);
         }
-        const applies = await agents.applyAnswers(pid, changeset, item, { answers: list(args.answers), ready: args.item_ready });
+        const applies = { ...(await agents.applyAnswers(pid, changeset, item, { answers: list(args.answers), ready: args.item_ready })), ...(await agents.applyNotes(pid, changeset, item, { annotations: list(args.annotations) })) };
         return { refinement: changeset.id, item: keyOf(node), ...(item?.new ? { new: true } : {}), ...(res.rebased ? { rebased: 'The item changed since this refinement opened: your text is now proposed against it as it is, so check you kept what changed.' } : {}), proposed: Boolean(item), ready_for_adoption: item?.readyForAdoption ?? [], ...applies };
+      },
+    },
+
+    inbox: {
+      description: 'What people have addressed to you with @Claude, handed to you now: each annotation with the prompt to act on it. Every other tool\'s result carries these too, as addressed_to_you_now; a channel or a watch can call this alone to hear them within seconds.',
+      input: {},
+      writes: true,
+      async run({ pid, agent }) {
+        return { addressed_to_you_now: (await agents.addressed(pid, agent)).map(addressedOf) };
+      },
+    },
+
+    annotations: {
+      description: 'Annotations, read the way a person reads them: with an item, its open threads (kind, what they are about, the value of a Change, who is addressed, and the replies); without one, every annotation addressed to you, each with its prompt.',
+      input: { item: { ...place, description: 'The item: issue-12, 12, or a node id. Leave out for what is addressed to you.' } },
+      async run({ pid, agent }, args) {
+        if (args.item == null) return { addressed_to_you: (await agents.addressed(pid, agent, { fresh: false })).map(addressedOf) };
+        const { nodes } = await mapOf(pid);
+        const node = find(nodes, args.item);
+        const comments = await model.comments.list(pid, keyOf(node));
+        const open = threadsOf(comments).filter((t) => !t.root.resolved);
+        return {
+          item: keyOf(node),
+          annotations: open.map(({ root: c, replies }) => ({
+            annotation: c.id,
+            kind: kindOf(c),
+            on: whereOf(c.anchor),
+            ...(c.anchor?.quote ? { quoting: c.anchor.quote } : {}),
+            ...(c.value ? { value: c.value } : {}),
+            by: c.author,
+            said: c.text,
+            ...(c.to?.length ? { to: c.to.map((t) => t.name) } : {}),
+            ...(c.delivery ? { delivery: c.delivery.state } : {}),
+            replies: replies.map((r) => ({ by: r.author, said: r.text })),
+            ...(toAgent(c) ? { prompt: notePrompt({ nodes, comments, note: c }) } : {}),
+          })),
+        };
+      },
+    },
+
+    reply: {
+      description: 'Reply in an annotation\'s thread, the way a person does: say what you did or what you found. Name the refinement that carries your change, if there is one; the annotation is applied when a person adopts it.',
+      input: {
+        annotation: { type: 'string', description: 'The annotation\'s id.' },
+        item: { ...place, description: 'The item it is on.' },
+        text: { type: 'string' },
+        refinement: { type: 'string', description: 'The refinement your change is in, from refine().' },
+        request_key: requestKey,
+      },
+      required: ['annotation', 'item', 'text'],
+      changes: true,
+      async run({ pid, agent }, args) {
+        const node = find((await mapOf(pid)).nodes, args.item);
+        const body = { itemKey: keyOf(node), replyTo: String(args.annotation), text: String(args.text ?? ''), author: author(agent), fromAgent: agent.id, ...(args.refinement ? { refinement: String(args.refinement) } : {}) };
+        const { comment } = await api('POST', `/api/projects/${pid}/comments`, body);
+        return { replied: comment.id, annotation: comment.replyTo, item: keyOf(node) };
       },
     },
 
@@ -348,7 +407,9 @@ export function createMcp({ model, agents, call, log = console }) {
             return done;
           })
         : await run();
-      return { result: result(out) };
+      // Whatever was addressed to this agent since its last call comes with this one, so it hears at once (NOTE-17).
+      const now = name === 'standup' || name === 'inbox' ? [] : await agents.addressed(ctx.pid, ctx.agent);
+      return { result: result(now.length ? { ...out, addressed_to_you_now: now.map(addressedOf), first: 'Someone addressed you just now: act on addressed_to_you_now before anything else.' } : out) };
     } catch (err) {
       const status = err.status ?? 500;
       if (status >= 500) log.error?.(err);

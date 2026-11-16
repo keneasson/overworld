@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34) and applying an answer (ANSWER-01 to ANSWER-05, #68), tested the way an agent uses it: JSON-RPC over HTTP.
+// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, #68) and annotations addressed to agents (NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -359,6 +359,63 @@ test('ANSWER-04 the answer is applied through a refinement; adopting it resolves
   const [c] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
   assert.equal(c.resolved, true);
   assert.equal(c.answer.appliedBy, refinement);
+});
+
+/** A person's annotation on #11's Why, with an @mention in it. */
+const annotate = (rest, pid, body) => rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', anchor: { on: 'word', section: 'Why', quote: 'Because', prefix: '', suffix: '.' }, author: 'Ken', ...body });
+
+test('NOTE-14 NOTE-17 an @Claude annotation is addressed to an agent, reaches the next agent to call in whatever it calls, and the thread says where it went', async () => {
+  const { rest, pid, agent } = await setup();
+  const a = await agent('Builder');
+  const b = await agent('Reviewer');
+  const { comment } = await annotate(rest, pid, { kind: 'problem', text: '@Claude this says nothing. @Ken agrees.' });
+  assert.deepEqual(comment.to, [{ name: 'Claude', agent: true }, { name: 'Ken' }]);
+  assert.equal(comment.delivery.state, 'waiting');
+  const now = (await a.use('zoom')).addressed_to_you_now;
+  assert.deepEqual(now.map((n) => [n.annotation, n.kind, n.from]), [[comment.id, 'problem', 'Ken']]);
+  assert.match(now[0].prompt, /this says nothing/);
+  assert.ok(!(await a.use('zoom')).addressed_to_you_now, 'handed over once');
+  assert.ok(!(await b.use('zoom')).addressed_to_you_now, 'it is the first agent’s');
+  const [c] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
+  assert.deepEqual([c.delivery.state, c.delivery.to], ['delivered', `Builder (${a.id})`]);
+  const up = await a.use('standup');
+  assert.equal(up.addressed_to_you.annotations[0].annotation, c.id, 'and the standup keeps it as the first step');
+  assert.match(up.first_step, /^Act on what Ken addressed to you/);
+  const named = (await annotate(rest, pid, { text: '@Reviewer have a look' })).comment;
+  assert.ok(!(await a.use('zoom')).addressed_to_you_now, 'one named agent: nobody else');
+  assert.equal((await b.use('inbox')).addressed_to_you_now[0].annotation, named.id);
+});
+
+test('NOTE-18 an annotation reaches the agent with everything needed to act on it: what it says and quotes, where, the whole item, its place on the map and its thread', async () => {
+  const { rest, pid, agent } = await setup();
+  const a = await agent('Builder');
+  const { comment } = await annotate(rest, pid, { kind: 'change', text: '@Claude make this blue', value: '#EEAA18' });
+  await annotate(rest, pid, { replyTo: comment.id, text: 'Only the heading, mind.' });
+  const [{ prompt }] = (await a.use('inbox')).addressed_to_you_now;
+  for (const part of [/^Ken addressed you in an annotation on #11 Claims \(issue-11\)/, /a Change, on these words in Why:\n> Because/, /> @Claude make this blue/, /`#EEAA18`/, /- Ken: Only the heading, mind\./, /## Behaviours\n\n- CL-01/, /parent: Web/, /#10 Zoom \(issue-10\), ready/, /make exactly that change/, new RegExp(`annotations: \\["${comment.id}"\\]`), /reply\(annotation:/])
+    assert.match(prompt, part);
+});
+
+test('NOTE-19 NOTE-08 the agent acts through a refinement and replies in the thread; adopting the refinement applies the annotation and names it', async () => {
+  const { rest, pid, agent } = await setup();
+  const a = await agent('Builder');
+  const { comment } = await annotate(rest, pid, { kind: 'problem', text: '@Claude this Why says nothing' });
+  const id = comment.id;
+  assert.equal((await a.use('inbox')).addressed_to_you_now[0].annotation, id);
+  const read = await a.use('annotations', { item: 'issue-11' });
+  assert.deepEqual(read.annotations.map((n) => [n.annotation, n.kind, n.quoting, n.delivery]), [[id, 'problem', 'Because', 'delivered']], 'read the way a person reads it');
+  const { refinement } = await a.use('refine', { place: 'issue-11' });
+  const markdown = body({ why: 'Agents must not build the same thing twice.', behaviours: ['CL-01 Given work, when claimed, then it is held.', 'CL-02 Given a claim, when it ends, then it says so.'] });
+  assert.deepEqual((await a.use('propose', { refinement, item: 'issue-11', markdown, annotations: [id] })).annotations, [id]);
+  await a.use('reply', { annotation: id, item: 'issue-11', text: 'The Why now says what claims prevent.', refinement });
+  let [root, reply] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
+  assert.deepEqual([reply.replyTo, reply.author, reply.refinement], [id, `Builder (${a.id})`, refinement]);
+  assert.deepEqual([root.delivery.state, root.resolved], ['replied', false], 'replied, and applied only when adopted');
+  assert.ok(!(await a.use('standup')).addressed_to_you.annotations, 'nothing left addressed to it');
+  await rest('POST', `/api/projects/${pid}/changesets/${refinement}/accept`);
+  [root] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
+  assert.equal(root.resolved, true);
+  assert.deepEqual([root.outcome.state, root.outcome.refinement], ['applied', refinement]);
 });
 
 test('CONN-07 the agents list shows when each agent last called, written at most every few minutes', async () => {

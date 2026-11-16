@@ -120,5 +120,12 @@ export function threadsOf(comments) {
   return [...threads.values()];
 }
 
+/** Who a comment mentions (NOTE-14): each @name once, in order. */
+export const mentionsOf = (text = '') => [...new Set([...String(text).matchAll(/(?:^|[^\w@])@([A-Za-z][\w.-]*)/g)].map((m) => m[1].replace(/[.-]+$/, '')))];
+/** "@Claude" (or "@agent") is any agent, whichever comes first. */
+export const isAgentAlias = (name) => /^(claude|agents?)$/i.test(name);
+/** Is an annotation addressed to an agent? */
+export const toAgent = (c) => (c?.to ?? []).some((t) => t.agent);
+
 /** A Change's value, read for showing it: a colour gets a swatch. */
 export const isColour = (v) => /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(String(v ?? '').trim());
