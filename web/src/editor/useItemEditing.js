@@ -263,12 +263,15 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
-  async function comment(key, anchor, text) {
+  // An annotation (#15): its kind and a Change's value, or a reply in a thread (NOTE-11). True once it is posted.
+  async function comment(key, anchor, text, { kind, value, replyTo } = {}) {
     try {
-      const { comment: c } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name });
+      const { comment: c } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name, kind, value, replyTo });
       setComments((cs) => [...cs, c]);
+      return true;
     } catch (err) {
       fail(err);
+      return false;
     }
   }
   async function resolve(c, resolved) {

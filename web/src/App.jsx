@@ -5,7 +5,8 @@ import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
 import { MapView } from './map/MapView.jsx';
 import { LENS_BY_ID } from './map/lenses.js';
-import { Breadcrumbs, Chips, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
+import { Breadcrumbs, Chips, CommentToggle, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
+import { Composer } from './editor/Annotate.jsx';
 import { Details, Results } from './components/Panel.jsx';
 import { useItemEditing } from './editor/useItemEditing.js';
 import { isMapped } from './editor/items.js';
@@ -97,6 +98,8 @@ export function App() {
   });
   const [selectedId, setSelectedId] = useState(initial.n);
   const [comments, setComments] = useState([]);
+  const [commenting, setCommenting] = useState(false); // the Comment control (#15 NOTE-10)
+  const [placePick, setPlacePick] = useState(null); // a place on the map picked to comment on: { id, x, y }
   const [resultsOpen, setResultsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
@@ -279,11 +282,17 @@ export function App() {
       if (connectOpen) return setConnectOpen(false);
       const el = document.activeElement;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable || el?.closest?.('.thread-pop')) return;
+      // Esc switches the Comment control off before it closes anything (NOTE-16).
+      if (commenting) return setCommenting(false);
       closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [drawerOpen, connectOpen, closePanel]);
+  }, [drawerOpen, connectOpen, closePanel, commenting]);
+  useEffect(() => {
+    if (!commenting) setPlacePick(null);
+  }, [commenting]);
+  const onCommentPick = useCallback((id, x, y) => setPlacePick({ id, x, y }), []);
 
   const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
   const newVersion = useNewVersion();
@@ -500,7 +509,11 @@ export function App() {
 
   if (locked) return <Unlock onSubmit={unlock} error={unlockError} />;
 
-  const classes = ['app', mobile && 'mobile', panelMode && 'panel-open', sheetFull && 'sheet-full', lens.theme.dark && 'night'].filter(Boolean).join(' ');
+  const classes = ['app', mobile && 'mobile', panelMode && 'panel-open', sheetFull && 'sheet-full', lens.theme.dark && 'night', commenting && 'commenting'].filter(Boolean).join(' ');
+  // One Comment control: on the map's controls, or at the top of the sheet on a phone, where the sheet covers them.
+  const commentControl = tree && <CommentToggle on={commenting} onToggle={() => setCommenting((c) => !c)} />;
+  const inSheet = mobile && panelMode === 'details';
+  const placed = placePick && tree?.byId.get(placePick.id);
 
   return (
     <div className={classes}>
@@ -514,8 +527,11 @@ export function App() {
           insets={insets}
           live={live}
           initialView={initial.view}
+          commenting={commenting}
+          outlineId={placePick?.id ?? null}
           onSelect={onMapSelect}
           onMarker={pick}
+          onCommentPick={onCommentPick}
           onFocus={setFocusId}
           onView={onView}
         />
@@ -545,6 +561,8 @@ export function App() {
                 lens={lens}
                 comments={comments}
                 editing={editing}
+                commenting={commenting}
+                commentControl={inSheet ? commentControl : null}
                 onPick={pick}
                 onFly={(id) => mapRef.current?.flyTo(id)}
                 onAdd={add}
@@ -598,7 +616,27 @@ export function App() {
           <Legend lens={lens} tree={tree} live={live} />
         </div>
       )}
-      {scene && <MapControls onZoom={(f) => mapRef.current?.zoomBy(f)} onOverview={() => mapRef.current?.overview()} />}
+      {scene && (
+        <MapControls onZoom={(f) => mapRef.current?.zoomBy(f)} onOverview={() => mapRef.current?.overview()}>
+          {!inSheet && commentControl}
+        </MapControls>
+      )}
+      {commenting && !placed && (
+        <div className="comment-banner" role="status">
+          {mobile ? 'Tap what it’s about, then tap again to comment' : 'Click what it’s about, or drag across words'} · <button type="button" className="link-btn" onClick={() => setCommenting(false)}>{mobile ? 'Done' : 'Esc to stop'}</button>
+        </div>
+      )}
+      {placed && (
+        <div className="thread-pop map-note" style={mobile ? undefined : { left: Math.min(placePick.x + 12, window.innerWidth - 380), top: Math.min(placePick.y + 12, window.innerHeight - 340) }}>
+          <Composer
+            key={placed.id}
+            heading={placed.title}
+            what="The place on the map"
+            onPost={(text, extra) => editing.comment(itemKeyOf(placed), { on: 'place' }, text, extra)}
+            onCancel={() => setPlacePick(null)}
+          />
+        </div>
+      )}
       {hint && tree && (
         <Hint
           onDismiss={() => {

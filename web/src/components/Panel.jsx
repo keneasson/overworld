@@ -204,7 +204,7 @@ function Refinement({ cs, item, node, editing }) {
  * properties change in place (EDIT-11), and comments sit on what they are about. The panel only ever holds this
  * one item (EDIT-13); its edits wait in the project's changeset when another is picked.
  */
-export function Details({ node, tree, lens, comments = [], editing, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+export function Details({ node, tree, lens, comments = [], editing, commenting = false, commentControl = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const s = node.stats;
   const key = itemKeyOf(node);
@@ -238,9 +238,12 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
             </button>
           ))}
         </div>
-        <button className="icon-btn" onClick={onClose} aria-label="Close panel">
-          <Icon name="close" />
-        </button>
+        <span className="panel-head-actions">
+          {commentControl}
+          <button className="icon-btn" onClick={onClose} aria-label="Close panel">
+            <Icon name="close" />
+          </button>
+        </span>
       </header>
       <div className="title-row">
         <KindBadge kind={node.kind} />
@@ -314,9 +317,10 @@ export function Details({ node, tree, lens, comments = [], editing, onPick, onFl
               issueNumber={issue?.number}
               areaTexts={texts}
               comments={comments.filter((c) => c.itemKey === key)}
+              commenting={commenting}
               conflict={editing.conflicts.has(key)}
               onChange={(after) => editing.change(key, after)}
-              onComment={(anchor, text) => editing.comment(key, anchor, text)}
+              onComment={(anchor, text, extra) => editing.comment(key, anchor, text, extra)}
               onResolve={editing.resolve}
               onAnswer={editing.answer}
               onAnswerPrompt={editing.answerPrompt}

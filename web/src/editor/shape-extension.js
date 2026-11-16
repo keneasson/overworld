@@ -1,13 +1,15 @@
 // The strict shape, kept by the document rather than by forms (EDIT-02, EDIT-07): headings outside the
 // shape and behaviours without an ID are marked where they are, Given / When / Then are picked out, Enter
-// at the end of a behaviour starts the next one with its ID, and comments show beside what they are on.
-// Nothing here ever blocks typing.
+// at the end of a behaviour starts the next one with its ID, and each annotation (#15) is a marker with its
+// author's initials at the words it is about, which stay highlighted (NOTE-13). Nothing here ever blocks typing.
 
 import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { SECTIONS, hasOpenQuestions } from '@shared/issue-shape.js';
+import { NOTE_KIND_LABEL, initials, kindOf } from '@shared/annotations.js';
 import { sectionAt } from './document.js';
+import { rangeOf, sectionTexts } from './targets.js';
 
 const KEY = new PluginKey('issueShape');
 const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-\d+)\b/;
@@ -26,27 +28,43 @@ function flatten(para, start) {
   return { text, at };
 }
 
-function noteButton(anchor, count, onThread) {
+function marker(c, onThread, moved) {
   return () => {
     const b = document.createElement('button');
     b.type = 'button';
     b.contentEditable = 'false';
-    b.className = `note-btn${count ? ' has' : ''}`;
-    b.setAttribute('aria-label', `${anchor.behaviour ?? anchor.section}: ${count || 'no'} comments`);
-    b.textContent = count ? `💬 ${count}` : '💬';
+    b.className = `note-marker kind-${kindOf(c)}${c.resolved ? ' resolved' : ''}${moved ? ' moved' : ''}`;
+    b.dataset.thread = c.id;
+    b.setAttribute('aria-label', `${NOTE_KIND_LABEL[kindOf(c)]} from ${c.author}: ${c.text.slice(0, 80)}`);
+    b.title = `${NOTE_KIND_LABEL[kindOf(c)]} · ${c.author}${moved ? ' · the words it was on have changed' : ''}`;
+    b.textContent = initials(c.author);
     b.addEventListener('mousedown', (e) => e.preventDefault());
-    b.addEventListener('click', () => onThread(anchor, b));
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onThread(c.id, b);
+    });
     return b;
   };
 }
 
-function decorate(doc, { counts, onThread }) {
+/** Each annotation's highlight and marker, where its anchor is now (NOTE-01, NOTE-13). */
+function notes(doc, { threads, active, onThread }) {
   const out = [];
-  const widget = (pos, anchor) => {
-    const key = anchor.behaviour ? `b:${anchor.behaviour}` : `s:${anchor.section}`;
-    const count = counts.get(key) ?? 0;
-    out.push(Decoration.widget(pos, noteButton(anchor, count, onThread), { side: 1, key: `${key}:${count}`, ignoreSelection: true }));
-  };
+  const texts = sectionTexts(doc);
+  for (const c of threads) {
+    if (c.anchor?.on === 'place') continue;
+    const r = rangeOf(doc, c.anchor ?? {}, texts);
+    if (!r) continue;
+    const on = c.id === active ? ' on' : '';
+    if (r.inline && !c.resolved) out.push(r.image ? Decoration.node(r.from, r.to, { class: `noted-img kind-${kindOf(c)}${on}` }) : Decoration.inline(r.from, r.to, { class: `noted kind-${kindOf(c)}${on}` }));
+    else if (!r.inline && !r.moved && !c.resolved && c.anchor?.behaviour) out.push(Decoration.node(r.from, r.to, { class: `noted-block kind-${kindOf(c)}${on}` }));
+    out.push(Decoration.widget(r.marker, marker(c, onThread, r.moved), { side: 1, key: `note:${c.id}:${c.resolved}:${r.moved}:${on}`, ignoreSelection: true, stopEvent: () => true }));
+  }
+  return out;
+}
+
+function decorate(doc, opts) {
+  const out = notes(doc, opts);
   let section = null;
   let questions = null;
   let questionText = '';
@@ -55,7 +73,6 @@ function decorate(doc, { counts, onThread }) {
       section = canonical(node.textContent.trim());
       if (!SECTIONS.includes(section)) out.push(Decoration.node(offset, offset + node.nodeSize, { class: 'off-shape', 'data-note': 'Not in the shape' }));
       if (section === 'Open questions') questions = [offset, offset + node.nodeSize];
-      widget(offset + node.nodeSize - 1, { section });
       return;
     }
     if (section === 'Open questions') questionText += `${node.textContent}\n`;
@@ -73,7 +90,6 @@ function decorate(doc, { counts, onThread }) {
       out.push(Decoration.inline(at[0], at[id[1].length - 1] + 1, { class: 'bid' }));
       const g = text.match(GWT);
       if (g) for (const [s, e] of g.indices.slice(1)) out.push(Decoration.inline(at[s], at[e - 1] + 1, { class: 'kw' }));
-      widget(itemPos + 1 + para.nodeSize - 1, { behaviour: id[1] });
     });
   });
   if (questions && hasOpenQuestions(questionText)) out.push(Decoration.node(questions[0], questions[1], { class: 'asking', 'data-note': '? Needs a decision' }));
@@ -84,17 +100,17 @@ export const IssueShape = Extension.create({
   name: 'issueShape',
 
   addOptions() {
-    // nextId(): the ID a new behaviour gets. onThread(anchor, button): open a comment thread.
+    // nextId(): the ID a new behaviour gets. onThread(id, marker): open an annotation's thread.
     return { nextId: () => 'ITEM-01', onThread: () => {} };
   },
 
   addStorage() {
-    return { counts: new Map() };
+    return { threads: [], active: null };
   },
 
   addProseMirrorPlugins() {
     const ext = this;
-    const build = (doc) => decorate(doc, { counts: ext.storage.counts, onThread: (a, b) => ext.options.onThread(a, b) });
+    const build = (doc) => decorate(doc, { threads: ext.storage.threads, active: ext.storage.active, onThread: (id, b) => ext.options.onThread(id, b) });
     return [
       new Plugin({
         key: KEY,
@@ -121,9 +137,14 @@ export const IssueShape = Extension.create({
   },
 });
 
-/** Show new comment counts without waiting for an edit. */
-export function refreshNotes(editor, counts) {
+/** Show annotations as they change, without waiting for an edit: each thread's first annotation, and the one open. */
+export function refreshNotes(editor, threads, active = null) {
   if (!editor || editor.isDestroyed) return;
-  editor.storage.issueShape.counts = counts;
-  editor.view.dispatch(editor.state.tr.setMeta(KEY, true));
+  editor.storage.issueShape.threads = threads;
+  editor.storage.issueShape.active = active;
+  try {
+    editor.view.dispatch(editor.state.tr.setMeta(KEY, true));
+  } catch {
+    // Not mounted yet: the decorations are built from storage when it is.
+  }
 }
