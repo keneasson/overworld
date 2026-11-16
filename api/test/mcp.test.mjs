@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, #68) and annotations addressed to agents (NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15), tested the way an agent uses it: JSON-RPC over HTTP.
+// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, #68), annotations addressed to agents (NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15) and leaf-only work (STATE-09, STATE-10, #32), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -534,4 +534,46 @@ test('CONN-08 after the standup the agent builds unassisted: blockers go to ask(
   assert.match(prompt, /handoff\(\)/);
   const { how_to_work } = await a.use('prime');
   assert.ok(how_to_work.some((line) => /without waiting/.test(line) && /ask\(/.test(line)), 'how work goes here says so too');
+});
+
+test('STATE-09 only leaf issues are offered as work; a parent with behaviours of its own needs them moved into a child', async () => {
+  const { rest, agent } = await setup();
+  const leafy = (await rest('POST', '/api/import/json', {
+    nodes: [
+      { id: 'root', title: 'App', kind: 'project' },
+      { id: 'web', parentId: 'root', title: 'Web', kind: 'area' },
+      issue(20, 'Parent', { body: body({ behaviours: ['PA-01 Given a parent, when big, then split.'] }) }),
+      issue(21, 'Child', { parentId: 'i20', body: body({ behaviours: ['CH-01 Given a child, when small, then built.'] }) }),
+    ],
+  })).project.id;
+  const a = await agent('Builder', leafy);
+  const next = await a.use('next_work');
+  assert.deepEqual(next.work.map((w) => w.item), ['issue-21'], 'the child is the work, not its parent');
+  assert.deepEqual(next.need_a_split, ['issue-20']);
+  assert.match((await a.use('context', { issue: 'issue-20' })).needs_split.reason, /child/);
+  assert.match((await a.refused('claim', { behaviours: ['PA-01'] })).error, /needs a split/);
+});
+
+test('STATE-10 STATE-12 an issue partly built needs a split; one tested throughout is to verify, not done; neither is offered to build', async () => {
+  const { rest, agent, shop } = await setup();
+  const ready = { labels: [{ name: 'status:ready' }] };
+  shop.issues.push(
+    shop.issue(30, 'Half built', body({ behaviours: ['HB-01 Given one, when built, then tested.', 'HB-02 Given two, when not, then not.'] }), ready),
+    shop.issue(31, 'All built', body({ behaviours: ['AB-01 Given all, when built, then tested.'] }), ready),
+    shop.issue(32, 'Not started', body({ behaviours: ['NS-01 Given none, when started, then work.'] }), ready),
+  );
+  shop.tree.push({ path: 'test/app.test.mjs', type: 'blob' });
+  shop.docs['test/app.test.mjs'] = "test('HB-01 one is built', () => {});\ntest('AB-01 all are built', () => {});\n";
+  const pid = (await rest('POST', '/api/import/github', { repo: 'octo/shop' })).project.id;
+  const a = await agent('Builder', pid);
+  const next = await a.use('next_work');
+  assert.ok(next.work.some((w) => w.item === 'issue-32'), 'untested work is still offered');
+  assert.ok(!next.work.some((w) => ['issue-30', 'issue-31'].includes(w.item)), 'partly or wholly tested work is not');
+  const s = await a.use('standup');
+  const half = s.needs_split.find((x) => x.item === 'issue-30');
+  assert.deepEqual(half.looks_built, ['HB-01']);
+  assert.ok(!s.needs_split.some((x) => x.item === 'issue-31'), 'tested throughout is not a split');
+  assert.deepEqual(s.to_verify.find((x) => x.item === 'issue-31').behaviours, ['AB-01']);
+  assert.deepEqual(next.to_verify, ['issue-31']);
+  assert.deepEqual((await a.use('context', { issue: '30' })).needs_split.still_to_build, ['HB-02']);
 });
