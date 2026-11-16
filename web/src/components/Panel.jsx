@@ -4,7 +4,7 @@ import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
 import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
-import { compareItems, editableOf, hasOpenQuestions, issueOf, itemKeyOf, parseIssue, sectionText } from '@shared/issue-shape.js';
+import { compareItems, editableOf, issueOf, itemKeyOf } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
@@ -128,15 +128,14 @@ function Change({ label, change, before, after, ready }) {
 
 /**
  * Someone else's refinement of this item (ADOPT-02): who proposed it and when, what it changes against the spec,
- * which behaviours are ready for adoption (ADOPT-04), and the person's yes or no (ADOPT-05). Open questions keep it
- * from adoption (ADOPT-08).
+ * which behaviours are ready for adoption (ADOPT-04), and the person's yes or no (ADOPT-05). Open questions show as
+ * badges, and never hold it back (ADOPT-08).
  */
 function Refinement({ cs, item, node, editing }) {
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
   const diff = useMemo(() => compareItems(editableOf(node), item.after), [node, item.after]);
   const ready = new Set(item.readyForAdoption ?? []);
-  const questions = hasOpenQuestions(sectionText(parseIssue(item.after.markdown), 'Open questions'));
   const nothing = !diff.title && !diff.behaviours.length && !diff.sections.length;
   const key = item.key;
   return (
@@ -166,7 +165,6 @@ function Refinement({ cs, item, node, editing }) {
           Ready for adoption: {[...ready].join(', ')}
         </p>
       )}
-      {questions && <p className="refinement-blocked">It still has open questions. Answer them before adopting it.</p>}
       {declining ? (
         <div className="refinement-decline">
           <textarea aria-label="Why decline (optional)" placeholder="Why not? (optional: its author sees this)" value={reason} maxLength={2000} rows={2} onChange={(e) => setReason(e.target.value)} />
@@ -188,8 +186,8 @@ function Refinement({ cs, item, node, editing }) {
             type="button"
             className="primary"
             onClick={() => editing.adopt(cs, key)}
-            disabled={editing.busy || questions}
-            title={questions ? 'Answer its open questions first' : 'Adopt it: the item takes this text, and waits for a save to reach GitHub'}
+            disabled={editing.busy}
+            title="Adopt it: the item takes this text, and waits for a save to reach GitHub"
           >
             <Icon name="check" size={16} /> Adopt
           </button>
@@ -321,11 +319,11 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
               conflict={editing.conflicts.has(key)}
               onChange={(after) => editing.change(key, after)}
               onComment={(anchor, text, extra) => editing.comment(key, anchor, text, extra)}
-              onResolve={editing.resolve}
-              onSettle={editing.settle}
               onPromote={editing.promote}
-              onAnswer={editing.answer}
               onAnswerPrompt={editing.answerPrompt}
+              you={editing.name}
+              hasRead={editing.hasRead}
+              onRead={editing.markRead}
             />
           </Suspense>
         ) : (

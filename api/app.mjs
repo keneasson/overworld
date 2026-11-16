@@ -11,7 +11,7 @@ import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
 import { answerPrompt, settleAnswers } from './answers.mjs';
-import { NOTE_KINDS, NOTE_KIND_LABEL, annotationOf, cleanAnchor, isQuestion, kindOf, mentionsOf, openByItem, whereOf } from '../shared/annotations.js';
+import { NOTE_KINDS, NOTE_KIND_LABEL, annotationOf, answers, cleanAnchor, isPlain, isQuestion, kindOf, mentionsOf, openByItem, readsFor, whereOf } from '../shared/annotations.js';
 import { addresseesOf, settleNotes } from './notes.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
@@ -413,16 +413,14 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project, nodes } = await loadProject(pid);
         let changed = [];
         if (action === 'adopt') {
+          // Open questions don't hold it back: they show as badges, and are answered in their threads (ADOPT-08).
           if (conflictsOf({ items: [entry] }, nodes).length) throw Object.assign(new HttpError(409, `Changed since this was proposed: ${entry.nodeTitle}`), { conflicts: [key] });
-          // Open questions keep an item from adoption, as they keep its behaviours from being ready (ADOPT-08).
-          const asked = (await model.comments.list(pid, key)).filter((c) => !c.resolved && isQuestion(c));
-          if (openQuestions(entry.after.markdown) || asked.length) throw new HttpError(409, 'It still has open questions: answer them before adopting it');
           const before = findItem(nodes, key);
           changed = [markEdited(before, applyTo(before, entry.after, now), stores.forProject(project))];
           await model.nodes.put(pid, changed);
           await touchProject(project, nodes.map((n) => (n.id === before.id ? changed[0] : n)));
         }
-        const applied = action === 'adopt' ? await settleNotes(model, pid, cs, now, [key]) : [];
+        const cleared = action === 'adopt' ? (await settleNotes(model, pid, cs, now, [key])).map(annotationOf) : [];
         const decided = { key, nodeTitle: entry.nodeTitle, by, at: now, ...(entry.readyForAdoption?.length ? { readyForAdoption: entry.readyForAdoption } : {}) };
         if (action === 'adopt') cs.adopted = [...(cs.adopted ?? []), decided];
         else cs.declined = [...(cs.declined ?? []), { ...decided, reason: text(body?.reason ?? '', 2000, 'reason').trim() }];
@@ -431,7 +429,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         // A refinement with nothing left in it is closed: adopted if anything in it was.
         if (!cs.items.length) Object.assign(cs, cs.adopted?.length ? { status: 'accepted', acceptedAt: now } : { status: 'declined' });
         await model.changesets.put(pid, cs);
-        return { changeset: cs, nodes: changed, ...(applied.length ? { resolved: applied.map(annotationOf) } : {}) };
+        return { changeset: cs, nodes: changed, ...(cleared.length ? { cleared } : {}) };
       },
     ],
 
@@ -470,13 +468,13 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         await touchProject(project, nodes.map((n) => byId.get(n.id) ?? n));
         Object.assign(cs, { status: 'accepted', acceptedAt: now, updatedAt: now });
         await model.changesets.put(pid, cs);
-        // Adopting it settles the answers it applied, and an item with nothing else open comes back ready (ANSWER-04).
+        // Adopting it clears the questions it answered, and an item with nothing else open comes back ready (ANSWER-04).
+        // The annotations it acted on clear too, naming it (NOTE-19, NOTE-05).
         const { resolved: answered, ready } = await settleAnswers(model, pid, cs, changed, now);
-        // And the annotations it acted on are applied, naming it (NOTE-19).
-        const resolved = [...answered, ...(await settleNotes(model, pid, cs, now))].map(annotationOf);
+        const cleared = [...answered, ...(await settleNotes(model, pid, cs, now))].map(annotationOf);
         const marked = ready.filter((n) => n.status !== 'ready').map((n) => markEdited(n, { ...n, status: 'ready', updatedAt: now }, store));
         if (marked.length) await model.nodes.put(pid, marked);
-        return { changeset: cs, nodes: changed.map((n) => marked.find((m) => m.id === n.id) ?? n), ...(resolved.length ? { resolved } : {}) };
+        return { changeset: cs, nodes: changed.map((n) => marked.find((m) => m.id === n.id) ?? n), ...(cleared.length ? { cleared } : {}) };
       },
     ],
 
@@ -493,7 +491,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/projects\/([\w-]+)\/comments$/,
       // A new annotation is its own thread (NOTE-11); a reply joins one, on the same anchor. Only a Change carries a value (NOTE-02).
       async ({ params: [pid], body }) => {
-        await loadProject(pid);
+        const { nodes } = await loadProject(pid);
         const itemKey = String(body?.itemKey ?? '');
         if (!KEY.test(itemKey)) throw new ValidationError('itemKey: expected issue-<number> or node-<id>');
         const said = text(body?.text ?? '', 4000, 'text').trim();
@@ -536,62 +534,54 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           thread = { ...root, delivery: { ...root.delivery, state: 'replied', by: comment.author, at } };
           await model.inbox.delete(pid, root.id);
         }
+        // A person's reply to an open question is its answer, and goes to an agent to apply (ANSWER-01, ANSWER-02). The
+        // prompt it goes with is kept only if the person changed it (ANSWER-05). An agent's reply is never the answer.
+        let prompt;
+        if (root && !fromAgent && answers(root, comment.author)) {
+          const built = answerPrompt({ nodes, comments: await model.comments.list(pid, itemKey), question: root, answer: said, answeredBy: comment.author });
+          const asked = body?.prompt == null ? '' : text(body.prompt, 40000, 'prompt').trim();
+          const answer = { text: said, by: comment.author, at, reply: comment.id, ...(asked && asked !== built.trim() ? { prompt: asked } : {}) };
+          thread = { ...thread, answer };
+          prompt = answer.prompt ?? built;
+        }
         await model.comments.put(pid, comment);
         if (thread !== root) await model.comments.put(pid, thread);
-        return { comment: annotationOf(comment), ...(thread !== root ? { thread: annotationOf(thread) } : {}) };
+        return { comment: annotationOf(comment), ...(thread !== root ? { thread: annotationOf(thread) } : {}), ...(prompt ? { prompt } : {}) };
       },
       { status: 201 },
     ],
 
     [
-      'PATCH',
-      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)$/,
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/read$/,
+      // A person has read a plain Comment: it clears into their conversation log, and stays at its words for everyone
+      // else (NOTE-05). One addressed to someone counts as read only by whoever it is addressed to.
       async ({ params: [pid, itemKey, id], body }) => {
         const comment = await model.comments.get(pid, { itemKey, id });
         if (!comment) throw new HttpError(404, 'Comment not found');
-        // Dealing with an annotation (NOTE-05): answered, applied (naming the commit, pull request or version that did
-        // it) or declined with a reason. It stays in the item's history either way, and reopening keeps what was said.
-        const outcome = body?.outcome;
-        if (outcome != null && !['answered', 'applied', 'declined', 'resolved'].includes(outcome)) throw new ValidationError('outcome: answered, applied, declined or resolved');
-        const at = new Date(clock()).toISOString();
-        if (outcome) {
-          const reason = text(body?.reason ?? '', 2000, 'reason').trim();
-          if (outcome === 'declined' && !reason) throw new ValidationError('reason: say why it is declined');
-          const link = text(body?.link ?? '', 300, 'link').trim();
-          comment.outcome = { state: outcome, by: author(body?.by), at, ...(reason ? { reason } : {}), ...(link ? { link } : {}) };
-          comment.resolved = true;
-        } else {
-          comment.resolved = Boolean(body?.resolved);
-          if (!comment.resolved && comment.outcome) comment.outcome = undefined;
-        }
-        comment.history = [...(comment.history ?? []), { state: comment.resolved ? (comment.outcome?.state ?? 'resolved') : 'reopened', by: author(body?.by), at }];
-        if (comment.resolved) await model.inbox.delete(pid, id);
-        await model.comments.put(pid, comment);
-        return { comment: annotationOf(comment) };
+        if (!isPlain(comment)) throw new ValidationError('only a Comment clears once read; the rest clear once acted on');
+        const by = author(body?.by);
+        if (!readsFor(comment, by) || comment.readBy?.includes(by)) return { comment: annotationOf(comment) };
+        const read = { ...comment, readBy: [...(comment.readBy ?? []), by] };
+        await model.comments.put(pid, read);
+        return { comment: annotationOf(read) };
       },
     ],
 
     [
       'POST',
-      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/(answer|prompt)$/,
-      // Answer an open question (ANSWER-01), or just see the prompt the answer would go out with (ANSWER-05). The answer
-      // waits, unresolved, for an agent to write it into the spec; the prompt is kept only if the person changed it.
-      async ({ params: [pid, itemKey, id, action], body }) => {
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/prompt$/,
+      // The prompt a reply to an open question would go out with, to read and change before posting it (ANSWER-05).
+      async ({ params: [pid, itemKey, id], body }) => {
         const question = await model.comments.get(pid, { itemKey, id });
         if (!question) throw new HttpError(404, 'Comment not found');
         if (!isQuestion(question)) throw new ValidationError('only an open question can be answered');
-        if (question.resolved) throw new HttpError(409, 'This question is already resolved');
+        if (question.resolved) throw new HttpError(409, 'This question is already cleared');
         const said = text(body?.text ?? '', 4000, 'text').trim();
         if (!said) throw new ValidationError('text: required');
         const by = author(body?.author);
         const { nodes } = await loadProject(pid);
-        const built = answerPrompt({ nodes, comments: await model.comments.list(pid, itemKey), question, answer: said, answeredBy: by });
-        if (action === 'prompt') return { prompt: built };
-        const asked = body?.prompt == null ? '' : text(body.prompt, 40000, 'prompt').trim();
-        const answer = { text: said, by, at: new Date(clock()).toISOString(), ...(asked && asked !== built.trim() ? { prompt: asked } : {}) };
-        const comment = { ...question, answer };
-        await model.comments.put(pid, comment);
-        return { comment: annotationOf(comment), prompt: answer.prompt ?? built };
+        return { prompt: answerPrompt({ nodes, comments: await model.comments.list(pid, itemKey), question, answer: said, answeredBy: by }) };
       },
     ],
 
@@ -599,12 +589,13 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       'POST',
       /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/promote$/,
       // A Problem or a Refactor becomes a child task in the strict shape, linked back to the annotation (NOTE-06). The
-      // task is new in the person's refinement, like any item they add (NEW-01), and the annotation says where it went.
+      // task is new in the person's refinement, like any item they add (NEW-01). Made a task, the annotation is acted on, so it
+      // clears, and its conversation log links the task (NOTE-05).
       async ({ params: [pid, itemKey, id], body }) => {
         const note = await model.comments.get(pid, { itemKey, id });
         if (!note) throw new HttpError(404, 'Comment not found');
         if (!['problem', 'refactor'].includes(kindOf(note)) || note.replyTo) throw new ValidationError('only a Problem or a Refactor becomes a task');
-        if (note.resolved) throw new HttpError(409, 'This annotation is already dealt with');
+        if (note.resolved) throw new HttpError(409, 'This annotation is already acted on');
         const { project, nodes } = await loadProject(pid);
         const parent = findItem(nodes, itemKey);
         if (!parent) throw new HttpError(404, 'Its item is no longer on the map');
@@ -623,7 +614,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const markdown = writeIssue(parseIssue(template), { Why: why });
         const { node, changeset } = await call('POST', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/new`, { parentId: parent.id, kind: 'task', title, markdown });
         const at = new Date(clock()).toISOString();
-        const comment = { ...note, resolved: true, outcome: { state: 'promoted', by, at, task: itemKeyOf(node), title: node.title }, history: [...(note.history ?? []), { state: 'promoted', by, at }] };
+        const comment = { ...note, resolved: true, cleared: { task: { key: itemKeyOf(node), title: node.title }, by, at } };
         await model.comments.put(pid, comment);
         await model.inbox.delete(pid, id);
         return { comment: annotationOf(comment), node, changeset };

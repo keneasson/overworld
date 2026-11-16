@@ -199,7 +199,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
 
   /**
    * A proposal that applies answers (ANSWER-04): it names the questions it settles, and can ask for the item to be ready.
-   * Adopting it resolves them (answers.mjs, settleAnswers). Returns what the proposal now applies.
+   * Adopting it clears them (answers.mjs, settleAnswers). Returns what the proposal now applies.
    */
   async function applyAnswers(projectId, changeset, item, { answers = [], ready } = {}) {
     if (!answers.length && ready == null) return {};
@@ -253,7 +253,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     return out;
   }
 
-  /** A proposal that acts on annotations (NOTE-19): adopting it applies them (notes.mjs, settleNotes). */
+  /** A proposal that acts on annotations (NOTE-19): adopting it clears them (notes.mjs, settleNotes). */
   async function applyNotes(projectId, changeset, item, { annotations = [] } = {}) {
     if (!annotations.length) return {};
     if (!item) throw new Refused('Nothing is proposed for this item, so it applies no annotation');

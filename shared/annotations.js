@@ -7,7 +7,7 @@ import { ValidationError } from './schema.js';
 export const NOTE_KINDS = ['question', 'problem', 'change', 'refactor', 'comment'];
 export const NOTE_KIND_LABEL = { question: 'Question', problem: 'Problem', change: 'Change', refactor: 'Refactor', comment: 'Comment' };
 export const NOTE_KIND_HINT = {
-  question: 'Needs an answer. Shows as a question until it has one.',
+  question: 'Needs an answer: a reply is the answer. Shows as a question until the answer is applied.',
   problem: 'A bug or a confusing spot. Can become a task.',
   change: 'A concrete instruction, with its value.',
   refactor: 'A code task, with its target.',
@@ -120,13 +120,17 @@ export function threadsOf(comments) {
   return [...threads.values()];
 }
 
-// What became of an annotation (NOTE-05): answered, applied (naming what did it), declined with a reason, or promoted
-// to a task of its own (NOTE-06). A Comment is just resolved.
-export const OUTCOMES = ['answered', 'applied', 'declined', 'promoted', 'resolved'];
-export const OUTCOME_LABEL = { answered: 'Answered', applied: 'Applied', declined: 'Declined', promoted: 'Promoted to a task', resolved: 'Resolved' };
+/**
+ * Is this annotation still open? It clears itself once it is acted on (NOTE-05): its answer applied, its change adopted,
+ * or a task made from it. `resolved` is that fact, and `cleared` says what acted on it, for the conversation log.
+ */
+export const isOpen = (c) => !c.replyTo && !c.resolved;
 
-/** Is this annotation still asking for something? A question stops asking once it has an answer (NOTE-03). */
-export const isOpen = (c) => !c.replyTo && !c.resolved && !(kindOf(c) === 'question' && c.answer);
+/**
+ * Is a reply from `by` the answer to this thread's question (ANSWER-01)? A person's reply to an open question is, when
+ * someone else asked it or it is addressed to an agent; the asker just talking in their own thread is not.
+ */
+export const answers = (root, by) => isQuestion(root) && !root.resolved && (root.author !== by || toAgent(root));
 
 /**
  * Open annotations of each kind but Comment, by item (NOTE-03, NOTE-04): what the map badges.
@@ -142,6 +146,18 @@ export function openByItem(comments) {
   }
   return out;
 }
+
+/** A plain Comment, with nothing expected: it clears into the conversation log for each person once they have read it (NOTE-05). */
+export const isPlain = (c) => !c.replyTo && kindOf(c) === 'comment';
+const sameName = (named, by) => {
+  const a = String(named).toLowerCase();
+  const b = String(by ?? '').trim().toLowerCase();
+  return Boolean(b) && (a === b || a === b.split(/\s+/)[0]);
+};
+/** Does `by` reading this Comment count? One addressed to someone (@name, @Claude) is read only by whoever it is addressed to. */
+export const readsFor = (c, by) => Boolean(String(by ?? '').trim()) && (!c.to?.length || c.to.some((t) => sameName(t.name.replace(/\s*\([^)]*\)$/, ''), by)));
+/** Has `by` read this plain Comment, so that it is in their conversation log? */
+export const readBy = (c, by) => isPlain(c) && Boolean(by) && (c.readBy ?? []).includes(by);
 
 /** Who a comment mentions (NOTE-14): each @name once, in order. */
 export const mentionsOf = (text = '') => [...new Set([...String(text).matchAll(/(?:^|[^\w@])@([A-Za-z][\w.-]*)/g)].map((m) => m[1].replace(/[.-]+$/, '')))];

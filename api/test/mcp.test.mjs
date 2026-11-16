@@ -59,7 +59,9 @@ async function setup({ callsPerMinute, racing = 0 } = {}) {
     };
     return { id: me.id, token, rpc, tool, use, refused: async (n, args) => (await tool(n, args)).structuredContent };
   }
-  return { api, rest, pid, agent, post, clock, file, shop };
+  // An annotation acted on and cleared (NOTE-05), the way adopting a refinement or making a task leaves it.
+  const clear = async (itemKey, id) => model.comments.put(pid, { ...(await model.comments.get(pid, { itemKey, id })), resolved: true, cleared: { refinement: 'cs-test', by: 'Ken', at: new Date(clock.now).toISOString() } });
+  return { api, rest, pid, agent, post, clock, file, shop, clear };
 }
 
 test('MCP-07 an agent signs in with its own token, acts only in its project, and its token can be revoked alone', async () => {
@@ -112,11 +114,11 @@ test('MCP-02 next_work returns new, unclaimed behaviours by issue in priority or
 });
 
 test('MCP-03 context gives one issue whole, with finished siblings and old discussion summarised', async () => {
-  const { agent, rest, pid } = await setup();
+  const { agent, rest, pid, clear } = await setup();
   const a = await agent('Builder');
   await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-10', anchor: { behaviour: 'ZOOM-01' }, text: 'Children in order?' });
   const old = (await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-10', text: 'Settled long ago.' })).comment;
-  await rest('PATCH', `/api/projects/${pid}/comments/issue-10/${old.id}`, { resolved: true });
+  await clear('issue-10', old.id);
   await a.use('claim', { behaviours: ['ZOOM-01'] });
   await a.use('handoff', { note: 'Children render; counts next.' });
   const c = await a.use('context', { issue: 'issue-10' });
@@ -126,7 +128,7 @@ test('MCP-03 context gives one issue whole, with finished siblings and old discu
   assert.deepEqual(c.decisions, ['Decided by the maintainer: zoom is semantic.']);
   assert.deepEqual(c.behaviours.map((x) => [x.id, x.state]), [['ZOOM-01', 'new'], ['ZOOM-02', 'new'], ['ZOOM-03', 'not worked out yet']]);
   assert.deepEqual(c.discussion.open.map((d) => [d.on, d.said]), [['ZOOM-01', 'Children in order?']]);
-  assert.equal(c.discussion.resolved, '1 resolved comments');
+  assert.equal(c.discussion.resolved, '1 cleared comments');
   assert.deepEqual(c.handoff_notes.map((n) => n.note), ['Children render; counts next.']);
   assert.deepEqual(c.files, ['web/zoom.js', 'web/claims.js']);
   assert.deepEqual(c.open_questions, []);
@@ -163,15 +165,15 @@ test('MCP-04 two agents claiming the next work at the same moment never get the 
 });
 
 test('MCP-05 ask puts an open question on a place until it is answered', async () => {
-  const { agent, rest, pid } = await setup();
+  const { agent, clear } = await setup();
   const a = await agent('Builder');
   const asked = await a.use('ask', { place: 'issue-11', question: 'How long should a claim last?' });
   assert.deepEqual((await a.use('context', { issue: 'issue-11' })).open_questions, [`How long should a claim last? (Builder (${a.id}))`]);
-  await rest('PATCH', `/api/projects/${pid}/comments/issue-11/${asked.question}`, { resolved: true });
+  await clear('issue-11', asked.question);
   assert.deepEqual((await a.use('context', { issue: 'issue-11' })).open_questions, []);
 });
 
-test('MCP-06 refine and propose open and fill a refinement; an agent marks behaviours ready, and never adopts', async () => {
+test('MCP-06 ADOPT-08 refine and propose open and fill a refinement; an agent marks behaviours ready, and never adopts', async () => {
   const { agent, rest, pid } = await setup();
   const a = await agent('Builder');
   const { refinement } = await a.use('refine', { place: 'issue-11' });
@@ -184,7 +186,7 @@ test('MCP-06 refine and propose open and fill a refinement; an agent marks behav
   assert.equal(cs.status, 'open');
   assert.equal(cs.author, `Builder (${a.id})`);
   assert.match(cs.items[0].after.markdown, /two hours/);
-  assert.ok((await a.refused('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: ['CL-01 x'], questions: 'How long?' }), ready_for_adoption: ['CL-01'] })).error, 'not ready while it has open questions');
+  assert.deepEqual((await a.use('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: ['CL-01 x'], questions: 'How long?' }), ready_for_adoption: ['CL-01'] })).ready_for_adoption, ['CL-01'], 'open questions never block it');
   assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept/.test(t.name)), 'no tool adopts');
 });
 
@@ -313,18 +315,21 @@ async function answered({ prompt } = {}) {
   await a.use('standup');
   const { question } = await a.use('ask', { place: 'issue-11', question: 'How long should a claim last?' });
   const path = `/api/projects/${s.pid}/comments/issue-11/${question}`;
-  const sent = await s.rest('POST', `${path}/answer`, { text: 'Two hours, renewable.', author: 'Ken', prompt });
+  const sent = await s.rest('POST', `/api/projects/${s.pid}/comments`, { itemKey: 'issue-11', replyTo: question, text: 'Two hours, renewable.', author: 'Ken', prompt });
   return { ...s, a, question, path, sent };
 }
 
-test('ANSWER-01 ANSWER-02 ANSWER-05 an answer waits under its question to be applied, with one prompt the person can read and change first', async () => {
-  const { rest, pid, path, sent } = await answered();
+test('ANSWER-01 ANSWER-02 ANSWER-05 a person\'s reply to a question is its answer, waiting to be applied, with one prompt the person can read and change first', async () => {
+  const { rest, pid, path, sent, question } = await answered();
   const seen = await rest('POST', `${path}/prompt`, { text: 'Two hours, renewable.', author: 'Ken' });
   assert.equal(seen.prompt, sent.prompt, 'the person sees the prompt that goes');
   for (const part of [/How long should a claim last\?/, /in Open questions/, /Two hours, renewable\./, /## Behaviours\n\n- CL-01/, /parent: Web/, /#10 Zoom \(issue-10\), ready/, /would be ready/, /Write the decision where it belongs/, /Clear the question from Open questions/, /behaviours to add/, /Mark the item ready/]) assert.match(sent.prompt, part);
-  const [c] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
-  assert.equal(c.resolved, false, 'answered, not resolved');
-  assert.equal(c.answer.text, 'Two hours, renewable.');
+  const [c, reply] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
+  assert.deepEqual([reply.replyTo, reply.text], [question, 'Two hours, renewable.'], 'the answer is a reply in its thread');
+  assert.deepEqual([c.resolved, c.answer.text, c.answer.by], [false, 'Two hours, renewable.', 'Ken'], 'answered, open until it is applied');
+  const own = (await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', anchor: { section: 'Open questions' }, text: 'Weekends too?', author: 'Ken' })).comment;
+  assert.ok(!(await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', replyTo: own.id, text: 'Thinking aloud.', author: 'Ken' })).thread, 'the asker talking in their own thread is not an answer');
+  assert.ok((await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', replyTo: own.id, text: 'Yes.', author: 'Ana' })).thread.answer, 'anyone else\'s reply is');
 
   const edited = await answered({ prompt: `${sent.prompt}\n\nKeep the wording short.` });
   assert.match(edited.sent.prompt, /Keep the wording short\.$/);
@@ -345,20 +350,20 @@ test("ANSWER-03 the agent that asked gets the prompt as its first step; once it 
   assert.match(open[0].prompt, /propose\(/);
 });
 
-test('ANSWER-04 the answer is applied through a refinement; adopting it resolves the question, and the item comes back ready', async () => {
+test('ANSWER-04 NOTE-05 the answer is applied through a refinement; adopting it clears the question, and the item comes back ready', async () => {
   const { a, rest, pid, question } = await answered();
   await rest('PATCH', `/api/projects/${pid}/nodes/i11`, { status: 'needs_decision' });
   const { refinement } = await a.use('refine', { place: 'issue-11' });
   const markdown = body({ behaviours: ['CL-01 Given work, when claimed, then it is held for two hours, and can be held again.', 'CL-02 Given a claim, when it ends, then it says so.'] });
   const done = await a.use('propose', { refinement, item: 'issue-11', markdown, answers: [question], item_ready: true });
   assert.deepEqual([done.answers, done.item_ready], [[question], true]);
-  assert.equal((await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments[0].resolved, false, 'unresolved until adopted');
+  assert.equal((await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments[0].resolved, false, 'open until adopted');
   const adopted = await rest('POST', `/api/projects/${pid}/changesets/${refinement}/accept`);
   assert.equal(adopted.nodes[0].status, 'ready');
   assert.match(adopted.nodes[0].body, /two hours, and can be held again/);
   const [c] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
-  assert.equal(c.resolved, true);
-  assert.equal(c.answer.appliedBy, refinement);
+  assert.deepEqual([c.resolved, c.cleared.refinement], [true, refinement], 'cleared, and its log entry names the refinement');
+  assert.ok(!(await a.use('standup')).addressed_to_you.answered?.some((x) => x.prompt), 'and it no longer goes to agents');
 });
 
 /** A person's annotation on #11's Why, with an @mention in it. */
@@ -396,7 +401,7 @@ test('NOTE-18 an annotation reaches the agent with everything needed to act on i
     assert.match(prompt, part);
 });
 
-test('NOTE-19 NOTE-08 the agent acts through a refinement and replies in the thread; adopting the refinement applies the annotation and names it', async () => {
+test('NOTE-19 NOTE-08 NOTE-05 the agent acts through a refinement and replies in the thread naming it; adopting the refinement clears the annotation', async () => {
   const { rest, pid, agent } = await setup();
   const a = await agent('Builder');
   const { comment } = await annotate(rest, pid, { kind: 'problem', text: '@Claude this Why says nothing' });
@@ -410,12 +415,11 @@ test('NOTE-19 NOTE-08 the agent acts through a refinement and replies in the thr
   await a.use('reply', { annotation: id, item: 'issue-11', text: 'The Why now says what claims prevent.', refinement });
   let [root, reply] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
   assert.deepEqual([reply.replyTo, reply.author, reply.refinement], [id, `Builder (${a.id})`, refinement]);
-  assert.deepEqual([root.delivery.state, root.resolved], ['replied', false], 'replied, and applied only when adopted');
+  assert.deepEqual([root.delivery.state, root.resolved], ['replied', false], 'replied, and cleared only when adopted');
   assert.ok(!(await a.use('standup')).addressed_to_you.annotations, 'nothing left addressed to it');
   await rest('POST', `/api/projects/${pid}/changesets/${refinement}/accept`);
   [root] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
-  assert.equal(root.resolved, true);
-  assert.deepEqual([root.outcome.state, root.outcome.refinement], ['applied', refinement]);
+  assert.deepEqual([root.resolved, root.cleared.refinement], [true, refinement]);
 });
 
 test('CONN-07 the agents list shows when each agent last called, written at most every few minutes', async () => {
@@ -438,7 +442,7 @@ test('CONN-07 the agents list shows when each agent last called, written at most
 });
 
 test('CONN-03 the standup prompt asks the agent for its local state, and the standup tool reports it beside what is waiting', async () => {
-  const { rest, pid, agent, clock } = await setup();
+  const { rest, pid, agent, clock, clear } = await setup();
   const a = await agent('Builder');
   const b = await agent('Reviewer');
   const init = await a.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
@@ -454,7 +458,7 @@ test('CONN-03 the standup prompt asks the agent for its local state, and the sta
   await a.use('claim', { behaviours: ['CL-01'] });
   clock.now += 10 * 60_000;
   await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', anchor: { behaviour: 'CL-01' }, text: 'Hold it for a day?', author: 'Ken' });
-  await rest('PATCH', `/api/projects/${pid}/comments/issue-10/${question}`, { resolved: true });
+  await clear('issue-10', question);
   await b.use('standup');
 
   const r = await a.use('standup', { branch: 'claims', ahead: 1, behind: 2, unpushed: ['Hold claims'], uncommitted: ['api/claims.mjs'], pull_requests: [{ number: 7, title: 'Claims', state: 'OPEN' }] });

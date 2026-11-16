@@ -4,12 +4,12 @@ import { BubbleMenu } from '@tiptap/react/menus';
 import { Markdown } from '@tiptap/markdown';
 import { Placeholder } from '@tiptap/extensions';
 import { behaviourPrefix, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
-import { NOTE_KIND_LABEL, OUTCOME_LABEL, initials, kindOf, threadsOf, whereOf } from '@shared/annotations.js';
+import { NOTE_KIND_LABEL, initials, isPlain, kindOf, threadsOf, whereOf } from '@shared/annotations.js';
 import { EXTENSIONS } from './rich-text.js';
 import { fromDocument, sectionAt, toDocument } from './document.js';
 import { IssueShape, refreshNotes } from './shape-extension.js';
 import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './targets.js';
-import { Composer, Thread } from './Annotate.jsx';
+import { Composer, Thread, clearedWords } from './Annotate.jsx';
 import { Icon } from '../components/Icon.jsx';
 
 const TAP = 10; // a touch that moves less than this is a tap, not a scroll
@@ -46,7 +46,7 @@ function Outline({ rects, picked }) {
  * With the Comment control on (`commenting`, #15 NOTE-10), the text stops being editable and pointing at it outlines
  * what a comment would be on; a click, or a second tap, opens the comment box there.
  */
-export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, onChange, onComment, onResolve, onSettle, onPromote, onAnswer, onAnswerPrompt, conflict }) {
+export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, onChange, onComment, onPromote, onAnswerPrompt, you, hasRead, onRead, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [title, setTitle] = useState(value.title);
@@ -97,7 +97,28 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
 
   // Each annotation is its own thread (NOTE-11), marked at its words (NOTE-13); the open one is highlighted.
   const threads = useMemo(() => threadsOf(comments), [comments]);
-  useEffect(() => refreshNotes(editor, threads.map((t) => t.root), thread?.id ?? null), [editor, threads, thread?.id]);
+  // Only open annotations sit on the text; cleared ones are in the conversation log (NOTE-05). A plain Comment this person
+  // has read is cleared for them, but one shown at its words on this visit stays there until the item is opened again.
+  const shown = useRef(new Set());
+  const openThreads = useMemo(() => {
+    const list = threads.filter((t) => !t.root.resolved && !(isPlain(t.root) && hasRead?.(t.root) && !shown.current.has(t.root.id)));
+    for (const t of list) shown.current.add(t.root.id);
+    return list;
+  }, [threads, hasRead]);
+  useEffect(() => refreshNotes(editor, openThreads.map((t) => t.root), thread?.id ?? null), [editor, openThreads, thread?.id]);
+  // Read: its thread opened, or open in the item for a moment.
+  const read = useRef(onRead);
+  read.current = onRead;
+  useEffect(() => {
+    const plain = openThreads.map((t) => t.root).filter(isPlain);
+    if (!plain.length) return undefined;
+    const timer = setTimeout(() => read.current?.(plain), 2500);
+    return () => clearTimeout(timer);
+  }, [openThreads]);
+  useEffect(() => {
+    const root = thread && threads.find((t) => t.root.id === thread.id)?.root;
+    if (root && isPlain(root)) read.current?.([root]);
+  }, [thread?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const withRects = (t) => t && { ...t, rects: rectsOf(editor.view, t, wrap.current.getBoundingClientRect()) };
   const pick = (t) => {
@@ -203,11 +224,11 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     onChange({ title: t, markdown });
   };
 
-  const open = thread && threads.find((t) => t.root.id === thread.id);
+  const open = thread && openThreads.find((t) => t.root.id === thread.id);
   const openAt = open && editor && open.root.anchor?.on !== 'place' ? rangeOf(editor.state.doc, open.root.anchor ?? {}) : null;
-  const onMap = threads.filter((t) => t.root.anchor?.on === 'place');
-  // Dealt with stays in the item's history (NOTE-05).
-  const settled = threads.filter((t) => t.root.resolved);
+  const onMap = openThreads.filter((t) => t.root.anchor?.on === 'place');
+  // Acted on, an annotation clears into the item's conversation log, still readable there (NOTE-05).
+  const settled = threads.filter((t) => !openThreads.includes(t));
   const about = picked && editor ? describe(editor.view, picked) : null;
   const wider = hover?.touch && editor ? widen(editor.view, hover) : null;
 
@@ -239,7 +260,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
             <button
               key={t.root.id}
               type="button"
-              className={`note-marker kind-${kindOf(t.root)}${t.root.resolved ? ' resolved' : ''}`}
+              className={`note-marker kind-${kindOf(t.root)}`}
               aria-label={`${t.root.author} on the map: ${t.root.text.slice(0, 80)}`}
               onClick={(e) => onThread(t.root.id, e.currentTarget)}
             >
@@ -250,16 +271,19 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
       )}
       {settled.length > 0 && (
         <details className="note-history">
-          <summary>
-            {settled.length} annotation{settled.length === 1 ? '' : 's'} dealt with
-          </summary>
+          <summary>Conversation log ({settled.length})</summary>
           <ul>
-            {settled.map(({ root: c }) => (
+            {settled.map(({ root: c, replies }) => (
               <li key={c.id}>
-                <button type="button" className="link-btn" onClick={(e) => onThread(c.id, e.currentTarget)}>
-                  <span className={`note-initials kind-${kindOf(c)}`}>{initials(c.author)}</span> {NOTE_KIND_LABEL[kindOf(c)]}: {c.text.slice(0, 60)}
-                </button>
-                <span className="note-outcome">{OUTCOME_LABEL[c.outcome?.state ?? 'resolved']}</span>
+                <p>
+                  <span className={`note-initials kind-${kindOf(c)}`}>{initials(c.author)}</span> <strong>{NOTE_KIND_LABEL[kindOf(c)]}</strong> · {c.author}, on {whereOf(c.anchor)}: {c.text}
+                </p>
+                {replies.map((r) => (
+                  <p key={r.id} className="note-log-reply">
+                    <strong>{r.author}:</strong> {r.text}
+                  </p>
+                ))}
+                <p className="note-status done">{clearedWords(c)}.</p>
               </li>
             ))}
           </ul>
@@ -323,11 +347,9 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
             src={open.root.anchor?.src}
             moved={openAt?.moved}
             thread={open}
-            onReply={(text) => onComment(open.root.anchor, text, { replyTo: open.root.id })}
-            onResolve={onResolve}
-            onSettle={onSettle}
+            you={you}
+            onReply={(text, prompt) => onComment(open.root.anchor, text, { replyTo: open.root.id, prompt })}
             onPromote={onPromote}
-            onAnswer={onAnswer}
             onAnswerPrompt={onAnswerPrompt}
             onClose={() => setThread(null)}
           />

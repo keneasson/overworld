@@ -303,7 +303,6 @@ test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', 
     ],
   );
   const id = a.body.comment.id;
-  assert.equal((await call('PATCH', `/api/projects/${pid}/comments/issue-4/${id}`, { resolved: true })).body.comment.resolved, true);
   assert.equal((await call('DELETE', `/api/projects/${pid}/comments/issue-4/${id}`)).status, 200);
   assert.equal((await call('DELETE', `/api/projects/${pid}/comments/issue-4/${id}`)).status, 404);
   assert.equal((await call('GET', `/api/projects/${pid}/comments`)).body.comments.length, 2);
@@ -361,44 +360,39 @@ test('NOTE-11 each annotation is its own thread at its own words, and a reply st
   assert.deepEqual(threads.map((t) => [t.root.id, t.root.anchor.quote, t.replies.map((r) => r.text)]), [[first.id, 'vault', ['The PCI one.']], [second.id, 'provider', []]]);
 });
 
-test('NOTE-05 an annotation is answered, applied naming what did it, or declined with a reason, and stays in the item’s history', async () => {
-  const { call, pid } = await shopProject();
-  const post = async (kind, text) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', kind, anchor: { on: 'section', section: 'Why' }, text })).body.comment;
-  const settle = (c, body) => call('PATCH', `/api/projects/${pid}/comments/issue-4/${c.id}`, { by: 'Ken', ...body });
-  const [q, change, problem] = [await post('question', 'Which vault?'), await post('change', 'Say tokens, not numbers'), await post('problem', 'Confusing')];
-  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].question, 1, 'open, so the map badges it');
-  await settle(q, { outcome: 'answered' });
-  await settle(change, { outcome: 'applied', link: 'https://github.com/octo/shop/pull/9' });
-  assert.equal((await settle(problem, { outcome: 'declined' })).status, 400, 'a decline says why');
-  await settle(problem, { outcome: 'declined', reason: 'It reads fine to customers.' });
-  const { comments } = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body;
-  assert.deepEqual(
-    comments.map((c) => [c.resolved, c.outcome.state, c.outcome.link ?? c.outcome.reason ?? null, c.outcome.by]),
-    [
-      [true, 'answered', null, 'Ken'],
-      [true, 'applied', 'https://github.com/octo/shop/pull/9', 'Ken'],
-      [true, 'declined', 'It reads fine to customers.', 'Ken'],
-    ],
-  );
-  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'], undefined, 'dealt with, so no longer badged');
-  const reopened = (await settle(problem, { resolved: false })).body.comment;
-  assert.deepEqual(reopened.history.map((h) => h.state), ['declined', 'reopened'], 'what happened to it is kept');
-});
-
-test('NOTE-06 a Problem or a Refactor is promoted to a child task in the strict shape, linked back to the annotation', async () => {
+test('NOTE-05 NOTE-06 a Problem or a Refactor made a task becomes a child task in the strict shape, linked back, and the annotation clears into the conversation log', async () => {
   const { call, pid, node } = await shopProject();
   const post = async (kind) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', kind, anchor: { on: 'word', section: 'Why', quote: 'tokens' }, text: 'Refactor this to use our vault client' })).body.comment;
   const refactor = await post('refactor');
+  await post('comment');
+  assert.deepEqual((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'], { refactor: 1 }, 'open, so the map badges it; a Comment adds none');
   assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${(await post('change')).id}/promote`, {})).status, 400, 'only a Problem or a Refactor');
   const res = await call('POST', `/api/projects/${pid}/comments/issue-4/${refactor.id}/promote`, { by: 'Ken' });
   assert.equal(res.status, 201, JSON.stringify(res.body));
-  const { node: task, comment } = res.body;
+  const { node: task } = res.body;
   const md = editableOf(task).markdown;
   assert.deepEqual([task.kind, task.parentId, task.title], ['task', node(4).id, 'Refactor: Refactor this to use our vault client']);
   assert.ok(isWellFormed(parseIssue(md)), 'in the strict shape');
   assert.match(md, /^Part of #4/);
   assert.match(md, new RegExp(`From annotation ${refactor.id} on issue-4\\.`));
-  assert.deepEqual([comment.resolved, comment.outcome.state, comment.outcome.task], [true, 'promoted', itemKeyOf(task)]);
+  const kept = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body.comments.find((c) => c.id === refactor.id);
+  assert.deepEqual([kept.resolved, kept.cleared.task.key, kept.cleared.by], [true, itemKeyOf(task), 'Ken'], 'cleared, and the log links the task');
+  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].refactor, undefined, 'cleared, so no longer badged');
+  assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${refactor.id}/promote`, { by: 'Ken' })).status, 409, 'made a task once');
+  assert.ok((await call('PATCH', `/api/projects/${pid}/comments/issue-4/${refactor.id}`, { resolved: false })).status >= 400, 'nobody resolves or reopens by hand');
+});
+
+test('NOTE-05 a plain Comment clears into the conversation log for each person once they have read it; one addressed to someone, only for them', async () => {
+  const { call, pid } = await shopProject();
+  const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'section', section: 'Why' }, author: 'Ken', ...body })).body.comment;
+  const read = async (c, by) => (await call('POST', `/api/projects/${pid}/comments/issue-4/${c.id}/read`, { by })).body.comment;
+  const thanks = await post({ text: 'Great work, team.' });
+  const forAna = await post({ text: '@Ana have a look at this' });
+  assert.deepEqual((await read(thanks, 'Ana Ruiz')).readBy, ['Ana Ruiz']);
+  assert.deepEqual([(await read(thanks, 'Ana Ruiz')).readBy, (await read(thanks, 'Bo')).readBy], [['Ana Ruiz'], ['Ana Ruiz', 'Bo']], 'once for each person, and still open for anyone else');
+  assert.equal((await read(forAna, 'Bo')).readBy, undefined, 'not read by someone it is not for');
+  assert.deepEqual((await read(forAna, 'Ana Ruiz')).readBy, ['Ana Ruiz']);
+  assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${(await post({ kind: 'problem', text: 'Confusing' })).id}/read`, { by: 'Bo' })).status, 400, 'the rest clear once acted on');
 });
 
 const newItem = async (call, pid, cid, parentId, kind, extra = {}) => {
@@ -495,18 +489,15 @@ test('ADOPT-05 a person declines an item of a refinement: it is dropped, the spe
   assert.deepEqual(await map(), before);
 });
 
-test("ADOPT-08 an item of a refinement that still has open questions can't be adopted", async () => {
+test('ADOPT-08 open questions in a refinement show as badges, and never keep it from adoption', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
   const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
-  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('None.', '- Which vault?') });
-  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'a question in its text');
-  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('a token.', 'a token, kept.') });
-  const { comment } = (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text: 'Which vault?' })).body;
-  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 409, 'a question asked on it');
-  assert.doesNotMatch((await map()).find((n) => n.title.startsWith('#4 ')).body, /kept/);
-  await call('PATCH', `/api/projects/${pid}/comments/issue-4/${comment.id}`, { resolved: true });
-  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200, 'answered, it can be adopted');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('None.', '- Which vault?').replace('a token.', 'a token, kept.') });
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text: 'Which provider?' });
+  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].question, 1, 'the question asked on it is badged');
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200, 'adopted with questions in its text and on it');
+  assert.match((await map()).find((n) => n.title.startsWith('#4 ')).body, /kept/);
 });
 
 test('NEW-06 a new item dropped before adoption, or in a discarded refinement, is gone and never reaches GitHub', async () => {

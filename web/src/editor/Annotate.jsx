@@ -3,7 +3,7 @@
 // (NOTE-02), and posts with ⌘/Ctrl+Enter (NOTE-12).
 
 import { useState } from 'react';
-import { NOTE_KINDS, NOTE_KIND_HINT, NOTE_KIND_LABEL, OUTCOME_LABEL, initials, isColour, isQuestion, kindOf } from '@shared/annotations.js';
+import { NOTE_KINDS, NOTE_KIND_HINT, NOTE_KIND_LABEL, answers, initials, isColour, kindOf } from '@shared/annotations.js';
 import { Icon } from '../components/Icon.jsx';
 
 const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -95,81 +95,25 @@ export function Composer({ heading, quote, what, src, onPost, onCancel }) {
   );
 }
 
-/**
- * Writing an answer under a question (ANSWER-01), and the prompt it goes out with, to read and change first (ANSWER-05).
- * The prompt is built by the server, so it is the one an agent gets; left as built, it is built again when it goes.
- */
-function AnswerForm({ question, onAnswer, onPrompt, onCancel }) {
-  const [text, setText] = useState(question.answer?.text ?? '');
-  const [prompt, setPrompt] = useState(question.answer?.prompt ?? null);
-  const [built, setBuilt] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const showPrompt = async () => {
-    setBusy(true);
-    try {
-      const p = await onPrompt(question, text.trim());
-      setBuilt(p);
-      setPrompt(p);
-    } catch {
-      // The editor's toast says what went wrong.
-    } finally {
-      setBusy(false);
-    }
-  };
-  const send = async (e) => {
-    e?.preventDefault();
-    if (!text.trim() || busy) return;
-    setBusy(true);
-    const changed = prompt != null && prompt !== built ? prompt : undefined;
-    if (await onAnswer(question, text.trim(), changed)) onCancel();
-    setBusy(false);
-  };
-  return (
-    <form className="answer-form" onSubmit={send}>
-      <textarea
-        autoFocus
-        aria-label="Write the answer"
-        rows={2}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => posts(e) && send(e)}
-        placeholder="The answer… (⌘/Ctrl+Enter sends)"
-        maxLength={4000}
-      />
-      {prompt != null && (
-        <label className="answer-prompt">
-          <span>The prompt an agent gets. Change it if you like.</span>
-          <textarea aria-label="The prompt an agent gets" rows={8} value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={40000} />
-        </label>
-      )}
-      <div className="answer-actions">
-        <button type="button" className="link-btn" onClick={onCancel}>
-          Cancel
-        </button>
-        <button type="button" className="link-btn" disabled={!text.trim() || busy} onClick={showPrompt}>
-          {prompt == null ? 'See the prompt' : 'Build it again'}
-        </button>
-        <button type="submit" disabled={!text.trim() || busy}>
-          Send answer
-        </button>
-      </div>
-    </form>
-  );
+/** What cleared an annotation, for the conversation log (NOTE-05): the task made from it, the refinement adopted, or reading it. */
+export function clearedWords(c) {
+  const x = c.cleared;
+  if (!c.resolved) return 'Read'; // a plain Comment, cleared for this person once they read it
+  if (x?.task) return `Made a task by ${x.by}: ${x.task.title}`;
+  if (x?.refinement) return `Acted on in refinement ${x.refinement}, adopted ${when(x.at)}`;
+  return 'Cleared';
 }
 
-/** Where an annotation addressed to an agent has got to (NOTE-17), or what became of it (NOTE-05). */
+/** Where an annotation addressed to an agent has got to (NOTE-17), and its answer (ANSWER-01). */
 function Status({ c }) {
-  const o = c.outcome;
-  if (o?.state === 'applied' && o.refinement) return <p className="note-status done">Applied when refinement {o.refinement} was adopted{o.by ? `, from ${o.by}` : ''}.</p>;
-  if (o?.state === 'applied') return <p className="note-status done">Applied by {o.by}{o.link ? <> in {/^https?:\/\//.test(o.link) ? <a href={o.link} target="_blank" rel="noopener noreferrer">{o.link}</a> : o.link}</> : ''}.</p>;
-  if (o?.state === 'declined') return <p className="note-status">Declined by {o.by}: {o.reason}</p>;
-  if (o?.state === 'promoted') return <p className="note-status done">Made a task by {o.by}: {o.title}.</p>;
-  if (o) return <p className="note-status done">{OUTCOME_LABEL[o.state] ?? 'Resolved'} by {o.by}.</p>;
+  if (c.resolved) return <p className="note-status done">{clearedWords(c)}.</p>;
+  const lines = [];
+  if (c.answer) lines.push(<p key="answer" className="note-status">{c.answer.by}’s answer is with an agent to apply.</p>);
   const d = c.delivery;
-  if (!d) return null;
-  if (d.state === 'waiting') return <p className="note-status">Sent to {d.for === 'any agent' ? 'Claude' : d.for}. No agent is connected: it is the first thing the next one to call gets.</p>;
-  if (d.state === 'delivered') return <p className="note-status live">With {d.to} since {when(d.at)}. Its reply comes here.</p>;
-  return <p className="note-status done">{d.by} replied.</p>;
+  if (d?.state === 'waiting') lines.push(<p key="d" className="note-status">Sent to {d.for === 'any agent' ? 'Claude' : d.for}. No agent is connected: it is the first thing the next one to call gets.</p>);
+  else if (d?.state === 'delivered') lines.push(<p key="d" className="note-status live">With {d.to} since {when(d.at)}. Its reply comes here.</p>);
+  else if (d) lines.push(<p key="d" className="note-status done">{d.by} replied.</p>);
+  return lines;
 }
 
 /** Mentions stand out in what was said (NOTE-14). */
@@ -196,35 +140,42 @@ function Said({ c, children }) {
   );
 }
 
-/** One annotation's thread (NOTE-11): the annotation, its replies, and a reply box. */
-/** The ways an annotation is dealt with, by kind (NOTE-05, NOTE-06); a Comment is just resolved. */
-const DEALS = { question: ['answered', 'declined'], problem: ['applied', 'promoted', 'declined'], change: ['applied', 'declined'], refactor: ['applied', 'promoted', 'declined'], comment: ['resolved'] };
-const DEAL_LABEL = { answered: 'Answered', applied: 'Applied', declined: 'Decline…', promoted: 'Make it a task', resolved: 'Resolve' };
-
-export function Thread({ heading, quote, what, src, moved, thread, onReply, onResolve, onSettle, onPromote, onAnswer, onAnswerPrompt, onClose }) {
+/**
+ * One annotation's thread (NOTE-11): the annotation, its replies, and a reply box. Nobody resolves it: it clears once it
+ * is acted on (NOTE-05). A person's reply to a question is its answer (ANSWER-01), and they can read and change the
+ * prompt it goes out with before posting it (ANSWER-05). The prompt is built by the server, so it is the one an agent
+ * gets; left as built, it is built again when it goes.
+ */
+export function Thread({ heading, quote, what, src, moved, thread, you, onReply, onPromote, onAnswerPrompt, onClose }) {
   const { root, replies } = thread;
   const [text, setText] = useState('');
-  const [answering, setAnswering] = useState(false);
-  const [dealing, setDealing] = useState(null); // 'applied' or 'declined': asking for what did it, or why
-  const [said, setSaid] = useState('');
-  const deal = async (how) => {
-    if (how === 'promoted') return onPromote?.(root);
-    if (how === 'resolved' || how === 'answered' || !onSettle) return onSettle ? onSettle(root, { outcome: how }) : onResolve(root, true);
-    setDealing(how);
-    setSaid('');
-  };
-  const confirm = async (e) => {
-    e?.preventDefault();
-    if (dealing === 'declined' && !said.trim()) return;
-    if (await onSettle(root, { outcome: dealing, ...(dealing === 'declined' ? { reason: said.trim() } : { link: said.trim() }) })) setDealing(null);
-  };
+  const [prompt, setPrompt] = useState(null);
+  const [built, setBuilt] = useState(null);
   const [busy, setBusy] = useState(false);
   const kind = kindOf(root);
+  const answering = answers(root, you || 'Someone') && Boolean(onAnswerPrompt);
+  const showPrompt = async () => {
+    setBusy(true);
+    try {
+      const p = await onAnswerPrompt(root, text.trim());
+      setBuilt(p);
+      setPrompt(p);
+    } catch {
+      // The editor's toast says what went wrong.
+    } finally {
+      setBusy(false);
+    }
+  };
   const reply = async (e) => {
     e?.preventDefault();
     if (!text.trim() || busy) return;
     setBusy(true);
-    if (await onReply(text.trim())) setText('');
+    const changed = answering && prompt != null && prompt !== built ? prompt : undefined;
+    if (await onReply(text.trim(), changed)) {
+      setText('');
+      setPrompt(null);
+      setBuilt(null);
+    }
     setBusy(false);
   };
   return (
@@ -241,21 +192,10 @@ export function Thread({ heading, quote, what, src, moved, thread, onReply, onRe
       <div className="thread-head">
         <span className={`note-kind kind-${kind} on`}>{NOTE_KIND_LABEL[kind]}</span>
         <span className="thread-actions">
-          {isQuestion(root) && !root.resolved && onAnswer && !answering && (
-            <button type="button" className="link-btn" onClick={() => setAnswering(true)}>
-              {root.answer ? 'Change answer' : 'Answer'}
+          {!root.resolved && onPromote && ['problem', 'refactor'].includes(kind) && (
+            <button type="button" className="link-btn" onClick={() => onPromote(root)}>
+              Make it a task
             </button>
-          )}
-          {root.resolved ? (
-            <button type="button" className="link-btn" onClick={() => (onSettle ? onSettle(root, { resolved: false }) : onResolve(root, false))}>
-              Reopen
-            </button>
-          ) : (
-            DEALS[kind].filter((how) => how !== 'promoted' || onPromote).map((how) => (
-              <button key={how} type="button" className="link-btn" onClick={() => deal(how)}>
-                {DEAL_LABEL[how]}
-              </button>
-            ))
           )}
           <button type="button" className="icon-btn small" aria-label="Close the thread" onClick={onClose}>
             <Icon name="close" size={14} />
@@ -268,54 +208,36 @@ export function Thread({ heading, quote, what, src, moved, thread, onReply, onRe
         <Value value={root.value} />
       </Said>
       <Status c={root} />
-      {dealing && (
-        <form className="answer-form" onSubmit={confirm}>
-          <input
-            autoFocus
-            className="note-deal"
-            aria-label={dealing === 'declined' ? 'Why it is declined' : 'What applied it'}
-            value={said}
-            onChange={(e) => setSaid(e.target.value)}
-            placeholder={dealing === 'declined' ? 'Why not? (needed)' : 'The commit, pull request or version that did it (optional)'}
-            maxLength={dealing === 'declined' ? 2000 : 300}
-          />
-          <div className="answer-actions">
-            <button type="button" className="link-btn" onClick={() => setDealing(null)}>
-              Cancel
-            </button>
-            <button type="submit" disabled={dealing === 'declined' && !said.trim()}>
-              {dealing === 'declined' ? 'Decline' : 'Mark applied'}
-            </button>
-          </div>
-        </form>
-      )}
-      {root.answer && !answering && (
-        <div className="answer">
-          <div className="comment-head">
-            <strong>Answer · {root.answer.by}</strong>
-            <span className={`answer-state${root.resolved ? ' applied' : ''}`}>{root.resolved ? (root.answer.appliedAt ? 'Applied' : 'Resolved') : 'Waiting to be applied'}</span>
-          </div>
-          <p>{root.answer.text}</p>
-        </div>
-      )}
-      {answering && <AnswerForm question={root} onAnswer={onAnswer} onPrompt={onAnswerPrompt} onCancel={() => setAnswering(false)} />}
       {replies.map((c) => (
         <Said key={c.id} c={c} />
       ))}
       <form className="comment-form" onSubmit={reply}>
         <textarea
-          aria-label="Reply"
+          aria-label={answering ? 'Answer' : 'Reply'}
           rows={1}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => posts(e) && reply(e)}
-          placeholder="Reply… (⌘/Ctrl+Enter posts)"
+          placeholder={answering ? 'Answer… goes to an agent to apply (⌘/Ctrl+Enter posts)' : 'Reply… (⌘/Ctrl+Enter posts)'}
           maxLength={4000}
         />
         <button type="submit" disabled={!text.trim() || busy}>
           Reply
         </button>
       </form>
+      {answering && (
+        <div className="answer-prompt">
+          {prompt != null && (
+            <label>
+              <span>The prompt an agent gets. Change it if you like.</span>
+              <textarea aria-label="The prompt an agent gets" rows={8} value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={40000} />
+            </label>
+          )}
+          <button type="button" className="link-btn" disabled={!text.trim() || busy} onClick={showPrompt}>
+            {prompt == null ? 'See the prompt' : 'Build it again'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

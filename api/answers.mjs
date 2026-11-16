@@ -1,6 +1,6 @@
-// Answering an open question (#68): the one place that builds the prompt handing an answer to an agent (ANSWER-02), and
-// what adopting the refinement that applied it settles (ANSWER-04). The API's routes, the standup and the MCP tools all
-// call this, so the web app shows a person the same prompt an agent gets.
+// Answering an open question (#68): a person's reply in its thread is the answer (ANSWER-01). The one place that builds
+// the prompt handing it to an agent (ANSWER-02), and what adopting the refinement that applied it clears (ANSWER-04).
+// The API's routes, the standup and the MCP tools all call this, so the web app shows a person the prompt an agent gets.
 
 import { editableOf, itemKeyOf } from '../shared/issue-shape.js';
 import { itemContext, quote, stateWords } from './prompts.mjs';
@@ -8,7 +8,7 @@ import { openQuestions } from './engine/lifecycle.mjs';
 import { isQuestion, whereOf } from '../shared/annotations.js';
 
 export { isQuestion };
-/** Answered, and waiting for an agent to write the answer into the spec (ANSWER-01). */
+/** Answered, and waiting for an agent to write the answer into the spec (ANSWER-01): not yet applied, so not yet cleared. */
 export const awaitsApplying = (c) => isQuestion(c) && Boolean(c.answer) && !c.resolved;
 
 
@@ -54,7 +54,7 @@ export function answerPrompt({ nodes, comments, question, answer, answeredBy }) 
     '3. Change whatever else the answer implies: behaviours to add, reword or split, items to split or move, links to other items.',
     `4. Mark the item ready if nothing else is open${next.others.length ? ' (here something is, so leave it needing a decision)' : ''}.`,
     '',
-    `How: open a refinement with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, answers: ["${question.id}"], item_ready: ${next.others.length ? 'false' : 'true'}). Changes to other items go into the same refinement. A person adopts it, and the question resolves then. If the answer leaves something you can't decide, ask() it on ${key} instead of guessing.`,
+    `How: open a refinement with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, answers: ["${question.id}"], item_ready: ${next.others.length ? 'false' : 'true'}). Changes to other items go into the same refinement. Then reply(annotation: "${question.id}", item: "${key}", text: what you changed, refinement: its id) in the question's thread. A person adopts the refinement, and that clears the question. If the answer leaves something you can't decide, say so in your reply, or ask() it on ${key}, instead of guessing.`,
   ].join('\n');
 }
 
@@ -62,8 +62,9 @@ export function answerPrompt({ nodes, comments, question, answer, answeredBy }) 
 export const promptOf = ({ nodes, comments, question }) => question.answer.prompt ?? answerPrompt({ nodes, comments, question, answer: question.answer.text, answeredBy: question.answer.by });
 
 /**
- * Adopting a refinement settles the answers it applied (ANSWER-04): their questions resolve, and an item proposed as ready
- * becomes ready if its text and its threads have nothing else open. Returns the resolved questions and the items to mark ready.
+ * Adopting a refinement clears the questions whose answers it applied (ANSWER-04, NOTE-05): each moves to the item's
+ * conversation log, naming the refinement. An item proposed as ready becomes ready if its text and its other questions
+ * have nothing left open. Returns the cleared questions and the items to mark ready.
  */
 export async function settleAnswers(model, pid, changeset, nodes, at) {
   const resolved = [];
@@ -72,7 +73,7 @@ export async function settleAnswers(model, pid, changeset, nodes, at) {
     if (!item.answers?.length && !item.itemReady) continue;
     const thread = await model.comments.list(pid, item.key);
     for (const c of thread.filter((x) => item.answers?.includes(x.id) && !x.resolved)) {
-      const done = { ...c, resolved: true, answer: { ...c.answer, appliedAt: at, appliedBy: changeset.id } };
+      const done = { ...c, resolved: true, cleared: { refinement: changeset.id, by: changeset.author, at }, answer: { ...c.answer, appliedAt: at, appliedBy: changeset.id } };
       await model.comments.put(pid, done);
       resolved.push(done);
     }

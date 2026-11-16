@@ -405,13 +405,9 @@ button {
   color: var(--text);
 }
 .refinement-note,
-.refinement-ready,
-.refinement-blocked {
+.refinement-ready {
   margin: 6px 0;
   color: var(--muted);
-}
-.refinement-blocked {
-  color: var(--danger);
 }
 .refinement-decline textarea {
   box-sizing: border-box;
@@ -1901,45 +1897,30 @@ button.danger.armed {
   opacity: 0.4;
   cursor: default;
 }
-.answer {
-  margin-top: 6px;
-  padding-left: 8px;
-  border-left: 2px solid #b06000;
-}
-.answer-state {
-  flex: 1;
-  text-align: right;
-  color: #b06000;
-  font-weight: 600;
-}
-.answer-state.applied {
-  color: #137333;
-}
-.answer-form {
+.answer-prompt {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 4px;
   margin-top: 6px;
+  font-size: 12px;
 }
-.answer-form textarea {
+.answer-prompt label {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 4px;
+}
+.answer-prompt textarea {
   min-width: 0;
+  max-height: 320px;
   padding: 6px 9px;
   border: 1px solid #e8d9a8;
   border-radius: 6px;
   background: #fff;
   color: #202124;
-  font: inherit;
-  resize: vertical;
-}
-.answer-prompt {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-}
-.answer-prompt textarea {
-  max-height: 320px;
   font: 12px/1.45 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  resize: vertical;
 }
 .answer-actions {
   display: flex;
@@ -1997,16 +1978,10 @@ button.danger.armed {
     background: #3a3220;
     color: #fdd663;
   }
-  :root:not([data-theme='light']) .answer-form textarea {
+  :root:not([data-theme='light']) .answer-prompt textarea {
     background: #2a2a2a;
     color: #e8eaed;
     border-color: #5a4d2c;
-  }
-  :root:not([data-theme='light']) .answer-state {
-    color: #fdd663;
-  }
-  :root:not([data-theme='light']) .answer-state.applied {
-    color: #81c995;
   }
   :root:not([data-theme='light']) .comment-head time {
     color: #c9b27a;
@@ -2382,36 +2357,12 @@ span.note-kind {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-.note-history li {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
-.note-history .link-btn {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
+.note-history li p {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
-.note-outcome {
-  flex: none;
-  font-weight: 600;
-}
-.note-deal {
-  padding: 6px 9px;
-  border: 1px solid #e8d9a8;
-  border-radius: 6px;
-  background: #fff;
-  color: #202124;
-  font: inherit;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .note-deal {
-    background: #2a2a2a;
-    color: #e8eaed;
-    border-color: #5a4d2c;
-  }
+.note-history .note-log-reply {
+  padding-left: 26px;
 }

@@ -6,7 +6,7 @@
 
 import { APP_NAME } from '../shared/brand.js';
 import { ROOT_ID, ValidationError } from '../shared/schema.js';
-import { editableOf, hasOpenQuestions, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { Refused, noteOf as addressedOf } from './agents.mjs';
 import { awaitsApplying } from './answers.mjs';
 import { isQuestion, kindOf, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
@@ -23,7 +23,8 @@ const HOW_TO_WORK = [
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
   'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
-  'People address you in annotations with @Claude. Any tool\'s result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread.',
+  'People address you in annotations with @Claude. Any tool\'s result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed.',
+  'A person\'s reply to a question is its answer: write it into the spec through a refinement, and reply() in the thread with what you changed. An annotation clears itself once it is acted on: when the refinement applying it is adopted, or a task is made from it. Open questions never block proposing, marking behaviours ready, or adoption.',
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
 
@@ -213,7 +214,7 @@ export function createMcp({ model, agents, call, log = console }) {
           ...(open.some(awaitsApplying) ? { answers_to_apply: (await agents.answersToApply(pid, { nodes, comments })).map(answerOf) } : {}),
           discussion: {
             open: open.filter((c) => !isQuestion(c)).slice(-10).map((c) => ({ on: whereOf(c.anchor), ...(c.anchor?.quote ? { quoting: c.anchor.quote.slice(0, 300) } : {}), kind: kindOf(c), ...(c.value ? { value: c.value } : {}), by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
-            ...(comments.length - open.length ? { resolved: `${comments.length - open.length} resolved comments` } : {}),
+            ...(comments.length - open.length ? { resolved: `${comments.length - open.length} cleared comments` } : {}),
           },
           handoff_notes: notes.slice(-5).map(noteOf),
           ...(notes.length > 5 ? { older_handoffs: notes.length - 5 } : {}),
@@ -241,7 +242,7 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     ask: {
-      description: 'Raise an open question on a place on the map. It shows there until someone answers it.',
+      description: 'Raise an open question on a place on the map. A person answers it by replying in its thread, and it shows there until the answer is applied.',
       input: { place, question: { type: 'string' }, request_key: requestKey },
       required: ['place', 'question'],
       changes: true,
@@ -274,8 +275,8 @@ export function createMcp({ model, agents, call, log = console }) {
         title: { type: 'string', description: 'Leave out to keep it.' },
         markdown: { type: 'string', description: 'The full new markdown. Leave out to keep it.' },
         ready_for_adoption: ids('Behaviour IDs whose conversation has converged.'),
-        answers: ids('Ids of the answered questions this proposal applies; they resolve when it is adopted.'),
-        annotations: ids('Ids of the annotations this proposal acts on; they are applied when it is adopted.'),
+        answers: ids('Ids of the answered questions this proposal applies; adopting it clears them. reply() in each thread with what you changed.'),
+        annotations: ids('Ids of the annotations this proposal acts on; adopting it clears them. reply() in each thread with what you changed.'),
         item_ready: { type: 'boolean', description: 'With answers: the item is ready once adopted, because nothing else is open.' },
         request_key: requestKey,
       },
@@ -305,8 +306,6 @@ export function createMcp({ model, agents, call, log = console }) {
           const known = new Set(behavioursOf({ ...node, title: proposed.title, body: proposed.markdown, url: '' }).map((b) => b.id));
           const unknown = ready.filter((id) => !known.has(id));
           if (unknown.length) throw new ValidationError(`Not behaviours of this item: ${unknown.join(', ')}`);
-          // Read the way the map and adoption read it: "None. (Decided …)" has no open questions (ADOPT-08).
-          if (hasOpenQuestions(sectionText(parseIssue(proposed.markdown), 'Open questions'))) throw new Refused('It still has open questions, so its behaviours can\'t be ready for adoption yet');
           item.readyForAdoption = ready;
           await model.changesets.put(pid, changeset);
         }
@@ -353,7 +352,7 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     reply: {
-      description: 'Reply in an annotation\'s thread, the way a person does: say what you did or what you found. Name the refinement that carries your change, if there is one; the annotation is applied when a person adopts it.',
+      description: 'Reply in an annotation\'s thread, the way a person does: say what you changed, or what you found. Name the refinement that carries your change, if there is one. The annotation clears when a person adopts that refinement.',
       input: {
         annotation: { type: 'string', description: 'The annotation\'s id.' },
         item: { ...place, description: 'The item it is on.' },
