@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto';
 import { editableOf, itemKeyOf } from '../shared/issue-shape.js';
 import { PermanentError } from './stores/errors.mjs';
 import { same } from './edits.mjs';
+import { openQuestions } from './engine/lifecycle.mjs';
 
 const LEASE_MS = 120_000; // longer than one Lambda run (30 s), so a lease outlives its worker only briefly
 const BACKOFF_MINUTES = [1, 5, 30, 120, 360, 720, 1440]; // then daily; the nightly reconciliation also retries
@@ -71,7 +72,10 @@ export async function saveNow({ model, stores }, projectId, { keys = null, now =
   if (!store) return { saved: [] };
   const chosen = (await model.nodes.pending(projectId)).filter((n) => ['unsaved', 'failed'].includes(n.sync) && (!keys || keys.includes(itemKeyOf(n))));
   const waiting = await model.jobs.list(projectId);
-  const saves = chosen.map((node) => {
+  const saves = chosen.map((waitingNode) => {
+    // An item whose questions are all answered no longer waits on a decision, whenever it was edited (LIFE-09).
+    const settled = waitingNode.status === 'needs_decision' && !openQuestions(editableOf(waitingNode).markdown);
+    const node = settled ? { ...waitingNode, status: 'ready' } : waitingNode;
     const key = jobKeyOf(store, node);
     const after = store.wanted(node);
     const job = { id: `${now}#${key}`, key, nodeId: node.id, ref: store.refOf(node), base: node.base ?? null, after, epic: /^Kind:\s*Epic\b/im.test(after.markdown), savedAt: now, attempts: 0 };

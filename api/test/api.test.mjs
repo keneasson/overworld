@@ -225,6 +225,21 @@ test('EDIT-03 edits to several items collect into one changeset, accepted togeth
   assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-3', title: 'x', markdown: '' })).status, 409);
 });
 
+test('LIFE-09 an edit that clears the last open question takes the item out of Needs decision, to ready', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const asking = four.replace(/## Open questions[\s\S]*?(?=\n## |$)/, '## Open questions\n\n- Tokens or numbers?\n');
+  const settled = four.replace(/## Open questions[\s\S]*?(?=\n## |$)/, '## Open questions\n\nNone.\n');
+  const edit = async (markdown) => {
+    const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Ken' })).body.changeset;
+    await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown });
+    assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`)).status, 200);
+    return (await map()).find((n) => n.title.startsWith('#4 ')).status;
+  };
+  assert.equal(await edit(asking), 'needs_decision');
+  assert.equal(await edit(settled), 'ready', 'answered: it no longer waits on anyone');
+});
+
 test('EDIT-03 a changeset can be discarded, and an empty one cannot be accepted', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id })).body.changeset;
