@@ -6,8 +6,8 @@ import { Placeholder } from '@tiptap/extensions';
 import { behaviourPrefix, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
 import { initials, isDismissed, threadsOf, whereOf } from '@shared/annotations.js';
 import { EXTENSIONS, parseMarkdown } from './rich-text.js';
-import { fromDocument, sectionAt, toDocument } from './document.js';
-import { IssueShape, openWithBodies, refreshNotes } from './shape-extension.js';
+import { fromDocument, toDocument } from './document.js';
+import { IssueShape, hintAt, openWithBodies, refreshNotes } from './shape-extension.js';
 import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './targets.js';
 import { Composer, Thread, dismissedWords } from './Annotate.jsx';
 import { SelectionMenu } from './SelectionMenu.jsx';
@@ -16,14 +16,6 @@ import { useLinks } from '../components/links-context.js';
 import { IssueLinks, linkAt } from './issue-links.js';
 
 const TAP = 10; // a touch that moves less than this is a tap, not a scroll
-
-const HINTS = {
-  Why: 'The problem, for whom, and why now.',
-  Behaviours: '- AREA-01 Given a situation, when something happens, then what must be true',
-  Acceptance: 'How everyone will know it is done.',
-  'Out of scope': 'What this deliberately leaves out.',
-  'Open questions': 'While anything is listed here, the issue needs a decision before work starts.',
-};
 
 const LABEL = { phrase: 'these words', paragraph: 'this paragraph', image: 'this image' };
 const labelOf = (t) => (t.on === 'word' ? `“${t.anchor.quote}”` : t.on === 'behaviour' ? t.anchor.behaviour : t.on === 'section' ? t.anchor.section : LABEL[t.on]);
@@ -40,7 +32,7 @@ function Outline({ rects, picked }) {
  * With the Comment control on (`commenting`, #15 NOTE-10), the text stops being editable and pointing at it outlines
  * what a comment would be on; a click, or a second tap, opens the comment box there.
  */
-export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, onChange, onComment, onPromote, onDismiss, onRestore, onAnswerPrompt, you, hasRead, onRead, conflict }) {
+export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, selectTitle = false, onChange, onComment, onPromote, onDismiss, onRestore, onAnswerPrompt, you, hasRead, onRead, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [title, setTitle] = useState(value.title);
@@ -50,6 +42,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
   const [linkChip, setLinkChip] = useState(null); // the link the caret is on, to follow (EDIT-14): { ref, top, left }
   const links = useLinks();
   const wrap = useRef(null);
+  const titleRef = useRef(null);
   const opened = useRef(null);
   const live = useRef({});
   live.current = { title, areaTexts, onChange, hover, picked, commenting, links };
@@ -77,11 +70,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
       IssueLinks.configure({ onFollow: (ref) => !live.current.commenting && live.current.links.follow(ref) }),
       Placeholder.configure({
         showOnlyCurrent: false,
-        placeholder: ({ editor: e, node, pos }) => {
-          if (node.type.name !== 'paragraph' || pos === 0) return '';
-          const before = e.state.doc.resolve(pos).nodeBefore;
-          return before?.type.name === 'heading' && before.attrs.level === 2 ? (HINTS[sectionAt(e.state.doc, pos)] ?? '') : '';
-        },
+        placeholder: ({ editor: e, node, pos }) => hintAt(e.state.doc, node, pos),
       }),
     ],
     content,
@@ -92,6 +81,13 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     // Changes before the editor has opened are its own setup, not the person's.
     onUpdate: ({ editor: e }) => opened.current != null && live.current.onChange({ title: live.current.title, markdown: fromDocument(original, opened.current, e.getMarkdown()) }),
   });
+
+  // A new item opens with its title selected, to type over (EDIT-22).
+  useEffect(() => {
+    if (!selectTitle || !titleRef.current) return;
+    titleRef.current.focus({ preventScroll: true });
+    titleRef.current.select();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The caret on a link (EDIT-14) offers to follow it, just below the link: a tap or a click in the text still edits.
   useEffect(() => {
@@ -252,6 +248,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
         </p>
       )}
       <textarea
+        ref={titleRef}
         className="issue-doc-title"
         aria-label={issueNumber ? `Title of #${issueNumber}` : 'Title'}
         rows={1}

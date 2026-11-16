@@ -2,11 +2,14 @@
 // Saving compares the document with how it opened and writes back only the sections that changed, so
 // the rest of the issue keeps its markdown exactly, whatever the editor would have made of it.
 
-import { SECTIONS, contentOf, parseIssue, writeIssue } from '@shared/issue-shape.js';
+import { SECTIONS, contentOf, hasStrayHeadings, parseIssue, reshapeIssue, writeIssue } from '@shared/issue-shape.js';
 
-/** The markdown the editor opens: the head, then each section without its template hints. Missing shape sections are there, empty, to be filled in. */
+/**
+ * The markdown the editor opens: the head, then each section without its template hints. Missing shape sections are there,
+ * empty, to be filled in, and words saved as headings the shape doesn't have are the text of their section (EDIT-18).
+ */
 export function toDocument(markdown = '') {
-  const shape = parseIssue(markdown);
+  const shape = parseIssue(reshapeIssue(markdown));
   const names = shape.sections.map((s) => s.name);
   const all = [...shape.sections];
   for (const [rank, name] of SECTIONS.entries()) {
@@ -32,10 +35,11 @@ export function fromDocument(markdown, opened, edited) {
   const was = read(opened);
   const now = read(edited);
   const shape = parseIssue(markdown);
-  const known = new Set([...shape.sections.map((s) => s.name), ...SECTIONS]);
-  // Headings renamed, removed or added outside the shape: the document is the truth, written as it stands.
+  const known = new Set(SECTIONS);
+  // Headings renamed, removed or added outside the shape, or an issue that had stray headings when it opened (EDIT-18):
+  // the document is the truth, written as it stands, so the first edit saves it in the shape.
   const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-  if (!same(was.sections.map((s) => s.name), now.sections.map((s) => s.name)) || now.sections.some((s) => !known.has(s.name))) return `${edited.trim()}\n`;
+  if (hasStrayHeadings(shape) || !same(was.sections.map((s) => s.name), now.sections.map((s) => s.name)) || now.sections.some((s) => !known.has(s.name))) return `${edited.trim()}\n`;
   const before = new Map(was.sections.map((s) => [s.name, s.text]));
   const edits = Object.fromEntries(now.sections.filter((s) => before.get(s.name) !== s.text).map((s) => [s.name, s.text]));
   const headed = now.head === was.head ? shape : { ...shape, head: now.head ? `${now.head}\n\n` : '' };

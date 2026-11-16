@@ -48,6 +48,42 @@ export function isWellFormed(shape) {
 
 export const sectionText = (shape, name) => contentOf(shape.sections.find((s) => s.name === name)?.raw ?? '');
 
+/** A "## " heading the shape doesn't have, or a section written twice: words saved as headings (#78, #81). */
+export const hasStrayHeadings = (shape) => {
+  const names = shape.sections.map((s) => s.name);
+  return names.some((n, i) => !SECTIONS.includes(n) || names.indexOf(n) !== i);
+};
+
+// Words typed into a heading read like a sentence; a short label is a sub-heading.
+const isProse = (words) => words.split(/\s+/).length > 5 || /[.!?;:,]/.test(words);
+
+/**
+ * The issue in the strict shape, keeping every word (EDIT-18): a stray heading is text of the section it sits in.
+ * One that starts with a section's name ("Acceptance: as a user …") opens that section with the rest of its words,
+ * prose becomes a paragraph, a short label a "### " sub-heading, and an empty one goes; a section written twice is one.
+ * Markdown already in the shape comes back exactly as it was.
+ */
+export function reshapeIssue(markdown = '') {
+  const shape = parseIssue(markdown);
+  if (!hasStrayHeadings(shape)) return markdown;
+  const bodies = new Map(SECTIONS.map((s) => [s, []]));
+  let at = 'Why';
+  for (const s of shape.sections) {
+    const words = s.heading.replace(/^##[ \t]*/, '').trim();
+    const named = SECTIONS.includes(s.name)
+      ? { name: s.name, rest: '' }
+      : SECTIONS.map((name) => ({ name, m: words.match(new RegExp(`^${name.replace('Behaviours', 'Behaviou?rs')}\\b\\s*(:?)\\s*(.*)$`, 'i')) }))
+          .filter(({ m }) => m && m[2] && (m[1] || isProse(m[2])))
+          .map(({ name, m }) => ({ name, rest: m[2] }))[0];
+    if (named) at = named.name;
+    const lead = named ? named.rest : !words ? '' : isProse(words) ? words : `### ${words}`;
+    bodies.get(at).push(...[lead, contentOf(s.raw)].filter(Boolean));
+  }
+  const head = shape.head.trim();
+  const text = [head, ...SECTIONS.map((name) => [`## ${name}`, ...bodies.get(name)].join('\n\n'))].filter(Boolean).join('\n\n');
+  return `${text}\n`;
+}
+
 /**
  * Write the issue back. `edits` maps a section name to its new content (markdown, without the heading).
  * Sections not in `edits` keep their raw text exactly. A missing shape section that gains content is
@@ -98,12 +134,27 @@ const KIND_WORD = { epic: 'Epic', feature: 'Feature', story: 'Story', task: 'Tas
 /** The place written in an item's head ("Kind: … · Place: checkout"), or ''. */
 export const placeOf = (markdown = '') => parseIssue(markdown).head.match(/^Kind:.*?·\s*Place:[ \t]*(.*)$/im)?.[1].trim() ?? '';
 
+/** The first of the places a parent lists ("the editor (`web/src/editor`), the API and sync" -> "the editor (`web/src/editor`)"). */
+export function firstPlace(place = '') {
+  let depth = 0;
+  let code = false;
+  for (let i = 0; i < place.length; i++) {
+    const c = place[i];
+    if (c === '`') code = !code;
+    else if (!code && '([{'.includes(c)) depth++;
+    else if (!code && ')]}'.includes(c)) depth = Math.max(0, depth - 1);
+    else if (!code && !depth && (c === ',' || c === ';' || place.startsWith(' and ', i))) return place.slice(0, i).trim();
+  }
+  return place.trim();
+}
+
 /**
  * A new item's markdown: the issue template (.github/ISSUE_TEMPLATE/work.md) in the strict shape (NEW-01).
+ * Its place is the first of its parent's (EDIT-22): a child is in one place, its parent may span several.
  * @param {{ kind: string, partOf?: string, place?: string }} o partOf: how the item refers to its parent ("#12"), if it has one
  */
 export function newItemMarkdown({ kind, partOf = '', place = '' }) {
-  const head = [partOf ? `Part of ${partOf}` : '', `Kind: ${KIND_WORD[kind] ?? 'Task'} · Place: ${place}`.trimEnd()].filter(Boolean).join('\n');
+  const head = [partOf ? `Part of ${partOf}` : '', `Kind: ${KIND_WORD[kind] ?? 'Task'} · Place: ${firstPlace(place)}`.trimEnd()].filter(Boolean).join('\n');
   return `${head}\n\n${SECTIONS.map((s) => (TEMPLATE_HINTS[s] ? `## ${s}\n\n${TEMPLATE_HINTS[s]}` : `## ${s}`)).join('\n\n')}\n`;
 }
 
