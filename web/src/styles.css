@@ -2445,3 +2445,46 @@ span.note-kind {
   color: #e8eaed;
   border-color: #5a4d2c;
 }
+
+/* Links between items (#41 EDIT-14): "#12" reads as a link, in the editor and in text shown as written. */
+.issue-ref {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 2px;
+}
+.link-chip {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  max-width: 260px;
+  padding: 3px;
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
+}
+.link-chip-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--surface-2);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.link-chip-go span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.back-btn {
+  flex: none;
+  margin: -4px 0 0 -8px;
+}

@@ -6,6 +6,7 @@ import { Suspense, lazy, useState } from 'react';
 import { NOTE_KINDS, NOTE_KIND_HINT, NOTE_KIND_LABEL, answers, initials, isColour, kindOf } from '@shared/annotations.js';
 import { Icon } from '../components/Icon.jsx';
 import { commentHtml } from './comment-text.js';
+import { useLinks } from '../components/links-context.js';
 
 const TextBox = lazy(() => import('./TextBox.jsx'));
 
@@ -34,7 +35,10 @@ function Box({ value, onChange, onSubmit, label, placeholder, autoFocus, classNa
 }
 
 /** What was said, as the markdown it was written in, mentions standing out (NOTE-14). */
-const SaidText = ({ text }) => <div className="comment-text" dangerouslySetInnerHTML={{ __html: commentHtml(text) }} />;
+function SaidText({ text }) {
+  const { repo } = useLinks();
+  return <div className="comment-text" dangerouslySetInnerHTML={{ __html: commentHtml(text, repo) }} />;
+}
 
 /** What the annotation is about: where, then the words, the image, or what kind of thing it is. */
 function About({ heading, quote, what, src }) {

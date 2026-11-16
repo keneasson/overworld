@@ -9,6 +9,9 @@ import { EXTENSIONS, parseMarkdown, throughEditor } from '../src/editor/rich-tex
 import { fromDocument, toDocument } from '../src/editor/document.js';
 import { openWithBodies, sectionBodies } from '../src/editor/shape-extension.js';
 import { commentHtml } from '../src/editor/comment-text.js';
+import { linkAt } from '../src/editor/issue-links.js';
+import { backOf, followLink, linkTarget } from '../src/model/links.js';
+import { buildTree } from '../src/model/tree.js';
 
 const schema = getSchema(EXTENSIONS);
 const md = new MarkdownManager({ extensions: EXTENSIONS });
@@ -100,4 +103,44 @@ test('EDIT-15 a comment written with the menu is kept as markdown and shown form
   for (const bit of ['<strong>Bold</strong>', '<em>italic</em>', '<code>code</code>', '<a href="https://example.com">a link</a>', '<span class="note-mention">@Claude</span>', '<li>two</li>'])
     assert.ok(html.includes(bit), `shows ${bit}`);
   assert.ok(commentHtml('a plain line\nand the next').includes('<br>'), 'a plain comment keeps its line breaks');
+});
+
+test('EDIT-14 "#N" in an item\'s text, a child\'s summary or a comment is that item on the map; following it keeps the way back', () => {
+  const url = (n) => `https://github.com/o/r/issues/${n}`;
+  const tree = buildTree([
+    { id: 'root', kind: 'project', title: 'o/r', url: 'https://github.com/o/r' },
+    { id: 'e', parentId: 'root', kind: 'epic', title: '#12 Walk the map', url: url(12), body: '## Behaviours\n\n- #13 Follow a link' },
+    { id: 't', parentId: 'e', kind: 'task', title: '#13 Follow a link', url: url(13) },
+  ]);
+
+  // In the editor, the caret on "#13" in the child's one-line summary is on a link to that item.
+  const doc = getSchema(EXTENSIONS).nodeFromJSON(parseMarkdown(tree.byId.get('e').body));
+  let at = null;
+  doc.descendants((n, pos) => {
+    if (n.isText && n.text.includes('#13')) at = pos + n.text.indexOf('#13') + 2;
+  });
+  assert.equal(linkTarget(tree, linkAt({ doc }, at).ref).node.id, 't');
+  // Shown as written (a comment, a read-only item), it is a link to the issue, and the issue is the item.
+  const a = /<a [^>]*data-issue="13"[^>]*href="([^"]+)"/.exec(commentHtml('Done in #13.', 'o/r'));
+  assert.equal(linkTarget(tree, a[1]).node.id, 't');
+  assert.equal(linkTarget(tree, 13).node.id, 't');
+  // Not on the map: a plain link to GitHub.
+  assert.deepEqual(linkTarget(tree, '#99'), { number: 99, node: null, url: url(99) });
+
+  // Following it is a new history entry that knows where it came from; Back returns to the item and view it left.
+  const entries = [{ state: null, url: '#n=e' }];
+  let i = 0;
+  const history = {
+    get state() {
+      return entries[i].state;
+    },
+    replaceState: (state, _, u) => (entries[i] = { state, url: u }),
+    pushState: (state, _, u) => (entries.splice(++i), entries.push({ state, url: u })),
+    back: () => i--,
+  };
+  followLink(history, { fromId: 'e', from: '#n=e&v=1,2,3', to: '#n=t' });
+  assert.deepEqual(backOf(history.state), { id: 'e' });
+  history.back();
+  assert.equal(entries[i].url, '#n=e&v=1,2,3');
+  assert.equal(backOf(history.state), null);
 });

@@ -13,6 +13,7 @@ const PATHS = {
   trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
   up: 'M6 15l6-6 6 6',
   down: 'M6 9l6 6 6-6',
+  left: 'M15 6l-6 6 6 6',
   right: 'M9 6l6 6-6 6',
   route: 'M6 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM6 16V11a5 5 0 0 1 5-5h5',
   github:
