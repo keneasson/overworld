@@ -11,6 +11,7 @@ import { isInside, pathOf } from '../model/tree.js';
 import { LIGHT_COLORS } from './lenses.js';
 import { LADDER, housesOf, labelFor } from './labels.js';
 import { drawSymbol } from './symbols.js';
+import { lotsAt } from './lots.js';
 import { rectsOverlap, smoothstep } from './geometry.js';
 
 export const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif';
@@ -143,7 +144,7 @@ function seeded(text) {
 }
 
 const MAX_HOUSES = 300;
-const lots = new WeakMap();
+const houseSpots = new WeakMap();
 /**
  * Where a place's houses stand, in world coordinates: gathered round its centre like a town, the town
  * spreading as it grows, and never in the sea or a neighbour's land.
@@ -151,7 +152,7 @@ const lots = new WeakMap();
 function lotsFor(n, g) {
   const want = Math.min(MAX_HOUSES, housesOf(n));
   const key = `${want}`;
-  const hit = lots.get(g);
+  const hit = houseSpots.get(g);
   if (hit?.key === key) return hit.points;
   const rand = seeded(n.id);
   const [cx, cy] = g.label;
@@ -163,7 +164,7 @@ function lotsFor(n, g) {
     const p = [cx + r * Math.cos(a), cy + r * Math.sin(a)];
     if (polygonContains(g.poly, p)) points.push(p);
   }
-  lots.set(g, { key, points });
+  houseSpots.set(g, { key, points });
   return points;
 }
 
@@ -470,7 +471,6 @@ export function drawMap(ctx, scene, view, opts) {
   const toScreen = ([wx, wy]) => [wx * k + x, wy * k + y];
   const vp = [-x / k, -y / k, (W - x) / k, (H - y) / k];
   const inView = (bb) => bb[2] >= vp[0] && bb[0] <= vp[2] && bb[3] >= vp[1] && bb[1] <= vp[3];
-  const subOf = (n, s = sizeOf(n)) => (n.children.length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0);
   // A parent's label fades out completely before its children's labels fade in, so text never stacks.
   const yieldOf = (n, s = sizeOf(n)) => (n.children.length ? smoothstep(T.yld * 0.95, T.yld * 1.1, s) : 0);
 
@@ -497,53 +497,56 @@ export function drawMap(ctx, scene, view, opts) {
   ctx.fillStyle = theme.land;
   ctx.fill(coastPath);
 
-  // Fills, recursively, crossfading children in as they grow.
+  // Every place's ground, crossfading children in as they grow, then the streets between each place's lots (MARK-15).
   ctx.save();
   ctx.clip(coastPath);
-  const drawn = [];
   let hatchPattern = null;
   const fogged = [];
   const towns = [];
-  const walk = (n, alpha) => {
-    const g = geo.get(n.id);
-    if (!inView(g.bbox)) return;
-    const s = g.size * k;
-    if (alpha > 0.01) {
-      const path = pathFor(g);
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = lens.fill(n, tree);
+  const { grounds, streets } = lotsAt(scene, view, { lens, T });
+  for (const { n, g, s, alpha, ground, here } of grounds) {
+    const path = pathFor(g);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = ground;
+    ctx.fill(path);
+    if (lens.hatch?.(n) && s > 14) {
+      hatchPattern ??= hatch(ctx, theme.dark ? 'rgba(255,255,255,0.25)' : 'rgba(60,64,67,0.28)');
+      hatchPattern.setTransform(new DOMMatrix().scale(1 / k));
+      ctx.fillStyle = hatchPattern;
       ctx.fill(path);
-      if (lens.hatch?.(n) && s > 14) {
-        hatchPattern ??= hatch(ctx, theme.dark ? 'rgba(255,255,255,0.25)' : 'rgba(60,64,67,0.28)');
-        hatchPattern.setTransform(new DOMMatrix().scale(1 / k));
-        ctx.fillStyle = hatchPattern;
-        ctx.fill(path);
-      }
-      drawn.push({ n, g, alpha });
     }
-    const sub = subOf(n, s);
     // Houses and fog belong to what you can see: a region hands them to its children as they fade in.
-    const here = alpha > 0.01 ? alpha * (1 - sub) : 0;
     if (here > 0.02 && !thumbnail) towns.push({ n, g, w: here });
     // Fog lies over the unknown parts of what you can see, wherever they are inside it (FOG-01).
     if (lens.fog && here > 0.02) for (const f of fogPatches(n, { fog: lens.fog, geo, k, inView })) fogged.push({ g: f.g, s, w: here * f.w });
-    if (sub > 0.01) for (const c of n.children) walk(c, sub);
-  };
-  walk(tree.root, 1);
+  }
+  // Each lot is set back from its neighbours by a street of its parent's ground, inside its own edge. Drawn inside the
+  // lot, so the two halves of a street between neighbours meet, and the parent's wider streets go over its lots' own.
+  for (const { ground, alpha, width, lots } of streets) {
+    for (const lot of lots) {
+      const path = pathFor(lot.g);
+      ctx.save();
+      ctx.clip(path);
+      ctx.globalAlpha = alpha * Math.min(1, lot.alpha / alpha);
+      ctx.strokeStyle = lot.edge;
+      ctx.lineWidth = (width + 2.4) / k;
+      ctx.stroke(path);
+      ctx.strokeStyle = ground;
+      ctx.lineWidth = width / k;
+      ctx.stroke(path);
+      ctx.restore();
+    }
+  }
   const { labels: labelCands } = thumbnail ? { labels: [] } : namesAt(scene, view, { selectedId, T });
 
-  // Borders: deepest first so country lines sit on top of province lines.
-  drawn.sort((a, b) => b.n.depth - a.n.depth);
+  // Country borders on top of the lots inside them.
   ctx.strokeStyle = theme.border;
-  for (const { n, g, alpha } of drawn) {
-    if (n.depth === 0) continue;
-    const d = n.depth;
-    ctx.globalAlpha = alpha * (d === 1 ? 0.85 : d === 2 ? 0.7 : 0.55);
-    ctx.lineWidth = (d === 1 ? 2.2 : d === 2 ? 1.3 : 0.8) / k;
-    ctx.setLineDash(d >= 3 ? [3 / k, 2.5 / k] : []);
+  for (const { n, g, alpha } of grounds) {
+    if (n.depth !== 1) continue;
+    ctx.globalAlpha = alpha * 0.85;
+    ctx.lineWidth = 2.2 / k;
     ctx.stroke(pathFor(g));
   }
-  ctx.setLineDash([]);
   if (towns.length) drawHouses(ctx, towns, k, theme.dark);
   if (fogged.length) drawFog(ctx, fogged, k, time, theme.dark);
 

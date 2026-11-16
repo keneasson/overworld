@@ -1,10 +1,13 @@
 import { test } from 'node:test';
+import { hsl } from 'd3';
 import assert from 'node:assert/strict';
 import { demoProject } from '../../api/seed.mjs';
 import { buildTree } from '../src/model/tree.js';
 import { LADDER, holdingsOf, housesOf, labelFor, markersOf, symbolsInUse } from '../src/map/labels.js';
 import { buildScene } from '../src/map/scene.js';
 import { fitScale, hitTest, markerAt, namesAt, thresholds } from '../src/map/renderer.js';
+import { lotsAt } from '../src/map/lots.js';
+import { LENSES } from '../src/map/lenses.js';
 
 const root = { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' };
 const CLEAR = { summary: 'A clear piece of work', body: 'Enough detail to say what this is and why it matters.\n\n## Acceptance\n- [ ] it works', estimate: 2 };
@@ -186,4 +189,65 @@ test('MARK-13 zooming in only adds: a region keeps its pin beside its items, and
   const epic = tree.byId.get('epic');
   assert.deepEqual(types(labelFor(epic, 200).badges), { question: 2 }, 'alone, it rolls up what it holds');
   assert.deepEqual(types(labelFor(epic, 200, undefined, true).badges), { question: 1 }, 'beside its items, only its own');
+});
+
+test('MARK-15 an item whose outline can be read is its own lot, apart from its siblings, inside its parent\'s lot', () => {
+  const scene = buildScene(demoProject().nodes, 'demo', null, 'organic');
+  const { tree, geo } = scene;
+  const W = 1200, H = 800;
+  const T = thresholds(W, H);
+  const k0 = fitScale(W, H, scene.world) * 0.8;
+  const { cx, cy } = scene.world;
+  // Two lots touch when one's corner lies on the other's outline.
+  const onEdge = ([px, py], poly, eps) => poly.some(([ax, ay], i) => {
+    const [bx, by] = poly[(i + 1) % poly.length];
+    const dx = bx - ax, dy = by - ay;
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(ax + t * dx - px, ay + t * dy - py) < eps;
+  });
+  const touching = new Map();
+  const touch = (a, b) => touching.get(`${a.id}|${b.id}`) ?? touching.set(`${a.id}|${b.id}`, touches(geo.get(a.id), geo.get(b.id))).get(`${a.id}|${b.id}`);
+  const touches = (a, b) => {
+    const [x0, y0, x1, y1] = b.bbox;
+    const eps = 1e-6 * Math.max(scene.world.w, scene.world.h);
+    return a.poly.filter(([x, y]) => x >= x0 - eps && x <= x1 + eps && y >= y0 - eps && y <= y1 + eps && onEdge([x, y], b.poly, eps)).length >= 2;
+  };
+  let checked = 0;
+  for (const lens of LENSES) {
+    for (let k = k0; k < k0 * 40; k *= 1.6) {
+      const view = { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H };
+      const { grounds, streets } = lotsAt(scene, view, { lens, T });
+      const groundOf = new Map(grounds.map((l) => [l.n.id, l.ground]));
+      const street = new Map(streets.map((s) => [s.of.id, s]));
+      for (const { n, s } of grounds) {
+        if (n.depth < 1 || !n.children.length || s < T.sub * 1.25) continue;
+        // Its items' outlines can be read: each one on screen is a lot of its own, edged and set back by a street.
+        const lots = street.get(n.id)?.lots ?? [];
+        const onScreen = n.children.filter((c) => groundOf.has(c.id));
+        if (!onScreen.length) continue;
+        assert.deepEqual(lots.map((l) => l.n.id).sort(), onScreen.map((c) => c.id).sort(), `${lens.id}: ${n.title}'s items are lots at zoom ${k.toFixed(2)}`);
+        assert.ok(street.get(n.id).width > 0 && lots.every((l) => l.edge && l.edge !== l.ground), `${lens.id}: ${n.title}'s lots have edges and streets`);
+        // Neighbouring lots never share a ground, whatever colour the lens gives them.
+        for (const a of lots) for (const b of lots) {
+          if (a.n.id < b.n.id && touch(a.n, b.n)) {
+            assert.notEqual(a.ground, b.ground, `${lens.id}: ${a.n.title} and ${b.n.title} touch, so they look apart`);
+            checked++;
+          }
+        }
+        // A parent's lot holds its children's lots: streets inside streets, the outer ones wider.
+        for (const l of lots) if (street.has(l.n.id)) assert.ok(street.get(l.n.id).width <= street.get(n.id).width, `${l.n.title}'s streets are no wider than ${n.title}'s`);
+      }
+      // Until a place is big enough for its items' outlines to be read, they aren't drawn as lots (MARK-10).
+      for (const { n, s } of grounds) if (s < T.sub * 0.8) assert.ok(!street.has(n.id), `${n.title} is still one place at zoom ${k.toFixed(2)}`);
+    }
+  }
+  assert.ok(checked > 50, `neighbouring lots were compared (${checked})`);
+  // A lot's ground is the lens's colour for it, only lighter or darker: the lens still says what the land means.
+  const lens = LENSES.find((l) => l.id === 'health');
+  const k = k0 * 20;
+  const { grounds } = lotsAt(scene, { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H }, { lens, T });
+  for (const { n, ground } of grounds) {
+    const [a, b] = [hsl(ground), hsl(lens.fill(n, tree))];
+    if (b.s > 0.1) assert.ok(Math.abs(a.h - b.h) < 3, `${n.title} keeps the lens's colour`);
+  }
 });
