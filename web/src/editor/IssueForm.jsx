@@ -12,6 +12,8 @@ import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './t
 import { Composer, Thread, clearedWords } from './Annotate.jsx';
 import { SelectionMenu } from './SelectionMenu.jsx';
 import { Icon } from '../components/Icon.jsx';
+import { useLinks } from '../components/links-context.js';
+import { IssueLinks, linkAt } from './issue-links.js';
 
 const TAP = 10; // a touch that moves less than this is a tap, not a scroll
 
@@ -45,10 +47,12 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
   const [thread, setThread] = useState(null); // { id, top }
   const [hover, setHover] = useState(null); // the target outlined, with its rects
   const [picked, setPicked] = useState(null); // the target the comment box is open on
+  const [linkChip, setLinkChip] = useState(null); // the link the caret is on, to follow (EDIT-14): { ref, top, left }
+  const links = useLinks();
   const wrap = useRef(null);
   const opened = useRef(null);
   const live = useRef({});
-  live.current = { title, areaTexts, onChange, hover, picked, commenting };
+  live.current = { title, areaTexts, onChange, hover, picked, commenting, links };
   const itemLabel = issueNumber ? `#${issueNumber}` : title || 'This item';
 
   const nextId = () => {
@@ -70,6 +74,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
       ...EXTENSIONS,
       Markdown,
       IssueShape.configure({ nextId: () => nextId(), onThread: (id, b) => onThread(id, b) }),
+      IssueLinks.configure({ onFollow: (ref) => !live.current.commenting && live.current.links.follow(ref) }),
       Placeholder.configure({
         showOnlyCurrent: false,
         placeholder: ({ editor: e, node, pos }) => {
@@ -87,6 +92,32 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     // Changes before the editor has opened are its own setup, not the person's.
     onUpdate: ({ editor: e }) => opened.current != null && live.current.onChange({ title: live.current.title, markdown: fromDocument(original, opened.current, e.getMarkdown()) }),
   });
+
+  // The caret on a link (EDIT-14) offers to follow it, just below the link: a tap or a click in the text still edits.
+  useEffect(() => {
+    if (!editor) return undefined;
+    const update = () => {
+      const { state, view } = editor;
+      const link = !live.current.commenting && editor.isFocused && state.selection.empty ? linkAt(state, state.selection.from) : null;
+      const target = link && live.current.links.target(link.ref);
+      if (!(target?.node || target?.url || (link && !target && /^https?:/.test(link.ref))) || !wrap.current) return setLinkChip(null);
+      const box = wrap.current.getBoundingClientRect();
+      const at = view.coordsAtPos(link.at);
+      setLinkChip({ ref: link.ref, target, top: at.bottom - box.top + 4, left: Math.max(0, Math.min(at.left - box.left, box.width - 260)) });
+    };
+    const blur = () => setLinkChip(null);
+    editor.on('selectionUpdate', update);
+    editor.on('focus', update);
+    editor.on('blur', blur);
+    return () => {
+      editor.off('selectionUpdate', update);
+      editor.off('focus', update);
+      editor.off('blur', blur);
+    };
+  }, [editor]);
+  useEffect(() => {
+    if (commenting) setLinkChip(null);
+  }, [commenting]);
 
   // Each annotation is its own thread (NOTE-11), marked at its words (NOTE-13); the open one is highlighted.
   const threads = useMemo(() => threadsOf(comments), [comments]);
@@ -286,6 +317,20 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
         {hover && !picked && <Outline rects={hover.rects} />}
         {picked && <Outline rects={picked.rects} picked />}
       </div>
+      {linkChip && (
+        // Pressing the chip keeps the caret where it is, so the chip is still there for the click.
+        <div className="link-chip" style={{ top: linkChip.top, left: linkChip.left }} onMouseDown={(e) => e.preventDefault()}>
+          {linkChip.target?.node ? (
+            <button type="button" className="link-chip-go" onClick={() => links.follow(linkChip.ref)} title="Or ⌘/Ctrl-click the link">
+              <Icon name="target" size={14} /> <span>Go to {linkChip.target.node.title}</span>
+            </button>
+          ) : (
+            <a className="link-chip-go" href={linkChip.target?.url ?? linkChip.ref} target="_blank" rel="noopener noreferrer">
+              <Icon name="external" size={14} /> <span>{linkChip.target ? `#${linkChip.target.number} on GitHub` : linkChip.ref}</span>
+            </a>
+          )}
+        </div>
+      )}
       {hover?.touch && !picked && (
         <div className="note-chip" style={{ top: below(hover.rects) + 6 }}>
           <button type="button" className="note-chip-go" onClick={() => pick(hover)}>

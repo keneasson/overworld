@@ -84,6 +84,12 @@ export const MapView = forwardRef(function MapView(
       if (!n) return;
       animateTo(nodeView(sc, n, st.current.w, st.current.h, props.current.insets), duration);
     },
+    /** Back to a view as the address keeps it: its centre in world space and its zoom. */
+    showView(v, duration) {
+      const s = st.current;
+      if (!s.ready) return void setTimeout(() => this.showView(v, duration), 60);
+      animateTo({ k: v.k, x: s.w / 2 - v.cx * v.k, y: s.h / 2 - v.cy * v.k }, duration);
+    },
     overview(duration) {
       const sc = props.current.scene;
       if (sc) animateTo(overviewView(sc, st.current.w, st.current.h, props.current.insets), duration);

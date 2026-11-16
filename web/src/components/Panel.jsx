@@ -1,5 +1,5 @@
 import { Suspense, lazy, useMemo, useState } from 'react';
-import { marked } from 'marked';
+import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
 import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
@@ -8,6 +8,8 @@ import { compareItems, editableOf, issueOf, itemKeyOf } from '@shared/issue-shap
 import { isEditable, isMapped } from '../editor/items.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
+import { issueRefExtension } from '../model/links.js';
+import { useLinks } from './links-context.js';
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
@@ -16,8 +18,16 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 
+// "#12" in the text links to the item it is (EDIT-14), so a parser per repository.
+const parsers = new Map();
+const markedFor = (repo) => {
+  if (!parsers.has(repo)) parsers.set(repo, new Marked({ gfm: true, breaks: true }).use({ extensions: [issueRefExtension(repo)] }));
+  return parsers.get(repo);
+};
+
 export function Markdown({ text }) {
-  const html = useMemo(() => DOMPurify.sanitize(marked.parse(text ?? '', { gfm: true, breaks: true })), [text]);
+  const { repo } = useLinks();
+  const html = useMemo(() => DOMPurify.sanitize(markedFor(repo).parse(text ?? '')), [text, repo]);
   return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
@@ -202,7 +212,7 @@ function Refinement({ cs, item, node, editing }) {
  * properties change in place (EDIT-11), and comments sit on what they are about. The panel only ever holds this
  * one item (EDIT-13); its edits wait in the project's changeset when another is picked.
  */
-export function Details({ node, tree, lens, comments = [], editing, commenting = false, commentControl = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+export function Details({ node, tree, lens, comments = [], editing, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const s = node.stats;
   const key = itemKeyOf(node);
@@ -229,6 +239,11 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
   return (
     <div className="details">
       <header className="panel-head">
+        {back && (
+          <button type="button" className="icon-btn back-btn" onClick={back.go} aria-label={back.label} title={back.label}>
+            <Icon name="left" />
+          </button>
+        )}
         <div className="crumbs-small">
           {path.map((p) => (
             <button key={p.id} onClick={() => onPick(p.id)}>

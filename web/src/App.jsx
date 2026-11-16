@@ -15,6 +15,8 @@ import { Drawer, Unlock } from './components/Drawer.jsx';
 import { ConnectAgent } from './components/ConnectAgent.jsx';
 import { Icon } from './components/Icon.jsx';
 import { isNewer } from './model/version.js';
+import { backOf, followLink, linkTarget, repoOf } from './model/links.js';
+import { LinkContext } from './components/links-context.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -234,7 +236,7 @@ export function App() {
   // Keep the URL shareable: project, selection, lens, projection and view.
   const latest = useRef({});
   latest.current = { projectId, selectedId, lensId, showLinks, projection };
-  const writeHash = useCallback(() => {
+  const hashOf = useCallback(() => {
     const s = latest.current;
     const p = new URLSearchParams();
     if (s.projectId) p.set('p', s.projectId);
@@ -244,8 +246,19 @@ export function App() {
     if (s.projection !== 'site') p.set('proj', s.projection);
     const v = mapRef.current?.getView();
     if (v) p.set('v', `${v.cx.toFixed(1)},${v.cy.toFixed(1)},${v.k.toFixed(3)}`);
-    history.replaceState(null, '', `#${p}`);
+    return `#${p}`;
   }, []);
+  // The address is replaced as things change, except when a link is followed (EDIT-14): that is a new history entry.
+  const following = useRef(null); // { fromId, from } while a followed item opens
+  const [trail, setTrail] = useState(() => backOf(history.state));
+  const writeHash = useCallback(() => {
+    const f = following.current;
+    following.current = null;
+    if (f) {
+      followLink(history, { ...f, to: hashOf() });
+      setTrail(backOf(history.state));
+    } else history.replaceState(history.state, '', hashOf());
+  }, [hashOf]);
   useEffect(writeHash, [projectId, selectedId, lensId, showLinks, projection, writeHash]);
 
   // A new projection redraws the whole world: keep the selection in view, or show everything.
@@ -275,6 +288,57 @@ export function App() {
     if (id) mapRef.current?.flyTo(id);
   }, []);
   const onMapSelect = useCallback((id) => setSelectedId(id), []);
+  // Following a link in an item's text (EDIT-14): the map flies to the item and it opens, and Back returns here.
+  const follow = useCallback(
+    (id) => {
+      const fromId = latest.current.selectedId;
+      if (id !== fromId) {
+        following.current = { fromId, from: hashOf() };
+        setSelectedId(id);
+      }
+      mapRef.current?.flyTo(id);
+    },
+    [hashOf],
+  );
+  // Back (the browser's, or the panel's) returns to the item and the view the address keeps.
+  useEffect(() => {
+    const onPop = () => {
+      const h = readHash();
+      setTrail(backOf(history.state));
+      if (h.p && h.p !== latest.current.projectId) setProjectId(h.p);
+      setSelectedId(h.n);
+      if (h.view) mapRef.current?.showView(h.view);
+      else if (h.n) mapRef.current?.flyTo(h.n);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  const links = useMemo(() => {
+    const target = (ref) => linkTarget(tree, ref);
+    return {
+      repo: repoOf(tree),
+      target,
+      follow: (ref) => {
+        const t = target(ref);
+        if (t?.node) follow(t.node.id);
+        else if (t?.url ?? /^https?:/.test(ref)) window.open(t?.url ?? ref, '_blank', 'noopener');
+      },
+    };
+  }, [tree, follow]);
+  // A link in text shown as it was written (read-only items, comments): one on the map is followed, not opened on GitHub.
+  // In the editor a click edits; the editor follows its own links.
+  const onPanelClick = useCallback(
+    (e) => {
+      const a = e.target.closest?.('a[href], .issue-ref');
+      if (!a || a.closest('.issue-doc-text') || e.button || e.shiftKey || e.altKey) return;
+      if ((e.metaKey || e.ctrlKey) && a.href) return; // a new tab, as asked
+      const t = links.target(a.dataset.issue ? Number(a.dataset.issue) : a.getAttribute('href'));
+      if (!t?.node) return;
+      e.preventDefault();
+      follow(t.node.id);
+    },
+    [links, follow],
+  );
   const setLens = useCallback((id) => {
     setLensId(id);
     const hasResults = Boolean(LENS_BY_ID[id].matches);
@@ -576,43 +640,46 @@ export function App() {
       </div>
 
       {panelMode && tree && (
-        <aside className="panel" aria-label="Details" style={mobile ? undefined : { width: panelW }}>
+        <aside className="panel" aria-label="Details" style={mobile ? undefined : { width: panelW }} onClick={onPanelClick}>
           {mobile && (
             <button className="sheet-handle" onPointerDown={onSheetDown} aria-label={sheetFull ? 'Show the map' : 'Pull up to edit'}>
               <span />
             </button>
           )}
-          <div className="panel-scroll">
-            {panelMode === 'details' && (
-              <Details
-                key={selected.id}
-                node={selected}
-                tree={tree}
-                lens={lens}
-                comments={comments}
-                editing={editing}
-                commenting={commenting}
-                commentControl={inSheet ? commentControl : null}
-                onPick={pick}
-                onFly={(id) => mapRef.current?.flyTo(id)}
-                onAdd={add}
-                onPatch={(fields) => patch(selected, fields)}
-                onDelete={remove}
-                onClose={closePanel}
-                onDocFocus={mobile ? () => setSheetFull(true) : undefined}
-                onCopyLink={async () => {
-                  writeHash();
-                  try {
-                    await navigator.clipboard.writeText(location.href);
-                    toast('Link copied');
-                  } catch {
-                    toast('Copy the address bar to share this view');
-                  }
-                }}
-              />
-            )}
-            {panelMode === 'results' && <Results lens={lens} tree={tree} focusId={focusId} onPick={pick} onClose={() => setResultsOpen(false)} />}
-          </div>
+          <LinkContext.Provider value={links}>
+            <div className="panel-scroll">
+              {panelMode === 'details' && (
+                <Details
+                  key={selected.id}
+                  node={selected}
+                  tree={tree}
+                  lens={lens}
+                  comments={comments}
+                  editing={editing}
+                  commenting={commenting}
+                  commentControl={inSheet ? commentControl : null}
+                  back={trail && { label: trail.id && tree.byId.get(trail.id) ? `Back to ${tree.byId.get(trail.id).title}` : 'Back', go: () => history.back() }}
+                  onPick={pick}
+                  onFly={(id) => mapRef.current?.flyTo(id)}
+                  onAdd={add}
+                  onPatch={(fields) => patch(selected, fields)}
+                  onDelete={remove}
+                  onClose={closePanel}
+                  onDocFocus={mobile ? () => setSheetFull(true) : undefined}
+                  onCopyLink={async () => {
+                    writeHash();
+                    try {
+                      await navigator.clipboard.writeText(location.href);
+                      toast('Link copied');
+                    } catch {
+                      toast('Copy the address bar to share this view');
+                    }
+                  }}
+                />
+              )}
+              {panelMode === 'results' && <Results lens={lens} tree={tree} focusId={focusId} onPick={pick} onClose={() => setResultsOpen(false)} />}
+            </div>
+          </LinkContext.Provider>
           {!mobile && (
             <button
               type="button"
