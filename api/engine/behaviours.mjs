@@ -3,6 +3,18 @@
 //   Markdown specs  "| ID | Scenario | Status |" tables, status by ✅ ⚠️ ❌ ⏸ 🔷 (or the words)
 //   Gherkin files   "Feature:" / "Scenario:" (tagged @wip / @todo when not built yet)
 
+// Tests named by behaviour ID (#19): "test('SYNC-07 a save writes once')". Which IDs have one hints at what is built (#32 STATE-10).
+export const TEST_PATH = /(^|\/)(tests?|__tests__)\/.*\.[cm]?[jt]sx?$|\.(test|spec)\.[cm]?[jt]sx?$/i;
+const TEST_TITLE = /\b(?:test|it|describe)(?:\.\w+)?\s*\(\s*(['"`])((?:(?!\1)[^\\]|\\.)*)\1/g;
+const BEHAVIOUR_ID = /\b[A-Z][A-Z0-9]*-\d+\b/g;
+
+/** The behaviour IDs named in a test file's test titles. */
+export function testedIdsOf(text) {
+  const ids = new Set();
+  for (const [, , title] of String(text ?? '').matchAll(TEST_TITLE)) for (const [id] of title.matchAll(BEHAVIOUR_ID)) ids.add(id);
+  return ids;
+}
+
 export const SPEC_PATH = /(^|\/)(behaviou?rs?|specs?|requirements|acceptance|features)\/(?!readme)[^/]+\.(md|feature)$/i;
 
 const STATUS = [

@@ -2,14 +2,14 @@
 // it, its behaviour specs the laws of each place. See api/engine/ for how.
 //
 // Reads (all deterministic, no AI):
-//   the file tree, every package.json, behaviour specs (docs/behavior/*.md, *.feature)
+//   the file tree, every package.json, behaviour specs (docs/behavior/*.md, *.feature), and test titles' behaviour IDs
 //   issues, with GitHub sub-issues and (with a token) the files each closing PR changed
 //
 // A token is optional (public repos work without one, at 60 requests/hour).
 // It is used for this request only and never stored or logged.
 
 import { ValidationError } from '../shared/schema.js';
-import { parseSpec, SPEC_PATH } from './engine/behaviours.mjs';
+import { parseSpec, SPEC_PATH, TEST_PATH, testedIdsOf } from './engine/behaviours.mjs';
 import { buildProject } from './engine/project.mjs';
 
 const API = 'https://api.github.com';
@@ -17,6 +17,7 @@ const RAW = 'https://raw.githubusercontent.com';
 const MAX_ISSUES = 600;
 const MAX_MANIFESTS = 40;
 const MAX_SPECS = 30;
+const MAX_TESTS = 80;
 
 export function parseRepo(input) {
   const m = String(input ?? '')
@@ -62,7 +63,8 @@ export async function importGitHub({ repo, token }, fetchImpl = fetch) {
   }
   const manifestPaths = paths.filter((p) => /(^|\/)package\.json$/.test(p) && !/node_modules\//.test(p)).slice(0, MAX_MANIFESTS);
   const specPaths = paths.filter((p) => SPEC_PATH.test(p) && !/node_modules\//.test(p)).slice(0, MAX_SPECS);
-  const texts = await inBatches([...manifestPaths, ...specPaths], 8, (p) => raw(p).catch(() => null));
+  const testPaths = paths.filter((p) => TEST_PATH.test(p) && !/node_modules\//.test(p)).slice(0, MAX_TESTS);
+  const texts = await inBatches([...manifestPaths, ...specPaths, ...testPaths], 8, (p) => raw(p).catch(() => null));
   const manifests = new Map();
   manifestPaths.forEach((p, i) => {
     try {
@@ -72,11 +74,12 @@ export async function importGitHub({ repo, token }, fetchImpl = fetch) {
     }
   });
   const specs = specPaths.map((p, i) => texts[manifestPaths.length + i] && parseSpec(p, texts[manifestPaths.length + i])).filter((s) => s && s.sections.length);
+  const tested = [...new Set(texts.slice(manifestPaths.length + specPaths.length).flatMap((t) => [...testedIdsOf(t)]))].sort();
 
   // Open pull requests saying "Closes #N" put issue N in progress. One page is plenty for most repositories.
   const pulls = await rest(`/repos/${owner}/${name}/pulls?state=open&per_page=100`).catch(() => []);
   const built = buildProject({ repo: info, paths, manifests, specs, issues, pulls: (Array.isArray(pulls) ? pulls : []).map((p) => ({ number: p.number, title: p.title, body: p.body ?? '' })) });
-  return { ...built, guide: await guideFor(paths, raw) };
+  return { ...built, tested, guide: await guideFor(paths, raw) };
 }
 
 const GUIDES = ['CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md'];
