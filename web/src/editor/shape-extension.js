@@ -3,7 +3,8 @@
 // at the end of a behaviour starts the next one with its ID, and each annotation (#15) is a marker with its
 // author's initials at the words it is about, which stay highlighted (NOTE-13). Nothing here ever blocks typing.
 // A section's heading holds only its name (EDIT-16): every section has a line to type on, and words typed, pasted or
-// Entered into a shape heading go to that line instead.
+// Entered into a shape heading go to that line instead. A heading the shape doesn't have carries a small marker that makes
+// it text again (EDIT-19), and an empty section shows its hint until anything is written there (EDIT-20).
 
 import { Extension } from '@tiptap/core';
 import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
@@ -65,6 +66,51 @@ function notes(doc, { threads, active, onThread }) {
   return out;
 }
 
+/** The small marker on a heading the shape doesn't have (EDIT-19): it says so, and pressing it makes the heading text. */
+function strayMark(headingPos) {
+  return (view) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.contentEditable = 'false';
+    b.className = 'stray-mark';
+    b.textContent = '¶';
+    b.title = 'Not a section of this item: press to make it text';
+    b.setAttribute('aria-label', 'Not a section of this item. Make it text');
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tr = textAgain(view.state, headingPos);
+      if (tr) view.dispatch(tr);
+    });
+    return b;
+  };
+}
+
+/** Makes the heading at `pos` a paragraph of its section, if it is a heading the shape doesn't have (EDIT-19). */
+export function textAgain(state, pos) {
+  const node = state.doc.nodeAt(pos);
+  if (!isSection(node) || inShape(node)) return null;
+  return state.tr.setNodeMarkup(pos, state.schema.nodes.paragraph);
+}
+
+export const HINTS = {
+  Why: 'The problem, for whom, and why now.',
+  Behaviours: 'AREA-01 Given …, when …, then …',
+  Acceptance: 'How everyone will know it is done.',
+  'Out of scope': 'What this deliberately leaves out.',
+  'Open questions': 'Anything listed here needs a decision first.',
+};
+
+/** The hint an empty line shows (EDIT-20): only the first line of a section that has nothing else in it. */
+export function hintAt(doc, node, pos) {
+  if (node.type.name !== 'paragraph' || node.content.size || pos === 0) return '';
+  const $pos = doc.resolve(pos);
+  if ($pos.depth !== 0 || !isSection($pos.nodeBefore)) return '';
+  const next = doc.nodeAt(pos + node.nodeSize);
+  if (next && !isSection(next)) return '';
+  return HINTS[sectionAt(doc, pos)] ?? '';
+}
+
 function decorate(doc, opts) {
   const out = notes(doc, opts);
   let section = null;
@@ -73,7 +119,10 @@ function decorate(doc, opts) {
   doc.forEach((node, offset) => {
     if (node.type.name === 'heading' && node.attrs.level === 2) {
       section = canonical(node.textContent.trim());
-      if (!SECTIONS.includes(section)) out.push(Decoration.node(offset, offset + node.nodeSize, { class: 'off-shape', 'data-note': 'Not in the shape' }));
+      if (!SECTIONS.includes(section)) {
+        out.push(Decoration.node(offset, offset + node.nodeSize, { class: 'off-shape' }));
+        out.push(Decoration.widget(offset + node.nodeSize - 1, strayMark(offset), { side: 1, key: `stray:${offset}`, ignoreSelection: true, stopEvent: () => true }));
+      }
       if (section === 'Open questions') questions = [offset, offset + node.nodeSize];
       return;
     }

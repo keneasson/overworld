@@ -332,28 +332,41 @@ button {
 .panel-grip:focus-visible span {
   background: var(--accent);
 }
-/* What the changeset holds, kept in sight while the document scrolls. */
+/* What the changeset holds: one quiet line under the text, kept in sight while it scrolls (EDIT-21). */
 .edit-bar {
   position: sticky;
-  top: -8px;
+  bottom: -24px;
   z-index: 4;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 8px;
-  margin: 4px -20px 8px;
-  padding: 8px 20px;
+  gap: 4px 8px;
+  margin: 8px -20px 0;
+  padding: 6px 20px;
   background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
   font-size: 13px;
 }
 .edit-status {
   flex: 1 1 auto;
+  min-width: 0;
   color: var(--muted);
 }
+.edit-by {
+  padding: 0 0 0 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.edit-by:hover {
+  color: var(--accent);
+}
 .edit-name {
-  width: 120px;
-  padding: 5px 8px;
+  width: 110px;
+  margin-left: 6px;
+  padding: 2px 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -361,18 +374,25 @@ button {
 }
 .edit-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
 }
 .edit-actions button {
-  height: 30px;
+  height: 28px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 15px;
+  border-radius: 14px;
   background: var(--surface);
   color: var(--accent);
   font-size: 13px;
   font-weight: 500;
+}
+.edit-actions button.link-btn {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
 }
 .edit-actions button.primary {
   display: inline-flex;
@@ -695,6 +715,35 @@ button {
   font-weight: 500;
   text-decoration: none;
   white-space: nowrap;
+}
+.actions.quiet {
+  gap: 0;
+  flex-wrap: wrap;
+  margin: 6px -6px 2px;
+  overflow: visible;
+}
+.actions.quiet > * {
+  flex: 0 0 auto;
+  flex-direction: row;
+  gap: 2px;
+  padding: 3px 6px 3px 2px;
+  border-radius: 14px;
+  font-size: 12.5px;
+}
+.actions.quiet .action-icon {
+  width: 20px;
+  height: 20px;
+  box-shadow: none;
+}
+.actions.quiet .action-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.actions.quiet > *:hover {
+  background: var(--accent-soft);
+}
+.actions.quiet > *:hover .action-icon {
+  background: none;
 }
 .action-icon {
   display: grid;
@@ -1741,9 +1790,6 @@ button.danger.armed {
   margin: 0 0 0.55em;
 }
 .issue-doc-text h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin: 1.1em 0 0.35em;
   font-size: 13px;
   font-weight: 700;
@@ -1773,11 +1819,16 @@ button.danger.armed {
 .issue-doc-text a {
   color: var(--accent);
 }
+/* A section's hint (EDIT-20): plainly a placeholder, and one line that never runs into the next heading. */
 .issue-doc-text .is-empty::before {
   content: attr(data-placeholder);
   float: left;
   height: 0;
+  overflow: visible;
+  white-space: nowrap;
   color: var(--muted);
+  opacity: 0.7;
+  font-style: italic;
   pointer-events: none;
 }
 .issue-doc-text .bid {
@@ -1792,15 +1843,42 @@ button.danger.armed {
   text-decoration: underline wavy #d97706 1px;
   text-underline-offset: 3px;
 }
-.issue-doc-text h2.off-shape::after,
+/* A heading the shape doesn't have (EDIT-19): a small mark after it, which makes it text; the text keeps its width. */
+.issue-doc-text h2.off-shape {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.issue-doc-text .stray-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0;
+  vertical-align: 1px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.issue-doc-text .stray-mark:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .issue-doc-text h2.asking::after {
   content: attr(data-note);
+  display: inline-block;
+  margin-left: 8px;
   padding: 1px 8px;
   border-radius: 999px;
   font-size: 11px;
   letter-spacing: 0;
   text-transform: none;
-  background: var(--surface-2);
+  vertical-align: 1px;
+  white-space: nowrap;
 }
 .issue-doc-text h2.asking {
   color: #b45309;
@@ -2445,4 +2523,12 @@ button.danger.armed {
 .back-btn {
   flex: none;
   margin: -4px 0 0 -8px;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }

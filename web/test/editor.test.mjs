@@ -4,10 +4,10 @@ import { getSchema } from '@tiptap/core';
 import { MarkdownManager } from '@tiptap/markdown';
 import { EditorState, TextSelection } from '@tiptap/pm/state';
 import { liftListItem, sinkListItem } from '@tiptap/pm/schema-list';
-import { newItemMarkdown, parseIssue, sectionText } from '@shared/issue-shape.js';
+import { firstPlace, isWellFormed, newItemMarkdown, parseIssue, placeOf, sectionText } from '@shared/issue-shape.js';
 import { EXTENSIONS, parseMarkdown, throughEditor } from '../src/editor/rich-text.js';
 import { fromDocument, toDocument } from '../src/editor/document.js';
-import { openWithBodies, sectionBodies } from '../src/editor/shape-extension.js';
+import { hintAt, openWithBodies, sectionBodies, textAgain } from '../src/editor/shape-extension.js';
 import { commentHtml } from '../src/editor/comment-text.js';
 import { linkAt } from '../src/editor/issue-links.js';
 import { backOf, followLink, linkTarget } from '../src/model/links.js';
@@ -71,6 +71,84 @@ test('EDIT-16 an existing item: every empty section has a line to type on, and o
   doc.type('EDIT-01 Given a, when b, then c.');
   assert.equal(doc.headingEnd('Behaviours') != null, true, 'the heading keeps its name');
   assert.equal(sectionText(parseIssue(fromDocument(body, opened, markdownOf(doc.view.state))), 'Behaviours'), '- EDIT-01 Given a, when b, then c.');
+});
+
+// Words saved as headings, the way #78 and #81 were written before EDIT-16.
+const STRAY = [
+  'Part of #26',
+  'Kind: Task · Place: web',
+  '',
+  '## Why issues are not always visible on the map. Tasks should be houses, not countries.',
+  '',
+  '## Behaviours',
+  '',
+  '## As a user I want to zoom into an issue and see the tasks as properties.',
+  '',
+  '## Map zoom',
+  '',
+  '##   ',
+  '',
+  '## Acceptance: as a user I zoom into a behaviour and see its tasks.',
+  '',
+  '## Out of scope',
+  '',
+  '## Open questions',
+  '',
+  '## Acceptance',
+  '',
+  'Screenshots in the pull request.',
+  '',
+].join('\n');
+
+test('EDIT-18 words saved as headings open as the text of their section; opening changes nothing, the first edit saves the shape', () => {
+  const opened = markdownOf(open(toDocument(STRAY)).view.state);
+  assert.equal(fromDocument(STRAY, opened, opened), STRAY, 'opening it changes nothing');
+  const doc = open(toDocument(STRAY));
+  const headings = [];
+  doc.view.state.doc.forEach((n) => n.type.name === 'heading' && n.attrs.level === 2 && headings.push(n.textContent));
+  assert.deepEqual(headings, ['Why', 'Behaviours', 'Acceptance', 'Out of scope', 'Open questions'], 'no "## " heading outside the shape');
+  doc.at(doc.headingEnd('Out of scope'));
+  doc.type('Moving issues.');
+  const saved = parseIssue(fromDocument(STRAY, opened, markdownOf(doc.view.state)));
+  assert.ok(isWellFormed(saved), saved.sections.map((s) => s.name).join(', '));
+  assert.equal(sectionText(saved, 'Why'), 'issues are not always visible on the map. Tasks should be houses, not countries.');
+  assert.equal(sectionText(saved, 'Behaviours'), 'As a user I want to zoom into an issue and see the tasks as properties.\n\n### Map zoom');
+  assert.equal(sectionText(saved, 'Acceptance'), 'as a user I zoom into a behaviour and see its tasks.\n\nScreenshots in the pull request.', 'both Acceptances are one');
+  assert.equal(sectionText(saved, 'Out of scope'), 'Moving issues.');
+  assert.match(saved.head, /^Part of #26\nKind: Task · Place: web/);
+});
+
+test('EDIT-19 a heading typed outside the shape is text again at a press of its marker', () => {
+  const doc = open(toDocument('## Why\n\nBecause.\n\n## Acceptance\n'));
+  const state = doc.view.state;
+  let pos = null;
+  state.doc.forEach((n, offset) => n.textContent === 'Because.' && (pos = offset));
+  doc.view.dispatch(state.tr.setNodeMarkup(pos, schema.nodes.heading, { level: 2 })); // "## " typed before it
+  assert.equal(textAgain(doc.view.state, 0), null, 'a section of the shape stays a heading');
+  doc.view.state.doc.forEach((n, offset) => n.textContent === 'Because.' && (pos = offset));
+  doc.view.dispatch(textAgain(doc.view.state, pos));
+  assert.equal(markdownOf(doc.view.state).includes('## Because.'), false);
+  assert.equal(sectionText(parseIssue(markdownOf(doc.view.state)), 'Why'), 'Because.');
+});
+
+test('EDIT-20 an empty section shows its hint, and only while nothing is written there', () => {
+  const doc = open(toDocument('## Why\n\n## Behaviours\n\n- EDIT-01 Given a, when b, then c.\n\n## Acceptance\n'));
+  const hints = [];
+  const { doc: d } = doc.view.state;
+  d.forEach((n, offset) => n.type.name === 'paragraph' && hints.push(hintAt(d, n, offset)));
+  assert.deepEqual(hints.filter(Boolean), ['The problem, for whom, and why now.', 'How everyone will know it is done.', 'What this deliberately leaves out.', 'Anything listed here needs a decision first.']);
+  // An empty first line above written text is not an empty section.
+  const behaviours = d.childAfter(doc.headingEnd('Behaviours') + 1);
+  const line = schema.nodes.paragraph.create();
+  const state = doc.view.state.apply(doc.view.state.tr.insert(behaviours.offset, line));
+  assert.equal(hintAt(state.doc, line, behaviours.offset), '');
+});
+
+test('EDIT-22 a new item takes the first of its parent\'s places, not all of them', () => {
+  const parent = 'Kind: Epic · Place: the area editor (`web/src/editor`), the changeset API and sync (#3)';
+  assert.equal(placeOf(newItemMarkdown({ kind: 'task', partOf: '#26', place: placeOf(parent) })), 'the area editor (`web/src/editor`)');
+  assert.equal(firstPlace('checkout'), 'checkout');
+  assert.equal(firstPlace('`a, b` and c'), '`a, b`');
 });
 
 test('EDIT-17 nested lists save as nested markdown and read back as sub-items, both ways', () => {

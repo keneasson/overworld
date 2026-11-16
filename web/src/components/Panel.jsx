@@ -4,7 +4,7 @@ import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
 import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
-import { compareItems, editableOf, issueOf, itemKeyOf } from '@shared/issue-shape.js';
+import { compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
@@ -75,34 +75,64 @@ function NodeRow({ node, onPick, sub }) {
   );
 }
 
+// An item's health, shown only when it says more than its status (EDIT-21): "Done · Done" or "Idea · Not started" says it twice.
+const NOT_STARTED = ['idea', 'planned', 'ready', 'needs_decision'];
+const saysMore = (node, health) =>
+  !(health === 'done' && ['done', 'rejected'].includes(node.status)) && !(health === 'not_started' && NOT_STARTED.includes(node.status)) && (node.children.length > 0 || ['off_track', 'at_risk'].includes(health));
+
+// Words saved as headings read as the text of their section here too (EDIT-18), the map's 📍 note kept after them.
+const shaped = (body) => {
+  const { markdown, note } = splitNote(body);
+  return reshapeIssue(markdown).trimEnd() + note;
+};
+
 const pct = (v) => `${Math.round(v * 100)}%`;
 
 // The document editor is big: it loads the first time an item with text opens.
 const IssueForm = lazy(() => import('../editor/IssueForm.jsx').then((m) => ({ default: m.IssueForm })));
 
-/** What the open changeset holds, and the three things to do with it: discard, accept, save to GitHub. */
+/** What the open changeset holds, and the three things to do with it, in one quiet line below the text (EDIT-21). */
 function EditBar({ editing }) {
   const { edited, unsaved, saving, busy, onItsWay, changeset, name, setName, accept, discard, saveToGithub } = editing;
+  const [naming, setNaming] = useState(false);
   if (!edited.length && !unsaved.length && !saving && !onItsWay) return null;
-  const status = saving ? 'Saving…' : edited.length ? `${edited.length} edited, kept in this changeset` : `${unsaved.length} accepted, not on GitHub yet`;
+  const status = saving ? 'Saving…' : edited.length ? `${edited.length} edited` : `${unsaved.length} not on GitHub yet`;
   return (
     <div className="edit-bar" aria-live="polite">
-      <span className="edit-status">
+      <span className="edit-status" title={edited.length ? 'Kept in this changeset until you accept or discard it' : 'Accepted, waiting to be saved'}>
         {status}
-        {onItsWay > 0 && ` · ${onItsWay} on its way to GitHub`}
+        {onItsWay > 0 && ` · ${onItsWay} on its way`}
+        {name && !naming ? (
+          <button type="button" className="edit-by" onClick={() => setNaming(true)} title="Change your name">
+            · as {name}
+          </button>
+        ) : (
+          <input
+            aria-label="Your name"
+            className="edit-name"
+            value={name}
+            placeholder="Your name"
+            maxLength={80}
+            autoFocus={naming}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => setNaming(false)}
+          />
+        )}
       </span>
-      <input aria-label="Your name" className="edit-name" value={name} placeholder="Your name" maxLength={80} onChange={(e) => setName(e.target.value)} />
-      <div className="edit-actions">
-        <button type="button" onClick={discard} disabled={busy || (!changeset && !edited.length)}>
+      <span className="edit-actions">
+        <button type="button" className="link-btn" onClick={discard} disabled={busy || (!changeset && !edited.length)}>
           Discard
         </button>
-        <button type="button" className="primary" onClick={accept} disabled={busy || !edited.length}>
-          <Icon name="check" size={16} /> Accept {edited.length || ''}
-        </button>
-        <button type="button" onClick={saveToGithub} disabled={busy || edited.length > 0 || !unsaved.length} title={edited.length ? 'Accept or discard your edits first' : 'Send accepted changes to GitHub'}>
-          Save {unsaved.length || ''} to GitHub
-        </button>
-      </div>
+        {edited.length > 0 ? (
+          <button type="button" className="primary" onClick={accept} disabled={busy}>
+            <Icon name="check" size={14} /> Accept
+          </button>
+        ) : (
+          <button type="button" className="primary" onClick={saveToGithub} disabled={busy || !unsaved.length} title="Send accepted changes to GitHub">
+            Save to GitHub
+          </button>
+        )}
+      </span>
     </div>
   );
 }
@@ -232,7 +262,7 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
   const readOnly = (
     <>
       <h2 className="node-title">{node.title}</h2>
-      {node.body && <Markdown text={node.body} />}
+      {node.body && <Markdown text={shaped(node.body)} />}
     </>
   );
 
@@ -261,15 +291,18 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
       <div className="title-row">
         <KindBadge kind={node.kind} />
         {node.priority && <span className="tag tag-strong">{node.priority}</span>}
-        <span className="status-text">
-          <StatusDot status={node.status} /> {STATUS_LABEL[node.status]}
-        </span>
-        <HealthPill health={s.health} />
+        {/* Each fact once (EDIT-21): a new item is just new; a leaf's health only says more than its status when it is off track or at risk. */}
+        {!node.refinement && (
+          <span className="status-text">
+            <StatusDot status={node.status} /> {STATUS_LABEL[node.status]}
+          </span>
+        )}
+        {!node.refinement && saysMore(node, s.health) && <HealthPill health={s.health} />}
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
         {s.vague && <span className="pill pill-fog">Poorly defined</span>}
         {node.refinement && (
           <span className="pill pill-new" title={theirs ? 'New in someone else’s refinement: it changes there until it is adopted.' : 'New in your refinement: Accept adopts it, Discard drops it.'}>
-            New · needs improvement
+            New
           </span>
         )}
         {proposals.length > 0 && (
@@ -280,7 +313,7 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
         <SyncBadge node={node} />
       </div>
 
-      <div className="actions">
+      <div className="actions quiet">
         <button onClick={() => onFly(node.id)}>
           <span className="action-icon">
             <Icon name="target" />
@@ -308,16 +341,15 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
           </a>
         )}
         {!isRoot && !theirs && (
-          <button className={confirmDelete ? 'armed' : ''} onClick={() => (confirmDelete ? onDelete(node) : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
+          <button className={confirmDelete ? 'armed' : ''} title={node.refinement ? undefined : 'Delete'} onClick={() => (confirmDelete ? onDelete(node) : setConfirmDelete(true))} onBlur={() => setConfirmDelete(false)}>
             <span className="action-icon danger">
               <Icon name="trash" />
             </span>
-            {node.refinement ? (confirmDelete ? 'Drop it?' : 'Drop') : confirmDelete ? `Delete${node.children.length ? ` ${node.stats.items}` : ''}?` : 'Delete'}
+            {node.refinement ? (confirmDelete ? 'Drop it?' : 'Drop') : confirmDelete ? `Delete${node.children.length ? ` ${node.stats.items}` : ''}?` : <span className="sr-only">Delete</span>}
           </button>
         )}
       </div>
 
-      <EditBar editing={editing} />
       {proposals.map(({ cs, item }) => (
         <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} />
       ))}
@@ -331,6 +363,7 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
               areaTexts={texts}
               comments={comments.filter((c) => c.itemKey === key)}
               commenting={commenting}
+              selectTitle={Boolean(node.refinement) && !theirs && editableOf(node).title === `New ${node.kind}`}
               conflict={editing.conflicts.has(key)}
               onChange={(after) => editing.change(key, after)}
               onComment={(anchor, text, extra) => editing.comment(key, anchor, text, extra)}
@@ -347,6 +380,7 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
           readOnly
         )}
       </div>
+      <EditBar editing={editing} />
 
       <section>
         <h3>Properties</h3>
