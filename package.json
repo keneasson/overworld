@@ -5,13 +5,16 @@
   "license": "AGPL-3.0-only",
   "description": "A Google-Maps-style, semantically zoomable map of a project.",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
     "node": ">=22.12"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
-    "test": "node --import ./web/test/register.mjs --test \"api/test/*.test.mjs\" \"web/test/*.test.mjs\" \"scripts/test/*.test.mjs\"",
+    "test": "node --import ./web/test/register.mjs --test \"api/test/*.test.mjs\" \"web/test/*.test.mjs\" \"scripts/test/*.test.mjs\" \"packages/*/test/*.test.mjs\"",
     "deploy": "node scripts/deploy.mjs",
     "destroy": "node scripts/destroy.mjs"
   },
