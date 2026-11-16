@@ -32,6 +32,8 @@ const PATHS = {
   code: 'M9 8l-4 4 4 4M15 8l4 4-4 4',
   list: 'M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01',
   numbered: 'M10 6h10M10 12h10M10 18h10M4 5h1v4M4 9h2M4 15h2l-2 3h2',
+  indent: 'M21 5H11M21 12H11M21 19H11M3 8l4 4-4 4',
+  outdent: 'M21 5H11M21 12H11M21 19H11M7 8l-4 4 4 4',
 };
 
 export function Icon({ name, size = 20, label }) {

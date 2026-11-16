@@ -1,15 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
-import { BubbleMenu } from '@tiptap/react/menus';
+import { getSchema } from '@tiptap/core';
+import { EditorContent, useEditor } from '@tiptap/react';
 import { Markdown } from '@tiptap/markdown';
 import { Placeholder } from '@tiptap/extensions';
 import { behaviourPrefix, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
 import { NOTE_KIND_LABEL, initials, isPlain, kindOf, threadsOf, whereOf } from '@shared/annotations.js';
-import { EXTENSIONS } from './rich-text.js';
+import { EXTENSIONS, parseMarkdown } from './rich-text.js';
 import { fromDocument, sectionAt, toDocument } from './document.js';
-import { IssueShape, refreshNotes } from './shape-extension.js';
+import { IssueShape, openWithBodies, refreshNotes } from './shape-extension.js';
 import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './targets.js';
 import { Composer, Thread, clearedWords } from './Annotate.jsx';
+import { SelectionMenu } from './SelectionMenu.jsx';
 import { Icon } from '../components/Icon.jsx';
 
 const TAP = 10; // a touch that moves less than this is a tap, not a scroll
@@ -21,15 +22,6 @@ const HINTS = {
   'Out of scope': 'What this deliberately leaves out.',
   'Open questions': 'While anything is listed here, the issue needs a decision before work starts.',
 };
-
-// The one menu: it appears at a selection (EDIT-06), so no section carries a toolbar of its own.
-const TOOLS = [
-  ['bold', 'Bold', (c) => c.toggleBold(), 'bold'],
-  ['italic', 'Italic', (c) => c.toggleItalic(), 'italic'],
-  ['code', 'Code', (c) => c.toggleCode(), 'code'],
-  ['list', 'Bulleted list', (c) => c.toggleBulletList(), 'bulletList'],
-  ['numbered', 'Numbered list', (c) => c.toggleOrderedList(), 'orderedList'],
-];
 
 const LABEL = { phrase: 'these words', paragraph: 'this paragraph', image: 'this image' };
 const labelOf = (t) => (t.on === 'word' ? `“${t.anchor.quote}”` : t.on === 'behaviour' ? t.anchor.behaviour : t.on === 'section' ? t.anchor.section : LABEL[t.on]);
@@ -71,6 +63,8 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     setThread((t) => (t?.id === id ? null : { id, top: at.bottom - box.top + 4 }));
   };
 
+  // Empty sections open with a line to type on (EDIT-16).
+  const content = useMemo(() => openWithBodies(parseMarkdown(toDocument(original)), getSchema(EXTENSIONS)), [original]);
   const editor = useEditor({
     extensions: [
       ...EXTENSIONS,
@@ -85,8 +79,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
         },
       }),
     ],
-    content: toDocument(original),
-    contentType: 'markdown',
+    content,
     editorProps: { attributes: { class: 'issue-doc-text', 'aria-label': issueNumber ? `#${issueNumber}` : 'Item text', 'aria-multiline': 'true', role: 'textbox' } },
     onCreate: ({ editor: e }) => {
       opened.current = e.getMarkdown();
@@ -216,8 +209,6 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     return () => ro.disconnect();
   }, [picked?.key, editor]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const active = useEditorState({ editor, selector: ({ editor: e }) => Object.fromEntries(TOOLS.map(([, , , mark]) => [mark, Boolean(e?.isActive(mark))])) });
-
   const setTitleText = (t) => {
     setTitle(t);
     const markdown = editor && opened.current != null ? fromDocument(original, opened.current, editor.getMarkdown()) : original;
@@ -289,24 +280,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
           </ul>
         </details>
       )}
-      {editor && (
-        <BubbleMenu editor={editor} className="selection-menu" shouldShow={({ editor: e, state }) => !live.current.commenting && e.isEditable && !state.selection.empty}>
-          {TOOLS.map(([icon, label, run, mark]) => (
-            <button
-              key={icon}
-              type="button"
-              className={`icon-btn small${active?.[mark] ? ' on' : ''}`}
-              aria-label={label}
-              aria-pressed={active?.[mark] ?? false}
-              title={label}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => run(editor.chain().focus()).run()}
-            >
-              <Icon name={icon} size={16} />
-            </button>
-          ))}
-        </BubbleMenu>
-      )}
+      {editor && <SelectionMenu editor={editor} hidden={() => live.current.commenting} />}
       <EditorContent editor={editor} />
       <div className="note-layer" aria-hidden="true">
         {hover && !picked && <Outline rects={hover.rects} />}
