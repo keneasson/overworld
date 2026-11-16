@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { editableOf, itemKeyOf } from '@shared/issue-shape.js';
-import { isPlain, readBy, readsFor } from '@shared/annotations.js';
+import { isUnread } from '@shared/annotations.js';
 import { api, storage } from '../api.js';
 import { toSave } from '../model/sync.js';
 
 const NAME = 'projectmap.name';
-const READ = 'projectmap.read'; // plain Comments read without a name, remembered in this browser only (NOTE-05)
+const READ = 'projectmap.read'; // threads read without a name, remembered in this browser only (NOTE-03)
 const readHereAtFirst = () => {
   try {
     return new Set(JSON.parse(storage.get(READ) ?? '[]'));
@@ -95,8 +95,6 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     setBusy(true);
     try {
       const res = await api.decideChangesetItem(projectId, cs.id, key, action, { by: name, reason });
-      // Adopting an agent's refinement clears the annotations it acted on (NOTE-19).
-      if (res.cleared?.length) setComments((all) => all.map((x) => res.cleared.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
       setOthers((os) => os.map((o) => (o.id === res.changeset.id ? res.changeset : o)).filter((o) => o.status === 'open'));
       if (res.nodes.length) {
         onAccepted(res.nodes);
@@ -215,8 +213,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
       const cs = await csPromise.current;
       const res = await api.acceptChangeset(projectId, cs.id);
       onAccepted(res.nodes);
-      // Adopting clears the questions it answered and the annotations it acted on (ANSWER-04, NOTE-19).
-      if (res.cleared?.length) setComments((cs) => cs.map((x) => res.cleared.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
+      // Adopting applies the answers it carries (ANSWER-04); the comments it acted on stay where they are (NOTE-19).
+      if (res.applied?.length) setComments((cs) => cs.map((x) => res.applied.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
       const n = res.changeset.items.length;
       toast(`Accepted ${n} edit${n === 1 ? '' : 's'}. Save to send ${n === 1 ? 'it' : 'them'} to GitHub.`);
       reset();
@@ -276,11 +274,11 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
-  // An annotation (#15): its kind and a Change's value, or a reply in a thread (NOTE-11). A person's reply to a question
-  // is its answer, with the prompt they changed, if they did (ANSWER-01, ANSWER-05). True once it is posted.
-  async function comment(key, anchor, text, { kind, value, replyTo, prompt } = {}) {
+  // A comment (#15), or a reply in a thread (NOTE-11). A person's reply to a question is its answer, with the prompt they
+  // changed, if they did (ANSWER-01, ANSWER-05). True once it is posted.
+  async function comment(key, anchor, text, { replyTo, prompt } = {}) {
     try {
-      const { comment: c, thread, prompt: sent } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name, kind, value, replyTo, prompt });
+      const { comment: c, thread, prompt: sent } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name, replyTo, prompt });
       if (sent) toast('Answered. An agent applies it through a refinement for you to adopt.');
       // A reply to @Claude also changes its thread: it is addressed to an agent again (NOTE-14).
       setComments((cs) => [...cs.map((x) => (thread && x.id === thread.id && x.itemKey === thread.itemKey ? thread : x)), c]);
@@ -291,7 +289,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
   const replace = (next) => setComments((cs) => cs.map((x) => (x.id === next.id && x.itemKey === next.itemKey ? next : x)));
-  // A Problem or Refactor becomes a child task, new in this changeset like any item added here, and clears (NOTE-06).
+  // Any comment becomes a child task, new in this changeset like any item added here; its thread says so, and it is dismissed (NOTE-06).
   async function promote(c) {
     setBusy(true);
     try {
@@ -300,7 +298,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
       const res = await api.promoteComment(projectId, c, { changeset: cs.id, by: name });
       setChangeset(res.changeset);
       onAccepted([res.node]);
-      replace(res.comment);
+      setComments((cs) => [...cs.map((x) => (x.id === res.comment.id && x.itemKey === res.comment.itemKey ? res.comment : x)), res.reply]);
       toast(`Made it a task: “${res.node.title}”. Accept to adopt it.`);
       return res.node;
     } catch (err) {
@@ -311,24 +309,39 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
-  // A plain Comment read clears into this person's conversation log (NOTE-05): kept on the server under their name, or,
-  // with no name, in this browser. One addressed to someone else stays where it is.
-  const hasRead = useCallback((c) => (name ? readBy(c, name) : readHere.has(c.id)), [name, readHere]);
-  async function markRead(list) {
-    const fresh = list.filter((c) => isPlain(c) && !c.resolved && !hasRead(c) && (name ? readsFor(c, name) : !c.to?.length));
-    if (!fresh.length) return;
+  // Dismiss a thread into the conversation log, or bring it back (NOTE-05). Nothing else moves a comment.
+  async function dismiss(c) {
+    try {
+      replace((await api.dismissComment(projectId, c, { by: name })).comment);
+      toast('Dismissed to the conversation log');
+    } catch (err) {
+      fail(err);
+    }
+  }
+  async function restore(c) {
+    try {
+      replace((await api.restoreComment(projectId, c)).comment);
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  // Read or unread, for this person (NOTE-03): kept on the server under their name, or, with no name, in this browser,
+  // by the thread's last word, so a new reply makes it unread again. Reading moves nothing.
+  const lastWord = (t) => `${t.root.id}/${(t.replies.at(-1) ?? t.root).id}`;
+  const hasRead = useCallback((t) => (name ? !isUnread(t.root, name) : readHere.has(lastWord(t))), [name, readHere]);
+  async function markRead(t) {
+    if (hasRead(t)) return;
     if (!name) {
-      const next = new Set([...readHere, ...fresh.map((c) => c.id)]);
+      const next = new Set([...readHere, lastWord(t)]);
       setReadHere(next);
       storage.set(READ, JSON.stringify([...next].slice(-2000)));
       return;
     }
-    for (const c of fresh) {
-      try {
-        replace((await api.readComment(projectId, c, { by: name })).comment);
-      } catch {
-        // Not read yet: it is marked again next time it is on screen.
-      }
+    try {
+      replace((await api.readComment(projectId, t.root, { by: name })).comment);
+    } catch {
+      // Not read yet: it is marked again the next time it is opened.
     }
   }
 
@@ -340,5 +353,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     storage.set(NAME, v || null);
   };
 
-  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, promote, answerPrompt, hasRead, markRead, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, answerPrompt, hasRead, markRead, flush };
 }

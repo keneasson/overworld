@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { itemKeyOf } from '@shared/issue-shape.js';
-import { openByItem } from '@shared/annotations.js';
+import { isDismissed, isOpen, threadsOf } from '@shared/annotations.js';
 import { KIND_LABEL } from '@shared/schema.js';
 import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
@@ -168,7 +168,7 @@ export function App() {
   // Comments load one item at a time, when its details or its editor column open; a large project never
   // pays for every thread up front. `commentsFor` remembers which items it has asked for.
   const commentsFor = useRef(new Set());
-  const [openNotes, setOpenNotes] = useState({}); // open annotations by item and kind, for the map's badges (NOTE-03, NOTE-04)
+  const [openNotes, setOpenNotes] = useState({}); // comments not dismissed by item, and who has read them all, for the map's badges (NOTE-04)
   useEffect(() => {
     setComments([]);
     setOpenNotes({});
@@ -211,7 +211,7 @@ export function App() {
   }, [selected, loadComments]);
   // While an open item has an annotation with an agent, look for its reply every few seconds (NOTE-14, NOTE-19).
   const selectedKey = selected ? itemKeyOf(selected) : null;
-  const withAgent = Boolean(selectedKey) && comments.some((c) => c.itemKey === selectedKey && !c.resolved && ['waiting', 'delivered'].includes(c.delivery?.state));
+  const withAgent = Boolean(selectedKey) && comments.some((c) => c.itemKey === selectedKey && !isDismissed(c) && ['waiting', 'delivered'].includes(c.delivery?.state));
 
   useEffect(() => {
     if (tree && selectedId && !tree.byId.has(selectedId)) setSelectedId(null);
@@ -398,10 +398,19 @@ export function App() {
 
   // Items with someone else's refinement waiting are marked on the map (ADOPT-02), so they can be found.
   const live = useMemo(() => {
-    // Badges for open annotations: the project's counts, with the threads loaded here counted again as they change.
-    const loaded = openByItem(comments);
+    // One badge per item (NOTE-04): its comments not dismissed, marked when any are unread for this person (NOTE-03). The
+    // project's counts come from the server; the threads loaded here are counted again as they change.
+    const you = editing.name;
+    const loaded = {};
+    for (const t of threadsOf(comments)) {
+      if (!isOpen(t.root)) continue;
+      const it = (loaded[t.root.itemKey] ??= { count: 0, unread: false });
+      it.count += 1;
+      it.unread ||= !editing.hasRead(t);
+    }
     const keys = new Set(comments.map((c) => c.itemKey));
-    const byItem = { ...Object.fromEntries(Object.entries(openNotes).filter(([k]) => !keys.has(k))), ...loaded };
+    const fromServer = Object.entries(openNotes).filter(([k]) => !keys.has(k)).map(([k, v]) => [k, { count: v.count, unread: Boolean(you) && !v.read?.includes(you) }]);
+    const byItem = { ...Object.fromEntries(fromServer), ...loaded };
     const nodeOf = new Map(tree ? tree.list.map((x) => [itemKeyOf(x), x.id]) : []);
     const notes = new Map(Object.entries(byItem).flatMap(([k, v]) => (nodeOf.has(k) ? [[nodeOf.get(k), v]] : [])));
     const refinements = new Map();
@@ -412,7 +421,7 @@ export function App() {
         if (n) refinements.set(n.id, (refinements.get(n.id) ?? 0) + 1);
       }
     return { refinements, notes };
-  }, [editing.others, tree, comments, openNotes]);
+  }, [editing.others, editing.name, editing.hasRead, tree, comments, openNotes]);
   // Agents propose through MCP while the map is open: look again when an item opens, and now and then.
   const { reloadRefinements } = editing;
   useEffect(() => {

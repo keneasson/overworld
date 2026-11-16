@@ -1,9 +1,9 @@
 // The comment box and the thread (#15): the same in the editor and on the map. The box is headed by where the
-// annotation goes and quotes what was picked (NOTE-10), offers the fixed kinds (NOTE-01) and a Change's value
-// (NOTE-02), and posts with ⌘/Ctrl+Enter (NOTE-12). Everything said is written and shown like the document (EDIT-15).
+// comment goes and quotes what was picked (NOTE-10); a comment is just a comment, with no kinds (NOTE-01). It posts
+// with ⌘/Ctrl+Enter (NOTE-12). Everything said is written and shown like the document (EDIT-15).
 
 import { Suspense, lazy, useState } from 'react';
-import { NOTE_KINDS, NOTE_KIND_HINT, NOTE_KIND_LABEL, answers, initials, isColour, kindOf } from '@shared/annotations.js';
+import { answers, initials, isDismissed } from '@shared/annotations.js';
 import { Icon } from '../components/Icon.jsx';
 import { commentHtml } from './comment-text.js';
 import { useLinks } from '../components/links-context.js';
@@ -51,28 +51,16 @@ function About({ heading, quote, what, src }) {
   );
 }
 
-function Value({ value }) {
-  if (!value) return null;
-  return (
-    <span className="note-value">
-      {isColour(value) && <span className="swatch-dot" style={{ background: value }} />}
-      <code>{value}</code>
-    </span>
-  );
-}
-
-/** A new annotation: its kind, its words and, for a Change, its value. Posting leaves the Comment control on (NOTE-16). */
+/** A new comment: just its words. Posting leaves the Comment control on (NOTE-16). */
 export function Composer({ heading, quote, what, src, onPost, onCancel }) {
-  const [kind, setKind] = useState('comment');
   const [text, setText] = useState('');
-  const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const ready = Boolean(text.trim()) && !busy;
   const post = async (e) => {
     e?.preventDefault();
     if (!ready) return;
     setBusy(true);
-    const ok = await onPost(text.trim(), { kind, ...(kind === 'change' && value.trim() ? { value: value.trim() } : {}) });
+    const ok = await onPost(text.trim());
     setBusy(false);
     if (ok) onCancel();
   };
@@ -89,28 +77,14 @@ export function Composer({ heading, quote, what, src, onPost, onCancel }) {
       }}
     >
       <About heading={heading} quote={quote} what={what} src={src} />
-      <div className="note-kinds" role="radiogroup" aria-label="Kind">
-        {NOTE_KINDS.map((k) => (
-          <button key={k} type="button" role="radio" aria-checked={kind === k} className={`note-kind kind-${k}${kind === k ? ' on' : ''}`} title={NOTE_KIND_HINT[k]} onClick={() => setKind(k)}>
-            {NOTE_KIND_LABEL[k]}
-          </button>
-        ))}
-      </div>
       <Box
         autoFocus
         label="Write a comment"
         value={text}
         onChange={setText}
         onSubmit={post}
-        placeholder={`${kind === 'question' ? 'Ask…' : kind === 'change' ? 'What to change… e.g. Make this blue' : kind === 'refactor' ? 'What to refactor, and to what…' : 'Comment…'} @Claude hands it to an agent`}
+        placeholder="Comment… @Claude hands it to an agent"
       />
-      {kind === 'change' && (
-        <label className="note-value-field">
-          <span>Value</span>
-          {isColour(value) && <span className="swatch-dot" style={{ background: value.trim() }} />}
-          <input aria-label="The value to apply" value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => posts(e) && post(e)} placeholder="#EEAA18, a label’s text, a size" maxLength={200} />
-        </label>
-      )}
       <div className="answer-actions">
         <span className="note-keys">⌘/Ctrl+Enter</span>
         <button type="button" className="link-btn" onClick={onCancel}>
@@ -124,20 +98,19 @@ export function Composer({ heading, quote, what, src, onPost, onCancel }) {
   );
 }
 
-/** What cleared an annotation, for the conversation log (NOTE-05): the task made from it, the refinement adopted, or reading it. */
-export function clearedWords(c) {
-  const x = c.cleared;
-  if (!c.resolved) return 'Read'; // a plain Comment, cleared for this person once they read it
-  if (x?.task) return `Made a task by ${x.by}: ${x.task.title}`;
-  if (x?.refinement) return `Acted on in refinement ${x.refinement}, adopted ${when(x.at)}`;
-  return 'Cleared';
+/** Who dismissed a thread into the conversation log, and why (NOTE-05): a task made from it says which. */
+export function dismissedWords(c) {
+  const d = c.dismissed ?? {};
+  if (d.task) return `Made a task by ${d.by}: ${d.task.title}`;
+  return `Dismissed by ${d.by ?? 'someone'}${d.at ? `, ${when(d.at)}` : ''}${d.note ? `: ${d.note}` : ''}`;
 }
 
 /** Where an annotation addressed to an agent has got to (NOTE-17), and its answer (ANSWER-01). */
 function Status({ c }) {
-  if (c.resolved) return <p className="note-status done">{clearedWords(c)}.</p>;
   const lines = [];
-  if (c.answer) lines.push(<p key="answer" className="note-status">{c.answer.by}’s answer is with an agent to apply.</p>);
+  if (isDismissed(c)) lines.push(<p key="x" className="note-status done">{dismissedWords(c)}.</p>);
+  if (c.answer?.appliedAt) lines.push(<p key="answer" className="note-status done">{c.answer.by}’s answer was applied in refinement {c.answer.appliedBy}.</p>);
+  else if (c.answer) lines.push(<p key="answer" className="note-status">{c.answer.by}’s answer is with an agent to apply.</p>);
   const d = c.delivery;
   if (d?.state === 'waiting') lines.push(<p key="d" className="note-status">Sent to {d.for === 'any agent' ? 'Claude' : d.for}. No agent is connected: it is the first thing the next one to call gets.</p>);
   else if (d?.state === 'delivered') lines.push(<p key="d" className="note-status live">With {d.to} since {when(d.at)}. Its reply comes here.</p>);
@@ -147,9 +120,9 @@ function Status({ c }) {
 
 function Said({ c, children }) {
   return (
-    <div className={`comment${c.resolved ? ' resolved' : ''}`}>
+    <div className="comment">
       <div className="comment-head">
-        <span className={`note-initials kind-${kindOf(c)}`} aria-hidden="true">
+        <span className="note-initials" aria-hidden="true">
           {initials(c.author)}
         </span>
         <strong>{c.author}</strong>
@@ -163,18 +136,17 @@ function Said({ c, children }) {
 }
 
 /**
- * One annotation's thread (NOTE-11): the annotation, its replies, and a reply box. Nobody resolves it: it clears once it
- * is acted on (NOTE-05). A person's reply to a question is its answer (ANSWER-01), and they can read and change the
- * prompt it goes out with before posting it (ANSWER-05). The prompt is built by the server, so it is the one an agent
- * gets; left as built, it is built again when it goes.
+ * One comment's thread (NOTE-11): the comment, its replies, and a reply box. Nothing clears it: it stays until someone
+ * dismisses it, quietly, after the replies (NOTE-05), or makes it a task (NOTE-06). A person's reply to a question is its
+ * answer (ANSWER-01), and they can read and change the prompt it goes out with before posting it (ANSWER-05). The prompt
+ * is built by the server, so it is the one an agent gets; left as built, it is built again when it goes.
  */
-export function Thread({ heading, quote, what, src, moved, thread, you, onReply, onPromote, onAnswerPrompt, onClose }) {
+export function Thread({ heading, quote, what, src, moved, thread, you, onReply, onPromote, onDismiss, onAnswerPrompt, onClose }) {
   const { root, replies } = thread;
   const [text, setText] = useState('');
   const [prompt, setPrompt] = useState(null);
   const [built, setBuilt] = useState(null);
   const [busy, setBusy] = useState(false);
-  const kind = kindOf(root);
   const answering = answers(root, you || 'Someone') && Boolean(onAnswerPrompt);
   const showPrompt = async () => {
     setBusy(true);
@@ -204,7 +176,7 @@ export function Thread({ heading, quote, what, src, moved, thread, you, onReply,
     <div
       className="thread"
       role="dialog"
-      aria-label={`${NOTE_KIND_LABEL[kind]} on ${heading}`}
+      aria-label={`Comment on ${heading}`}
       onKeyDown={(e) => {
         if (e.key !== 'Escape') return;
         e.stopPropagation();
@@ -212,9 +184,9 @@ export function Thread({ heading, quote, what, src, moved, thread, you, onReply,
       }}
     >
       <div className="thread-head">
-        <span className={`note-kind kind-${kind} on`}>{NOTE_KIND_LABEL[kind]}</span>
+        <span className="thread-label">Comment</span>
         <span className="thread-actions">
-          {!root.resolved && onPromote && ['problem', 'refactor'].includes(kind) && (
+          {!isDismissed(root) && onPromote && (
             <button type="button" className="link-btn" onClick={() => onPromote(root)}>
               Make it a task
             </button>
@@ -226,13 +198,16 @@ export function Thread({ heading, quote, what, src, moved, thread, you, onReply,
       </div>
       <About heading={heading} quote={quote} what={what} src={src} />
       {moved && <p className="note-moved">The words this was on have changed since.</p>}
-      <Said c={root}>
-        <Value value={root.value} />
-      </Said>
+      <Said c={root} />
       <Status c={root} />
       {replies.map((c) => (
         <Said key={c.id} c={c} />
       ))}
+      {!isDismissed(root) && onDismiss && (
+        <button type="button" className="link-btn note-dismiss" onClick={() => onDismiss(root)} title="Move it to the conversation log, still readable there">
+          Dismiss
+        </button>
+      )}
       <form className="comment-form" onSubmit={reply}>
         <Box
           className="reply"

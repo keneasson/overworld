@@ -390,6 +390,16 @@ function drawBlock(ctx, block, rect, alpha, theme) {
       ix += 12;
     }
     drawSymbol(ctx, b.type, ix, by, 11, BADGE_INK[b.type]);
+    // Unread comments for whoever is looking (NOTE-03, NOTE-04): a dot on the badge's corner.
+    if (b.unread) {
+      ctx.beginPath();
+      ctx.arc(bx + b.w - 3, by - 6, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = BADGE_INK.comment;
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = theme.dark ? '#1f2a44' : '#ffffff';
+      ctx.stroke();
+    }
     if (b.target) hits.push({ target: b.target, type: b.type, rect: { x: bx, y: by - 8, w: b.w, h: 16 } });
     if (b.count > 1) {
       ctx.font = `700 10.5px ${FONT}`;
@@ -420,7 +430,7 @@ function drawBlock(ctx, block, rect, alpha, theme) {
   return hits;
 }
 
-const BADGE_INK = { fire: '#d93025', fog: '#5f6b7a', pull: '#8250df', agent: '#1a73e8', comment: '#e8710a', question: '#8b5cf6', problem: '#d93025', change: '#1a73e8', refactor: '#137333' };
+const BADGE_INK = { fire: '#d93025', fog: '#5f6b7a', pull: '#8250df', agent: '#1a73e8', comment: '#e8710a', question: '#8b5cf6' };
 
 function drawPin(ctx, x, y) {
   ctx.save();
