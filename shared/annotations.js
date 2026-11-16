@@ -1,18 +1,9 @@
-// Annotations (#15): comments with an intent, anchored where they apply. The one place that says what kinds there are,
-// what an annotation can be anchored to, and how an anchor on some words finds those words again after the text
-// around them is edited (NOTE-01). The API, the MCP server and the editor all read annotations through this.
+// Comments (#15), anchored where they apply. A comment is just a comment: no kinds. The one place that says what a comment
+// can be anchored to, how an anchor on some words finds those words again after the text around them is edited
+// (NOTE-01), who has read a thread (NOTE-03) and which threads are dismissed (NOTE-05). The API, the MCP server and the
+// editor all read comments through this.
 
 import { ValidationError } from './schema.js';
-
-export const NOTE_KINDS = ['question', 'problem', 'change', 'refactor', 'comment'];
-export const NOTE_KIND_LABEL = { question: 'Question', problem: 'Problem', change: 'Change', refactor: 'Refactor', comment: 'Comment' };
-export const NOTE_KIND_HINT = {
-  question: 'Needs an answer: a reply is the answer. Shows as a question until the answer is applied.',
-  problem: 'A bug or a confusing spot. Can become a task.',
-  change: 'A concrete instruction, with its value.',
-  refactor: 'A code task, with its target.',
-  comment: 'Just saying. Nothing expected.',
-};
 
 // What an annotation can be about (NOTE-15). Words, a phrase and a paragraph quote their text; the rest name it.
 export const ANCHOR_ON = ['word', 'phrase', 'paragraph', 'behaviour', 'section', 'image', 'place'];
@@ -22,14 +13,21 @@ const CONTEXT = 32; // characters kept on each side of a quote, to tell repeated
 /** What an anchor is on. Comments from before annotations (#5) name only a section or a behaviour. */
 export const onOf = (a = {}) => (ANCHOR_ON.includes(a.on) ? a.on : a.behaviour ? 'behaviour' : 'section');
 
-/** An annotation's kind. Comments from before annotations are Comments (NOTE-09), except questions asked in Open questions. */
-export const kindOf = (c) => (NOTE_KINDS.includes(c?.kind) ? c.kind : c?.anchor?.section === 'Open questions' && !c?.replyTo ? 'question' : 'comment');
+/**
+ * Is this thread a question, for answering it (#68)? One on the item's Open questions section is: that is where an
+ * agent's ask() puts it, and where a person asks one. A stored `kind` from before is kept but means nothing.
+ */
+export const isQuestion = (c) => !c.replyTo && c.anchor?.section === 'Open questions';
 
-/** Is this an open question's thread: a Question, not a reply in someone's thread? */
-export const isQuestion = (c) => !c.replyTo && kindOf(c) === 'question';
+/** Is this thread dismissed into the conversation log (NOTE-05)? Comments cleared before dismissing existed count as dismissed. */
+export const isDismissed = (c) => Boolean(c?.dismissed || c?.resolved);
 
-/** An annotation as everyone reads it: old comments carry their kind like new ones (NOTE-09). */
-export const annotationOf = (c) => ({ ...c, kind: kindOf(c), anchor: { ...c.anchor, on: onOf(c.anchor) } });
+/** A comment as everyone reads it: its anchor says what it is on, and an old clearing reads as a dismissal. */
+export function annotationOf(c) {
+  const out = { ...c, anchor: { ...c.anchor, on: onOf(c.anchor) } };
+  if (!c.dismissed && c.resolved) out.dismissed = { by: c.cleared?.by ?? 'Someone', at: c.cleared?.at ?? c.createdAt, ...(c.cleared?.task ? { task: c.cleared.task } : {}) };
+  return out;
+}
 
 /** Where an anchor sits, in words: "Why", "NOTE-01", "an image in Why", "the place on the map". */
 export function whereOf(a = {}) {
@@ -120,44 +118,38 @@ export function threadsOf(comments) {
   return [...threads.values()];
 }
 
-/**
- * Is this annotation still open? It clears itself once it is acted on (NOTE-05): its answer applied, its change adopted,
- * or a task made from it. `resolved` is that fact, and `cleared` says what acted on it, for the conversation log.
- */
-export const isOpen = (c) => !c.replyTo && !c.resolved;
+/** Is this thread open: a comment, not a reply, and not dismissed (NOTE-05)? Nothing else ever closes one. */
+export const isOpen = (c) => !c.replyTo && !isDismissed(c);
 
 /**
  * Is a reply from `by` the answer to this thread's question (ANSWER-01)? A person's reply to an open question is, when
- * someone else asked it or it is addressed to an agent; the asker just talking in their own thread is not.
+ * someone else asked it (an agent, through ask()) or it is addressed to an agent; the asker talking in their own thread is
+ * not. Once its answer is applied, replies are just replies.
  */
-export const answers = (root, by) => isQuestion(root) && !root.resolved && (root.author !== by || toAgent(root));
+export const answers = (root, by) => isQuestion(root) && isOpen(root) && !root.answer?.appliedAt && (root.author !== by || toAgent(root));
 
 /**
- * Open annotations of each kind but Comment, by item (NOTE-03, NOTE-04): what the map badges.
- * @returns {Record<string, { question?: number, problem?: number, change?: number, refactor?: number }>}
+ * Who has read a thread since its last word (NOTE-03): its author, then whoever opened it. A reply makes it unread again
+ * for everyone but whoever wrote the reply. Reading never moves a comment anywhere.
  */
-export function openByItem(comments) {
+export const readersOf = (root) => root.readBy ?? [root.author];
+export const isUnread = (root, by) => Boolean(String(by ?? '').trim()) && !readersOf(root).includes(by);
+
+/**
+ * What the map badges (NOTE-04): each item's comments that are not dismissed, and who has read every one of them, so a
+ * viewer's badge is marked when any are unread for them.
+ * @returns {Record<string, { count: number, read: string[] }>}
+ */
+export function notesByItem(comments) {
   const out = {};
   for (const c of comments) {
-    const kind = kindOf(c);
-    if (kind === 'comment' || !isOpen(c)) continue;
-    const counts = (out[c.itemKey] ??= {});
-    counts[kind] = (counts[kind] ?? 0) + 1;
+    if (!isOpen(c)) continue;
+    const it = out[c.itemKey];
+    if (!it) out[c.itemKey] = { count: 1, read: [...readersOf(c)] };
+    else (it.count += 1), (it.read = it.read.filter((n) => readersOf(c).includes(n)));
   }
   return out;
 }
-
-/** A plain Comment, with nothing expected: it clears into the conversation log for each person once they have read it (NOTE-05). */
-export const isPlain = (c) => !c.replyTo && kindOf(c) === 'comment';
-const sameName = (named, by) => {
-  const a = String(named).toLowerCase();
-  const b = String(by ?? '').trim().toLowerCase();
-  return Boolean(b) && (a === b || a === b.split(/\s+/)[0]);
-};
-/** Does `by` reading this Comment count? One addressed to someone (@name, @Claude) is read only by whoever it is addressed to. */
-export const readsFor = (c, by) => Boolean(String(by ?? '').trim()) && (!c.to?.length || c.to.some((t) => sameName(t.name.replace(/\s*\([^)]*\)$/, ''), by)));
-/** Has `by` read this plain Comment, so that it is in their conversation log? */
-export const readBy = (c, by) => isPlain(c) && Boolean(by) && (c.readBy ?? []).includes(by);
 
 /** Who a comment mentions (NOTE-14): each @name once, in order. */
 export const mentionsOf = (text = '') => [...new Set([...String(text).matchAll(/(?:^|[^\w@])@([A-Za-z][\w.-]*)/g)].map((m) => m[1].replace(/[.-]+$/, '')))];
@@ -165,6 +157,3 @@ export const mentionsOf = (text = '') => [...new Set([...String(text).matchAll(/
 export const isAgentAlias = (name) => /^(claude|agents?)$/i.test(name);
 /** Is an annotation addressed to an agent? */
 export const toAgent = (c) => (c?.to ?? []).some((t) => t.agent);
-
-/** A Change's value, read for showing it: a colour gets a swatch. */
-export const isColour = (v) => /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(String(v ?? '').trim());

@@ -1,9 +1,9 @@
-// Annotations addressed to agents (#15): who an annotation is for (NOTE-14), the prompt it reaches an agent with
-// (NOTE-18), and what adopting the refinement that acted on it settles (NOTE-19). Handing it over at once (NOTE-17)
-// is agents.mjs's `addressed`; the API, the MCP tools and the standup all build the prompt here.
+// Comments addressed to agents (#15): who a comment is for (NOTE-14) and the prompt it reaches an agent with (NOTE-18).
+// Handing it over at once (NOTE-17) is agents.mjs's `addressed`; the API, the MCP tools and the standup all build the
+// prompt here. Adopting the refinement that acted on a comment changes nothing about the comment (NOTE-19).
 
 import { itemKeyOf } from '../shared/issue-shape.js';
-import { NOTE_KIND_LABEL, isAgentAlias, kindOf, mentionsOf, threadsOf } from '../shared/annotations.js';
+import { isAgentAlias, isOpen, mentionsOf, threadsOf, whereOf } from '../shared/annotations.js';
 import { itemContext, quote } from './prompts.mjs';
 
 /**
@@ -18,14 +18,6 @@ export function addresseesOf(text, agents = []) {
     return isAgentAlias(m) ? { name: m, agent: true } : { name: m };
   });
 }
-
-const KIND_ASKS = {
-  question: 'It is a Question. Answer it in the thread. If the answer changes the spec, write that in through a refinement as well.',
-  problem: 'It is a Problem: a bug or a confusing spot right there. Fix it in the spec or the map. If it needs code, propose a child task for it in the strict shape.',
-  change: 'It is a Change: make exactly that change.',
-  refactor: 'It is a Refactor: a code task with its target. Write it into the spec as the work it is (a behaviour, or a child task in the strict shape), ready to build.',
-  comment: 'It is a Comment. Reply in the thread, and change something only if it asks you to.',
-};
 
 function anchorWords(a = {}) {
   switch (a.on) {
@@ -50,41 +42,25 @@ export function notePrompt({ nodes, comments, note }) {
   const node = nodes.find((n) => itemKeyOf(n) === note.itemKey);
   if (!node) return '';
   const key = itemKeyOf(node);
-  const kind = kindOf(note);
-  const thread = threadsOf(comments.filter((c) => c.itemKey === note.itemKey)).find((t) => t.root.id === note.id);
-  const replies = thread?.replies ?? [];
+  const threads = threadsOf(comments.filter((c) => c.itemKey === note.itemKey));
+  const replies = threads.find((t) => t.root.id === note.id)?.replies ?? [];
+  const others = threads.filter((t) => t.root.id !== note.id && isOpen(t.root));
   const [where, ...quoted] = anchorWords(note.anchor);
   return [
-    `${note.author} addressed you in an annotation on ${node.title} (${key}). Act on it now. This prompt holds everything you need.`,
+    `${note.author} addressed you in a comment on ${node.title} (${key}). Act on it now. This prompt holds everything you need.`,
     '',
-    `The annotation, a ${NOTE_KIND_LABEL[kind]}, ${where}`,
+    `The comment, ${where}`,
     ...quoted,
     'It says:',
     quote(note.text),
-    ...(note.value ? [`Its value, to apply exactly as it is: \`${note.value}\``] : []),
     ...(replies.length ? ['', 'The rest of its thread, oldest first:', ...replies.map((r) => `- ${r.author}: ${r.text.replace(/\n/g, ' ')}`)] : []),
+    ...(others.length ? ['', 'The other open comments on this item, for context:', ...others.slice(-10).map(({ root, replies: rs }) => `- ${root.author}, on ${whereOf(root.anchor)}${root.anchor?.quote ? ` ("${root.anchor.quote.slice(0, 120)}")` : ''}: ${root.text.replace(/\n/g, ' ')}${rs.length ? ` (${rs.length} repl${rs.length === 1 ? 'y' : 'ies'}, last from ${rs.at(-1).author})` : ''}`)] : []),
     '',
     ...itemContext(nodes, node),
     '',
     'What to do:',
-    KIND_ASKS[kind],
+    'Reply in the thread. If it asks for a change, or points at something wrong, make the change; if it needs code, propose a child task for it in the strict shape.',
     '',
-    `How: change the item, the spec or the map through a refinement, so everyone sees it at once. Open one with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, annotations: ["${note.id}"]); changes to other items go into the same refinement. Then reply(annotation: "${note.id}", item: "${key}", text: what you changed, refinement: its id) in the thread. A person adopts the refinement, and that clears the annotation. If nothing needs changing, just reply. If something can't be decided from here, say so in your reply rather than guessing.`,
+    `How: change the item, the spec or the map through a refinement, so everyone sees it at once. Open one with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, annotations: ["${note.id}"]); changes to other items go into the same refinement. Then reply(annotation: "${note.id}", item: "${key}", text: what you changed, refinement: its id) in the thread. A person adopts the refinement. If nothing needs changing, just reply. Don't dismiss the comment because you replied: the person who wrote it decides. If something can't be decided from here, say so in your reply rather than guessing.`,
   ].join('\n');
-}
-
-/** Adopting a refinement clears the annotations it acted on (NOTE-19, NOTE-05): each moves to the conversation log, naming it. */
-export async function settleNotes(model, pid, changeset, at, keys = changeset.items.map((it) => it.key)) {
-  const cleared = [];
-  for (const item of changeset.items.filter((it) => keys.includes(it.key) && it.annotations?.length)) {
-    for (const id of item.annotations) {
-      const c = await model.comments.get(pid, { itemKey: item.key, id });
-      if (!c || c.resolved) continue;
-      const done = { ...c, resolved: true, cleared: { refinement: changeset.id, by: changeset.author, at } };
-      await model.comments.put(pid, done);
-      await model.inbox.delete(pid, id);
-      cleared.push(done);
-    }
-  }
-  return cleared;
 }

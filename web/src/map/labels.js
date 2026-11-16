@@ -6,17 +6,14 @@ import { hasOpenQuestions, parseIssue, sectionText, splitNote } from '@shared/is
 import { STATUS_FILLS, statusColor, statusKey } from './lenses.js';
 
 // Badges in the order they sit beside a symbol.
-// Annotations (#15) badge by kind: a Question joins the "?" badge, and Problems, Changes and Refactors have their own (NOTE-04).
-export const BADGES = ['pull', 'agent', 'refine', 'comment', 'problem', 'change', 'refactor', 'question'];
+// Comments (#15) are one badge: how many are not dismissed, marked when any are unread for whoever is looking (NOTE-04).
+export const BADGES = ['pull', 'agent', 'refine', 'comment', 'question'];
 export const BADGE_LABEL = {
   pull: 'Open pull request',
   agent: 'Agent working on it',
-  comment: 'Unresolved comments',
+  comment: 'Comments',
   question: 'Open questions',
   refine: 'Refinement waiting for adoption',
-  problem: 'Problems raised',
-  change: 'Changes asked for',
-  refactor: 'Refactors asked for',
 };
 export const KIND_SYMBOL_LABEL = { project: 'Project', area: 'Area', epic: 'Epic', feature: 'Feature', story: 'Story', task: 'Task', bug: 'Bug', behavior: 'Behaviour' };
 
@@ -37,36 +34,34 @@ export function openQuestionCount(n) {
 }
 
 /**
- * The badges an item carries, in order, each with its count.
- * @param {object} live   what the map knows beyond the nodes, by node id: { agents, comments, refinements: Map<id, n>,
- *                        notes: Map<id, { question, problem, change, refactor }> } (open annotations, NOTE-03 NOTE-04)
+ * The badges an item carries, in order, each with its count; the comments badge says whether any are unread.
+ * @param {object} live   what the map knows beyond the nodes, by node id: { agents, refinements: Map<id, n>,
+ *                        notes: Map<id, { count, unread }> } (comments not dismissed, NOTE-03 NOTE-04)
  */
 export function badgesOf(n, live = {}) {
   const notes = live.notes?.get(n.id) ?? {};
   const counts = {
-    problem: notes.problem ?? 0,
-    change: notes.change ?? 0,
-    refactor: notes.refactor ?? 0,
     // Pull requests that close an item still matter while the item is open; a done item's are history.
     pull: n.status === 'done' || n.status === 'rejected' ? 0 : (n.pulls?.length ?? 0),
     agent: live.agents?.get(n.id) ?? 0,
-    comment: live.comments?.get(n.id) ?? 0,
+    comment: notes.count ?? 0,
     refine: live.refinements?.get(n.id) ?? 0,
-    // A Question annotation is a question until it is answered, like one written in Open questions (NOTE-03).
-    question: openQuestionCount(n) + (notes.question ?? 0),
+    question: openQuestionCount(n),
   };
-  return BADGES.filter((b) => counts[b] > 0).map((type) => ({ type, count: counts[type] }));
+  return BADGES.filter((b) => counts[b] > 0).map((type) => ({ type, count: counts[type], ...(type === 'comment' && notes.unread ? { unread: true } : {}) }));
 }
 
 // ---------- markers: what a place holds (#46) ----------
 
 // In the order they sit beside a symbol: what needs someone first.
-export const MARKERS = ['fire', 'fog', 'question', 'problem', 'change', 'refactor', 'refine', 'pull', 'agent', 'comment'];
+export const MARKERS = ['fire', 'fog', 'question', 'refine', 'pull', 'agent', 'comment'];
 export const MARKER_LABEL = { fire: 'Open bug', fog: 'Fog: behaviour nobody has defined yet', ...BADGE_LABEL };
 const CODE_FIRE_LABEL = 'Code with an open bug';
 const PRIORITY = { P0: 0, P1: 1, P2: 2, P3: 3 };
 const settled = (n) => n.status === 'done' || n.status === 'rejected';
 const isCode = (n) => n.tags?.includes('code');
+
+const unreadHere = (n, live) => Boolean(live?.notes?.get(n.id)?.unread);
 
 /** What one item holds itself, by marker type: { fire: 1, question: 2, … }. */
 function ownCounts(n, live) {
@@ -91,9 +86,11 @@ export function markersOf(n, live) {
   const totals = new Map();
   const add = (type, count, item) => {
     const t = totals.get(type);
-    if (!t) totals.set(type, { type, count, target: item.id, rank: PRIORITY[item.priority] ?? 9 });
+    const unread = type === 'comment' && unreadHere(item, live);
+    if (!t) totals.set(type, { type, count, target: item.id, rank: PRIORITY[item.priority] ?? 9, ...(unread ? { unread } : {}) });
     else {
       t.count += count;
+      if (unread) t.unread = true;
       const rank = PRIORITY[item.priority] ?? 9;
       if (type === 'fire' && rank < t.rank) Object.assign(t, { target: item.id, rank });
     }
@@ -135,7 +132,7 @@ const reached = (s, stage) => s >= LADDER.find((l) => l.stage === stage).from;
  */
 export function ownMarkersOf(n, live) {
   const counts = ownCounts(n, live);
-  return MARKERS.filter((t) => counts[t]).map((type) => ({ type, count: counts[type], target: n.id, ...(type === 'fire' && isCode(n) ? { on: 'code' } : {}) }));
+  return MARKERS.filter((t) => counts[t]).map((type) => ({ type, count: counts[type], target: n.id, ...(type === 'fire' && isCode(n) ? { on: 'code' } : {}), ...(type === 'comment' && unreadHere(n, live) ? { unread: true } : {}) }));
 }
 
 /**

@@ -9,12 +9,15 @@ import { ROOT_ID, ValidationError } from '../shared/schema.js';
 import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { Refused, noteOf as addressedOf } from './agents.mjs';
 import { awaitsApplying } from './answers.mjs';
-import { isQuestion, kindOf, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
+import { isOpen, isQuestion, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
 import { notePrompt } from './notes.mjs';
 import { behavioursOf, blockersOf, buildingOf, isFinished, keyOf, nextWork, stateOf } from './work.mjs';
 
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const CHILDREN_SHOWN = 100;
+
+// When an agent may dismiss a comment (NOTE-05): said in HOW_TO_WORK and in the dismiss tool's description.
+const DISMISSING = "Don't dismiss a comment whose conversation is still unresolved, unless there's a clear follow-up and a new place has taken the conversation on (a task made from it, say). Never dismiss a person's comment just because you replied.";
 
 const HOW_TO_WORK = [
   'Start each session with standup(), passing your local git state: it says what is waiting for you and where to begin. There is nothing to do at the end of a session.',
@@ -23,8 +26,8 @@ const HOW_TO_WORK = [
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
   'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
-  'People address you in annotations with @Claude. Any tool\'s result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed.',
-  'A person\'s reply to a question is its answer: write it into the spec through a refinement, and reply() in the thread with what you changed. An annotation clears itself once it is acted on: when the refinement applying it is adopted, or a task is made from it. Open questions never block proposing, marking behaviours ready, or adoption.',
+  'People address you in comments with @Claude. Any tool\'s result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed.',
+  `A person's reply to a question is its answer: write it into the spec through a refinement, and reply() in the thread with what you changed. Open questions never block proposing, marking behaviours ready, or adoption. Nothing clears a comment by itself: it stays on the item until someone dismiss()es it into the conversation log. ${DISMISSING}`,
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
 
@@ -194,7 +197,10 @@ export function createMcp({ model, agents, call, log = console }) {
         for (let p = byId.get(node.parentId); p && parents.length < 20; p = byId.get(p.parentId)) parents.unshift({ key: keyOf(p), kind: p.kind, title: p.title });
         const siblings = nodes.filter((n) => n.parentId === node.parentId && n.id !== node.id);
         const finished = siblings.filter(isFinished);
-        const open = comments.filter((c) => !c.resolved);
+        const threads = threadsOf(comments);
+        const open = threads.map((t) => t.root).filter(isOpen);
+        const dismissed = threads.length - open.length;
+        const asking = (c) => isQuestion(c) && !c.answer?.appliedAt; // a question still waiting on its answer
         return {
           issue: { key, kind: node.kind, title: node.title, state: stateOf(node), priority: node.priority || undefined, url: node.url || undefined, summary: node.summary || undefined },
           parents,
@@ -210,11 +216,11 @@ export function createMcp({ model, agents, call, log = console }) {
           }),
           acceptance: sectionText(shape, 'Acceptance') || undefined,
           out_of_scope: sectionText(shape, 'Out of scope') || undefined,
-          open_questions: [sectionText(shape, 'Open questions'), ...open.filter(isQuestion).map((c) => `${c.text} (${c.author})${awaitsApplying(c) ? ': answered, waiting to be applied' : ''}`)].filter((q) => q && !/^none\.?$/i.test(q)),
+          open_questions: [sectionText(shape, 'Open questions'), ...open.filter(asking).map((c) => `${c.text} (${c.author})${awaitsApplying(c) ? ': answered, waiting to be applied' : ''}`)].filter((q) => q && !/^none\.?$/i.test(q)),
           ...(open.some(awaitsApplying) ? { answers_to_apply: (await agents.answersToApply(pid, { nodes, comments })).map(answerOf) } : {}),
           discussion: {
-            open: open.filter((c) => !isQuestion(c)).slice(-10).map((c) => ({ on: whereOf(c.anchor), ...(c.anchor?.quote ? { quoting: c.anchor.quote.slice(0, 300) } : {}), kind: kindOf(c), ...(c.value ? { value: c.value } : {}), by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
-            ...(comments.length - open.length ? { resolved: `${comments.length - open.length} cleared comments` } : {}),
+            open: open.filter((c) => !asking(c)).slice(-10).map((c) => ({ annotation: c.id, on: whereOf(c.anchor), ...(c.anchor?.quote ? { quoting: c.anchor.quote.slice(0, 300) } : {}), by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
+            ...(dismissed ? { dismissed: `${dismissed} dismissed comment${dismissed === 1 ? '' : 's'}, in the conversation log` } : {}),
           },
           handoff_notes: notes.slice(-5).map(noteOf),
           ...(notes.length > 5 ? { older_handoffs: notes.length - 5 } : {}),
@@ -242,7 +248,7 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     ask: {
-      description: 'Raise an open question on a place on the map. A person answers it by replying in its thread, and it shows there until the answer is applied.',
+      description: 'Raise an open question on a place on the map. A person answers it by replying in its thread; the answer comes back to you to apply. The thread stays there until someone dismisses it.',
       input: { place, question: { type: 'string' }, request_key: requestKey },
       required: ['place', 'question'],
       changes: true,
@@ -275,8 +281,8 @@ export function createMcp({ model, agents, call, log = console }) {
         title: { type: 'string', description: 'Leave out to keep it.' },
         markdown: { type: 'string', description: 'The full new markdown. Leave out to keep it.' },
         ready_for_adoption: ids('Behaviour IDs whose conversation has converged.'),
-        answers: ids('Ids of the answered questions this proposal applies; adopting it clears them. reply() in each thread with what you changed.'),
-        annotations: ids('Ids of the annotations this proposal acts on; adopting it clears them. reply() in each thread with what you changed.'),
+        answers: ids('Ids of the answered questions this proposal applies; adopting it records the answers as applied. reply() in each thread with what you changed.'),
+        annotations: ids('Ids of the comments this proposal acts on, linked from it for the log and your reply; adopting it doesn\'t dismiss them. reply() in each thread with what you changed.'),
         item_ready: { type: 'boolean', description: 'With answers: the item is ready once adopted, because nothing else is open.' },
         request_key: requestKey,
       },
@@ -315,7 +321,7 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     inbox: {
-      description: 'What people have addressed to you with @Claude, handed to you now: each annotation with the prompt to act on it. Every other tool\'s result carries these too, as addressed_to_you_now; a channel or a watch can call this alone to hear them within seconds.',
+      description: 'What people have addressed to you with @Claude, handed to you now: each comment with the prompt to act on it. Every other tool\'s result carries these too, as addressed_to_you_now; a channel or a watch can call this alone to hear them within seconds.',
       input: {},
       writes: true,
       async run({ pid, agent }) {
@@ -324,22 +330,20 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     annotations: {
-      description: 'Annotations, read the way a person reads them: with an item, its open threads (kind, what they are about, the value of a Change, who is addressed, and the replies); without one, every annotation addressed to you, each with its prompt.',
+      description: 'Comments, read the way a person reads them: with an item, its open (not dismissed) threads (what they are about, who is addressed, and the replies); without one, every comment addressed to you, each with its prompt.',
       input: { item: { ...place, description: 'The item: issue-12, 12, or a node id. Leave out for what is addressed to you.' } },
       async run({ pid, agent }, args) {
         if (args.item == null) return { addressed_to_you: (await agents.addressed(pid, agent, { fresh: false })).map(addressedOf) };
         const { nodes } = await mapOf(pid);
         const node = find(nodes, args.item);
         const comments = await model.comments.list(pid, keyOf(node));
-        const open = threadsOf(comments).filter((t) => !t.root.resolved);
+        const open = threadsOf(comments).filter((t) => isOpen(t.root));
         return {
           item: keyOf(node),
           annotations: open.map(({ root: c, replies }) => ({
             annotation: c.id,
-            kind: kindOf(c),
             on: whereOf(c.anchor),
             ...(c.anchor?.quote ? { quoting: c.anchor.quote } : {}),
-            ...(c.value ? { value: c.value } : {}),
             by: c.author,
             said: c.text,
             ...(c.to?.length ? { to: c.to.map((t) => t.name) } : {}),
@@ -352,9 +356,9 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     reply: {
-      description: 'Reply in an annotation\'s thread, the way a person does: say what you changed, or what you found. Name the refinement that carries your change, if there is one. The annotation clears when a person adopts that refinement.',
+      description: 'Reply in a comment\'s thread, the way a person does: say what you changed, or what you found. Name the refinement that carries your change, if there is one. Replying never dismisses the comment.',
       input: {
-        annotation: { type: 'string', description: 'The annotation\'s id.' },
+        annotation: { type: 'string', description: 'The comment\'s id.' },
         item: { ...place, description: 'The item it is on.' },
         text: { type: 'string' },
         refinement: { type: 'string', description: 'The refinement your change is in, from refine().' },
@@ -367,6 +371,23 @@ export function createMcp({ model, agents, call, log = console }) {
         const body = { itemKey: keyOf(node), replyTo: String(args.annotation), text: String(args.text ?? ''), author: author(agent), fromAgent: agent.id, ...(args.refinement ? { refinement: String(args.refinement) } : {}) };
         const { comment } = await api('POST', `/api/projects/${pid}/comments`, body);
         return { replied: comment.id, annotation: comment.replyTo, item: keyOf(node) };
+      },
+    },
+
+    dismiss: {
+      description: `Dismiss a comment: its thread moves to the item's conversation log, still readable, naming you, and anyone can restore it. ${DISMISSING}`,
+      input: {
+        annotation: { type: 'string', description: 'The comment\'s id: the first in its thread.' },
+        item: { ...place, description: 'The item it is on.' },
+        note: { type: 'string', description: 'Why, in a line: where the conversation went.' },
+        request_key: requestKey,
+      },
+      required: ['annotation', 'item'],
+      changes: true,
+      async run({ pid, agent }, args) {
+        const node = find((await mapOf(pid)).nodes, args.item);
+        const { comment } = await api('POST', `/api/projects/${pid}/comments/${keyOf(node)}/${encodeURIComponent(String(args.annotation))}/dismiss`, { by: author(agent), ...(args.note ? { note: String(args.note) } : {}) });
+        return { dismissed: comment.id, item: keyOf(node), by: comment.dismissed.by };
       },
     },
 

@@ -9,7 +9,7 @@ import { parseRepo, importGitHub } from '../github.mjs';
 import { sanitizeNode } from '../../shared/schema.js';
 import { behaviourPrefix, editableOf, isWellFormed, itemKeyOf, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '../../shared/issue-shape.js';
 import { fakeShop } from './fake-github.mjs';
-import { threadsOf } from '../../shared/annotations.js';
+import { isUnread, threadsOf } from '../../shared/annotations.js';
 
 async function setup(accessKey = 'secret-key') {
   const dir = await mkdtemp(join(tmpdir(), 'projectmap-'));
@@ -308,28 +308,24 @@ test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', 
   assert.equal((await call('GET', `/api/projects/${pid}/comments`)).body.comments.length, 2);
 });
 
-test('NOTE-01 NOTE-02 an annotation has a kind and sits on what it is about; a Change keeps its value apart from the words', async () => {
+test('NOTE-01 a comment sits on what it is about, and is just a comment: no kind, no value', async () => {
   const { call, pid, map } = await shopProject();
   const before = (await map()).find((n) => n.title.startsWith('#4 ')).body;
   const post = (body) => call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', ...body });
   const on = { on: 'word', section: 'Why', quote: 'tokens', prefix: 'Cards need ', suffix: '.' };
-  const change = await post({ kind: 'change', anchor: on, text: 'Make this blue', value: ' #EEAA18 ', author: 'Ken' });
-  assert.equal(change.status, 201, JSON.stringify(change.body));
-  const c = change.body.comment;
-  assert.deepEqual([c.kind, c.anchor.quote, c.text, c.value], ['change', 'tokens', 'Make this blue', '#EEAA18']);
-  for (const kind of ['question', 'problem', 'refactor', 'comment']) assert.equal((await post({ kind, anchor: { on: 'section', section: 'Why' }, text: kind })).status, 201);
-  assert.equal((await post({ kind: 'praise', anchor: on, text: 'x' })).status, 400, 'the kinds are fixed');
-  assert.equal((await post({ kind: 'problem', anchor: on, text: 'x', value: 'blue' })).status, 400, 'only a Change carries a value');
+  const said = await post({ kind: 'change', anchor: on, text: 'Make this blue', value: '#EEAA18', author: 'Ken' });
+  assert.equal(said.status, 201, JSON.stringify(said.body));
+  const c = said.body.comment;
+  assert.deepEqual([c.anchor.quote, c.text, c.kind, c.value], ['tokens', 'Make this blue', undefined, undefined], 'a kind or a value sent is not kept');
   assert.equal((await post({ anchor: { on: 'phrase', section: 'Why' }, text: 'x' })).status, 400, 'words are quoted');
   assert.equal((await post({ anchor: { on: 'image', section: 'Why', src: 'https://x/c.png', quote: 'a cat' }, text: 'Too dark' })).status, 201);
   assert.equal((await post({ anchor: { on: 'place' }, text: 'This region is crowded' })).status, 201);
   const { comments } = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body;
-  assert.deepEqual(comments.map((x) => x.kind), ['change', 'question', 'problem', 'refactor', 'comment', 'comment', 'comment']);
-  assert.deepEqual(comments.slice(-2).map((x) => x.anchor.on), ['image', 'place']);
-  assert.equal((await map()).find((n) => n.title.startsWith('#4 ')).body, before, 'annotating leaves the issue alone');
+  assert.deepEqual(comments.map((x) => x.anchor.on), ['word', 'image', 'place']);
+  assert.equal((await map()).find((n) => n.title.startsWith('#4 ')).body, before, 'commenting leaves the issue alone');
 });
 
-test('NOTE-09 comments made before annotations are Comment annotations in the same place, and none is lost', async () => {
+test('NOTE-09 comments made before annotations are comments in the same place, and none is lost', async () => {
   const { call, model, pid } = await shopProject();
   const old = [
     { id: '00000001aaaa', itemKey: 'issue-4', anchor: { behaviour: 'PAY-10' }, text: 'Which vault?', author: 'QA', resolved: false, createdAt: '2026-11-01T00:00:00.000Z' },
@@ -339,11 +335,11 @@ test('NOTE-09 comments made before annotations are Comment annotations in the sa
   for (const c of old) await model.comments.put(pid, c);
   const { comments } = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body;
   assert.deepEqual(
-    comments.map((c) => [c.text, c.kind, c.anchor.on, c.anchor.behaviour ?? c.anchor.section, c.resolved]),
+    comments.map((c) => [c.text, c.anchor.on, c.anchor.behaviour ?? c.anchor.section, Boolean(c.dismissed)]),
     [
-      ['Which vault?', 'comment', 'behaviour', 'PAY-10', false],
-      ['Agreed.', 'comment', 'section', 'Why', true],
-      ['Which provider?', 'question', 'section', 'Open questions', false],
+      ['Which vault?', 'behaviour', 'PAY-10', false],
+      ['Agreed.', 'section', 'Why', true],
+      ['Which provider?', 'section', 'Open questions', false],
     ],
   );
 });
@@ -351,48 +347,65 @@ test('NOTE-09 comments made before annotations are Comment annotations in the sa
 test('NOTE-11 each annotation is its own thread at its own words, and a reply stays in its thread', async () => {
   const { call, pid } = await shopProject();
   const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', ...body })).body.comment;
-  const first = await post({ kind: 'question', anchor: { on: 'word', section: 'Open questions', quote: 'vault' }, text: 'Which one?' });
-  const second = await post({ kind: 'question', anchor: { on: 'word', section: 'Open questions', quote: 'provider' }, text: 'Stripe?' });
+  const first = await post({ anchor: { on: 'word', section: 'Open questions', quote: 'vault' }, text: 'Which one?' });
+  const second = await post({ anchor: { on: 'word', section: 'Open questions', quote: 'provider' }, text: 'Stripe?' });
   const reply = await post({ replyTo: first.id, text: 'The PCI one.', author: 'Ken' });
-  assert.deepEqual([reply.anchor, reply.replyTo, reply.kind], [first.anchor, first.id, 'comment']);
+  assert.deepEqual([reply.anchor, reply.replyTo], [first.anchor, first.id]);
   assert.equal((await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', replyTo: 'gone', text: 'x' })).status, 404);
   const threads = threadsOf((await call('GET', `/api/projects/${pid}/comments/issue-4`)).body.comments);
   assert.deepEqual(threads.map((t) => [t.root.id, t.root.anchor.quote, t.replies.map((r) => r.text)]), [[first.id, 'vault', ['The PCI one.']], [second.id, 'provider', []]]);
 });
 
-test('NOTE-05 NOTE-06 a Problem or a Refactor made a task becomes a child task in the strict shape, linked back, and the annotation clears into the conversation log', async () => {
+test('NOTE-03 a thread is unread for everyone but whoever said its last word, read once opened, and reading moves nothing', async () => {
+  const { call, pid } = await shopProject();
+  const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'section', section: 'Why' }, ...body })).body;
+  const read = async (c, by) => (await call('POST', `/api/projects/${pid}/comments/issue-4/${c.id}/read`, { by })).body.comment;
+  const unread = (c, by) => isUnread(c, by);
+  const { comment: c } = await post({ text: 'Great work, team.', author: 'Ken' });
+  assert.deepEqual([unread(c, 'Ken'), unread(c, 'Ana')], [false, true], 'its author has read it');
+  const seen = await read(c, 'Ana');
+  assert.deepEqual([unread(seen, 'Ana'), unread(seen, 'Bo')], [false, true], 'read for whoever opened it, and still unread for anyone else');
+  const { thread } = await post({ replyTo: c.id, text: 'Thanks!', author: 'Bo' });
+  assert.deepEqual([unread(thread, 'Bo'), unread(thread, 'Ana'), unread(thread, 'Ken')], [false, true, true], 'a reply makes it unread again for everyone but its author');
+  const after = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body.comments.find((x) => x.id === c.id);
+  assert.deepEqual([after.dismissed, (await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].count], [undefined, 1], 'read or not, it stays where it is');
+});
+
+test('NOTE-04 NOTE-05 nothing clears itself: a person dismisses a comment to the conversation log, naming who, and can restore it', async () => {
+  const { call, pid } = await shopProject();
+  const post = async (text) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'section', section: 'Why' }, text, author: 'Ken' })).body.comment;
+  const notes = async () => (await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'];
+  const a = await post('Tighten this.');
+  await post('And this.');
+  assert.deepEqual(await notes(), { count: 2, read: ['Ken'] }, 'one badge: how many, and who has read them all');
+  const res = await call('POST', `/api/projects/${pid}/comments/issue-4/${a.id}/dismiss`, { by: 'Ana', note: 'Done in #12' });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual([res.body.comment.dismissed.by, res.body.comment.dismissed.note], ['Ana', 'Done in #12']);
+  assert.equal((await notes()).count, 1, 'dismissed, it leaves the badge');
+  const kept = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body.comments.find((c) => c.id === a.id);
+  assert.deepEqual([kept.text, Boolean(kept.dismissed)], ['Tighten this.', true], 'still readable, in the log');
+  assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${a.id}/dismiss`, { by: 'Ana' })).status, 409);
+  const back = (await call('POST', `/api/projects/${pid}/comments/issue-4/${a.id}/restore`, {})).body.comment;
+  assert.equal(back.dismissed, undefined, 'brought back');
+  assert.equal((await notes()).count, 2);
+});
+
+test('NOTE-06 NOTE-05 any comment made a task becomes a child task in the strict shape, linked both ways; its thread says so, and it is dismissed', async () => {
   const { call, pid, node } = await shopProject();
-  const post = async (kind) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', kind, anchor: { on: 'word', section: 'Why', quote: 'tokens' }, text: 'Refactor this to use our vault client' })).body.comment;
-  const refactor = await post('refactor');
-  await post('comment');
-  assert.deepEqual((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'], { refactor: 1 }, 'open, so the map badges it; a Comment adds none');
-  assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${(await post('change')).id}/promote`, {})).status, 400, 'only a Problem or a Refactor');
-  const res = await call('POST', `/api/projects/${pid}/comments/issue-4/${refactor.id}/promote`, { by: 'Ken' });
+  const said = (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'word', section: 'Why', quote: 'tokens' }, text: 'Use our vault client here', author: 'Ana' })).body.comment;
+  const res = await call('POST', `/api/projects/${pid}/comments/issue-4/${said.id}/promote`, { by: 'Ken' });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   const { node: task } = res.body;
   const md = editableOf(task).markdown;
-  assert.deepEqual([task.kind, task.parentId, task.title], ['task', node(4).id, 'Refactor: Refactor this to use our vault client']);
+  assert.deepEqual([task.kind, task.parentId, task.title], ['task', node(4).id, 'Use our vault client here']);
   assert.ok(isWellFormed(parseIssue(md)), 'in the strict shape');
   assert.match(md, /^Part of #4/);
-  assert.match(md, new RegExp(`From annotation ${refactor.id} on issue-4\\.`));
-  const kept = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body.comments.find((c) => c.id === refactor.id);
-  assert.deepEqual([kept.resolved, kept.cleared.task.key, kept.cleared.by], [true, itemKeyOf(task), 'Ken'], 'cleared, and the log links the task');
-  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].refactor, undefined, 'cleared, so no longer badged');
-  assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${refactor.id}/promote`, { by: 'Ken' })).status, 409, 'made a task once');
-  assert.ok((await call('PATCH', `/api/projects/${pid}/comments/issue-4/${refactor.id}`, { resolved: false })).status >= 400, 'nobody resolves or reopens by hand');
-});
-
-test('NOTE-05 a plain Comment clears into the conversation log for each person once they have read it; one addressed to someone, only for them', async () => {
-  const { call, pid } = await shopProject();
-  const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'section', section: 'Why' }, author: 'Ken', ...body })).body.comment;
-  const read = async (c, by) => (await call('POST', `/api/projects/${pid}/comments/issue-4/${c.id}/read`, { by })).body.comment;
-  const thanks = await post({ text: 'Great work, team.' });
-  const forAna = await post({ text: '@Ana have a look at this' });
-  assert.deepEqual((await read(thanks, 'Ana Ruiz')).readBy, ['Ana Ruiz']);
-  assert.deepEqual([(await read(thanks, 'Ana Ruiz')).readBy, (await read(thanks, 'Bo')).readBy], [['Ana Ruiz'], ['Ana Ruiz', 'Bo']], 'once for each person, and still open for anyone else');
-  assert.equal((await read(forAna, 'Bo')).readBy, undefined, 'not read by someone it is not for');
-  assert.deepEqual((await read(forAna, 'Ana Ruiz')).readBy, ['Ana Ruiz']);
-  assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${(await post({ kind: 'problem', text: 'Confusing' })).id}/read`, { by: 'Bo' })).status, 400, 'the rest clear once acted on');
+  assert.match(md, new RegExp(`From comment ${said.id} on issue-4\\.`), 'the task names the comment');
+  const thread = threadsOf((await call('GET', `/api/projects/${pid}/comments/issue-4`)).body.comments).find((t) => t.root.id === said.id);
+  assert.deepEqual([thread.root.task.key, thread.root.dismissed.by, thread.root.dismissed.task.key], [itemKeyOf(task), 'Ken', itemKeyOf(task)], 'the comment names the task, and is dismissed');
+  assert.match(thread.replies.at(-1).text, /^Made it a task: Use our vault client here/, 'the thread says so');
+  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'], undefined, 'no longer badged');
+  assert.equal((await call('POST', `/api/projects/${pid}/comments/issue-4/${said.id}/promote`, { by: 'Ken' })).status, 409, 'made a task once');
 });
 
 const newItem = async (call, pid, cid, parentId, kind, extra = {}) => {
@@ -495,7 +508,7 @@ test('ADOPT-08 open questions in a refinement show as badges, and never keep it 
   const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('None.', '- Which vault?').replace('a token.', 'a token, kept.') });
   await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text: 'Which provider?' });
-  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].question, 1, 'the question asked on it is badged');
+  assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].count, 1, 'the question asked on it is badged');
   assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200, 'adopted with questions in its text and on it');
   assert.match((await map()).find((n) => n.title.startsWith('#4 ')).body, /kept/);
 });

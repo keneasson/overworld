@@ -1,23 +1,28 @@
 // Answering an open question (#68): a person's reply in its thread is the answer (ANSWER-01). The one place that builds
-// the prompt handing it to an agent (ANSWER-02), and what adopting the refinement that applied it clears (ANSWER-04).
+// the prompt handing it to an agent (ANSWER-02), and what adopting the refinement that applied it records (ANSWER-04).
 // The API's routes, the standup and the MCP tools all call this, so the web app shows a person the prompt an agent gets.
 
 import { editableOf, itemKeyOf } from '../shared/issue-shape.js';
 import { itemContext, quote, stateWords } from './prompts.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
-import { isQuestion, whereOf } from '../shared/annotations.js';
+import { isDismissed, isQuestion, whereOf } from '../shared/annotations.js';
 
 export { isQuestion };
-/** Answered, and waiting for an agent to write the answer into the spec (ANSWER-01): not yet applied, so not yet cleared. */
-export const awaitsApplying = (c) => isQuestion(c) && Boolean(c.answer) && !c.resolved;
+/**
+ * Answered, and waiting for an agent to write the answer into the spec (ANSWER-01). Applying it is a fact on the answer,
+ * not a state of the thread: it stops the answer going to agents again, and the thread stays where it is (NOTE-05).
+ */
+export const awaitsApplying = (c) => isQuestion(c) && Boolean(c.answer) && !c.answer.appliedAt && !isDismissed(c);
+/** A question still waiting on its answer: not dismissed, and nothing applied yet. */
+const unsettled = (c) => isQuestion(c) && !isDismissed(c) && !c.answer?.appliedAt;
 
 
 /**
- * The state the item would reach once this question is cleared: ready when nothing else is open, else what still is.
+ * The state the item would reach once this question is settled: ready when nothing else is open, else what still is.
  * @returns {{ status: string, others: string[] }}
  */
 export function wouldBecome(node, comments, question) {
-  const others = comments.filter((c) => isQuestion(c) && !c.resolved && c.id !== question.id && c.itemKey === question.itemKey).map((c) => c.text);
+  const others = comments.filter((c) => unsettled(c) && c.id !== question.id && c.itemKey === question.itemKey).map((c) => c.text);
   return { status: others.length ? 'needs_decision' : 'ready', others };
 }
 
@@ -45,7 +50,7 @@ export function answerPrompt({ nodes, comments, question, answer, answeredBy }) 
     '',
     ...itemContext(nodes, node),
     '',
-    `Its state now: ${stateWords(node.status)}. Once this question is cleared, it would be ${stateWords(next.status)}${next.others.length ? `, because these questions are still open: ${next.others.map((q) => `"${q}"`).join('; ')}` : ''}.`,
+    `Its state now: ${stateWords(node.status)}. Once this question is settled, it would be ${stateWords(next.status)}${next.others.length ? `, because these questions are still open: ${next.others.map((q) => `"${q}"`).join('; ')}` : ''}.`,
     ...(textQuestions ? ['Its Open questions section says:', quote(textQuestions), 'Anything there that this answer settles goes too; anything it leaves open stays.'] : []),
     '',
     'What to do:',
@@ -54,7 +59,7 @@ export function answerPrompt({ nodes, comments, question, answer, answeredBy }) 
     '3. Change whatever else the answer implies: behaviours to add, reword or split, items to split or move, links to other items.',
     `4. Mark the item ready if nothing else is open${next.others.length ? ' (here something is, so leave it needing a decision)' : ''}.`,
     '',
-    `How: open a refinement with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, answers: ["${question.id}"], item_ready: ${next.others.length ? 'false' : 'true'}). Changes to other items go into the same refinement. Then reply(annotation: "${question.id}", item: "${key}", text: what you changed, refinement: its id) in the question's thread. A person adopts the refinement, and that clears the question. If the answer leaves something you can't decide, say so in your reply, or ask() it on ${key}, instead of guessing.`,
+    `How: open a refinement with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, answers: ["${question.id}"], item_ready: ${next.others.length ? 'false' : 'true'}). Changes to other items go into the same refinement. Then reply(annotation: "${question.id}", item: "${key}", text: what you changed, refinement: its id) in the question's thread. A person adopts the refinement, and that applies the answer. If the answer leaves something you can't decide, say so in your reply, or ask() it on ${key}, instead of guessing.`,
   ].join('\n');
 }
 
@@ -62,24 +67,24 @@ export function answerPrompt({ nodes, comments, question, answer, answeredBy }) 
 export const promptOf = ({ nodes, comments, question }) => question.answer.prompt ?? answerPrompt({ nodes, comments, question, answer: question.answer.text, answeredBy: question.answer.by });
 
 /**
- * Adopting a refinement clears the questions whose answers it applied (ANSWER-04, NOTE-05): each moves to the item's
- * conversation log, naming the refinement. An item proposed as ready becomes ready if its text and its other questions
- * have nothing left open. Returns the cleared questions and the items to mark ready.
+ * Adopting a refinement applies the answers it carries (ANSWER-04): each answer records the refinement, so it never goes
+ * to an agent again, and its thread stays open until someone dismisses it (NOTE-05). An item proposed as ready becomes
+ * ready if its text and its other questions have nothing left open. Returns the questions applied and the items to mark ready.
  */
 export async function settleAnswers(model, pid, changeset, nodes, at) {
-  const resolved = [];
+  const applied = [];
   const ready = [];
   for (const item of changeset.items) {
     if (!item.answers?.length && !item.itemReady) continue;
     const thread = await model.comments.list(pid, item.key);
-    for (const c of thread.filter((x) => item.answers?.includes(x.id) && !x.resolved)) {
-      const done = { ...c, resolved: true, cleared: { refinement: changeset.id, by: changeset.author, at }, answer: { ...c.answer, appliedAt: at, appliedBy: changeset.id } };
+    for (const c of thread.filter((x) => item.answers?.includes(x.id) && x.answer && !x.answer.appliedAt)) {
+      const done = { ...c, answer: { ...c.answer, appliedAt: at, appliedBy: changeset.id } };
       await model.comments.put(pid, done);
-      resolved.push(done);
+      applied.push(done);
     }
     const node = nodes.find((n) => itemKeyOf(n) === item.key);
-    const stillOpen = thread.some((x) => isQuestion(x) && !x.resolved && !item.answers?.includes(x.id));
+    const stillOpen = thread.some((x) => unsettled(x) && !item.answers?.includes(x.id));
     if (item.itemReady && node && !openQuestions(editableOf(node).markdown) && !stillOpen) ready.push(node);
   }
-  return { resolved, ready };
+  return { applied, ready };
 }

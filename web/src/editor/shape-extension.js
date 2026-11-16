@@ -9,7 +9,7 @@ import { Extension } from '@tiptap/core';
 import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { SECTIONS, hasOpenQuestions } from '@shared/issue-shape.js';
-import { NOTE_KIND_LABEL, initials, kindOf } from '@shared/annotations.js';
+import { initials } from '@shared/annotations.js';
 import { sectionAt } from './document.js';
 import { rangeOf, sectionTexts } from './targets.js';
 
@@ -35,10 +35,10 @@ function marker(c, onThread, moved) {
     const b = document.createElement('button');
     b.type = 'button';
     b.contentEditable = 'false';
-    b.className = `note-marker kind-${kindOf(c)}${c.resolved ? ' resolved' : ''}${moved ? ' moved' : ''}`;
+    b.className = `note-marker${c.unread ? ' unread' : ' read'}${moved ? ' moved' : ''}`;
     b.dataset.thread = c.id;
-    b.setAttribute('aria-label', `${NOTE_KIND_LABEL[kindOf(c)]} from ${c.author}: ${c.text.slice(0, 80)}`);
-    b.title = `${NOTE_KIND_LABEL[kindOf(c)]} · ${c.author}${moved ? ' · the words it was on have changed' : ''}`;
+    b.setAttribute('aria-label', `${c.unread ? 'Unread comment' : 'Comment'} from ${c.author}: ${c.text.slice(0, 80)}`);
+    b.title = `${c.author}${c.unread ? ' · unread' : ''}${moved ? ' · the words it was on have changed' : ''}`;
     b.textContent = initials(c.author);
     b.addEventListener('mousedown', (e) => e.preventDefault());
     b.addEventListener('click', (e) => {
@@ -58,9 +58,9 @@ function notes(doc, { threads, active, onThread }) {
     const r = rangeOf(doc, c.anchor ?? {}, texts);
     if (!r) continue;
     const on = c.id === active ? ' on' : '';
-    if (r.inline && !c.resolved) out.push(r.image ? Decoration.node(r.from, r.to, { class: `noted-img kind-${kindOf(c)}${on}` }) : Decoration.inline(r.from, r.to, { class: `noted kind-${kindOf(c)}${on}` }));
-    else if (!r.inline && !r.moved && !c.resolved && c.anchor?.behaviour) out.push(Decoration.node(r.from, r.to, { class: `noted-block kind-${kindOf(c)}${on}` }));
-    out.push(Decoration.widget(r.marker, marker(c, onThread, r.moved), { side: 1, key: `note:${c.id}:${c.resolved}:${r.moved}:${on}`, ignoreSelection: true, stopEvent: () => true }));
+    if (r.inline) out.push(r.image ? Decoration.node(r.from, r.to, { class: `noted-img${on}` }) : Decoration.inline(r.from, r.to, { class: `noted${on}` }));
+    else if (!r.moved && c.anchor?.behaviour) out.push(Decoration.node(r.from, r.to, { class: `noted-block${on}` }));
+    out.push(Decoration.widget(r.marker, marker(c, onThread, r.moved), { side: 1, key: `note:${c.id}:${Boolean(c.unread)}:${r.moved}:${on}`, ignoreSelection: true, stopEvent: () => true }));
   }
   return out;
 }

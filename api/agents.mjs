@@ -8,6 +8,10 @@ import { nextWork, behavioursOf, blockersOf, isWork, keyOf } from './work.mjs';
 import { awaitsApplying, isQuestion, promptOf } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { notePrompt } from './notes.mjs';
+import { isDismissed } from '../shared/annotations.js';
+
+/** A question settled for its asker: its answer applied, or the thread dismissed. */
+const settled = (c) => isDismissed(c) || Boolean(c.answer?.appliedAt);
 
 const CALLS_PER_MINUTE = 120;
 const CLAIM_MINUTES = { default: 120, max: 480 };
@@ -199,7 +203,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
 
   /**
    * A proposal that applies answers (ANSWER-04): it names the questions it settles, and can ask for the item to be ready.
-   * Adopting it clears them (answers.mjs, settleAnswers). Returns what the proposal now applies.
+   * Adopting it applies them (answers.mjs, settleAnswers). Returns what the proposal now applies.
    */
   async function applyAnswers(projectId, changeset, item, { answers = [], ready } = {}) {
     if (!answers.length && ready == null) return {};
@@ -239,7 +243,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     for (const r of fresh ? handing : mine) {
       const comments = await model.comments.list(projectId, r.itemKey);
       let note = comments.find((c) => c.id === r.id);
-      if (!note || note.resolved) {
+      if (!note || isDismissed(note)) {
         await model.inbox.delete(projectId, r.id);
         continue;
       }
@@ -253,13 +257,13 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     return out;
   }
 
-  /** A proposal that acts on annotations (NOTE-19): adopting it clears them (notes.mjs, settleNotes). */
+  /** A proposal that acts on comments (NOTE-19): it links them, for the log and the reply; adopting it dismisses nothing. */
   async function applyNotes(projectId, changeset, item, { annotations = [] } = {}) {
     if (!annotations.length) return {};
     if (!item) throw new Refused('Nothing is proposed for this item, so it applies no annotation');
     for (const id of annotations) {
       const c = await model.comments.get(projectId, { itemKey: item.key, id });
-      if (!c || c.replyTo || c.resolved) throw new ValidationError(`${id} isn't an open annotation on this item`);
+      if (!c || c.replyTo || isDismissed(c)) throw new ValidationError(`${id} isn't an open comment on this item`);
     }
     item.annotations = [...new Set([...(item.annotations ?? []), ...annotations])];
     await model.changesets.put(projectId, changeset);
@@ -337,8 +341,8 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     // It is handed over again each standup, so it stays this agent's for a claim's length after it last came back.
     const toApply = (await answersToApply(projectId, { nodes: data.nodes, comments, changesets })).filter((a) => a.asker === agent.id);
     for (const a of toApply) await model.comments.put(projectId, { ...a.question, answer: { ...a.question.answer, handedAt: iso(now) } });
-    // Resolved: open at the last standup, or asked since, and resolved now. Each is reported once.
-    const resolvedNow = last ? asked.filter((c) => c.resolved && ((last.openQuestions ?? []).includes(c.id) || c.createdAt > last.at)) : [];
+    // Settled: open at the last standup, or asked since, and settled now. Each is reported once.
+    const resolvedNow = last ? asked.filter((c) => settled(c) && ((last.openQuestions ?? []).includes(c.id) || c.createdAt > last.at)) : [];
     const answered = [...toApply.map((a) => ({ c: a.question, prompt: a.prompt() })), ...resolvedNow.map((c) => ({ c }))];
     // Annotations addressed to agents with @ (NOTE-17): the standup is where one waits when no agent was connected.
     const notes = await addressed(projectId, agent, { fresh: false });
@@ -403,7 +407,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     }
     report.first_step = firstStep({ mode, git, ranOut, notes, answered: answered.map(({ c, prompt }) => ({ title: title(c.itemKey), prompt })), holding, work, refinements });
 
-    await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !c.resolved).map((c) => c.id) } });
+    await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !settled(c)).map((c) => c.id) } });
     return report;
   }
 
@@ -411,7 +415,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
 }
 
 /** An annotation addressed to an agent, as its tools show it: who said what, where, and the prompt to act on it. */
-export const noteOf = ({ note, prompt }) => ({ annotation: note.id, item: note.itemKey, kind: note.kind ?? 'comment', from: note.author, said: note.text, ...(note.value ? { value: note.value } : {}), prompt });
+export const noteOf = ({ note, prompt }) => ({ annotation: note.id, item: note.itemKey, from: note.author, said: note.text, prompt });
 
 /** How the local copy and GitHub differ, from what the agent saw: null when it sent nothing. */
 function gitOf(local) {
