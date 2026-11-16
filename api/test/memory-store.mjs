@@ -7,7 +7,7 @@ import { editableOf } from '../../shared/issue-shape.js';
 import { openQuestions } from '../engine/lifecycle.mjs';
 
 export function memoryStore(seed, { clock }) {
-  const items = new Map(seed.map((it) => [it.ref, { hidden: null, epic: false, ...it }]));
+  const items = new Map(seed.map((it) => [it.ref, { hidden: null, epic: false, priority: '', ...it }]));
   const calls = [];
   const writeTimes = [];
   const failNext = [];
@@ -28,7 +28,7 @@ export function memoryStore(seed, { clock }) {
   };
   // Like any tracker, an open question reads as needing a decision.
   const statusOf = (it) => (openQuestions(it.markdown) ? 'needs_decision' : it.status);
-  const nodeOf = (it) => ({ id: `mem-${it.ref}`, parentId: 'root', kind: 'task', title: it.title, body: it.markdown, status: statusOf(it), definition: statusOf(it) === 'needs_decision' ? 'vague' : 'auto', tags: [], links: [], memRef: it.ref });
+  const nodeOf = (it) => ({ id: `mem-${it.ref}`, parentId: 'root', kind: 'task', title: it.title, body: it.markdown, status: statusOf(it), definition: statusOf(it) === 'needs_decision' ? 'vague' : 'auto', priority: it.priority, tags: [], links: [], memRef: it.ref });
 
   return {
     items,
@@ -42,19 +42,19 @@ export function memoryStore(seed, { clock }) {
     refOf: (node) => node.memRef ?? null,
     nodeIdOf: (ref) => `mem-${ref}`,
     mention: (ref) => `[${ref}]`,
-    wanted: (node) => ({ ...editableOf(node), state: node.status }),
-    asRead: (node) => ({ ...editableOf(node), state: node.status }),
-    same: (a, b) => a.title === b.title && a.markdown === b.markdown && a.state === b.state,
+    wanted: (node) => ({ ...editableOf(node), priority: node.priority ?? '', state: node.status }),
+    asRead: (node) => ({ ...editableOf(node), priority: node.priority ?? '', state: node.status }),
+    same: (a, b) => a.title === b.title && a.markdown === b.markdown && a.priority === b.priority && a.state === b.state,
     async read(ref) {
       step('get', ref);
       if (!items.has(ref)) throw new PermanentError(`no ${ref}`);
       return structuredClone(items.get(ref));
     },
-    version: (it) => ({ title: it.title, markdown: it.markdown, state: statusOf(it) }),
+    version: (it) => ({ title: it.title, markdown: it.markdown, priority: it.priority, state: statusOf(it) }),
     async create(version, { guard, epic }) {
       step('create');
       const ref = `M-${++made}`;
-      items.set(ref, { ref, title: version.title, markdown: version.markdown, status: version.state, hidden: guard, epic });
+      items.set(ref, { ref, title: version.title, markdown: version.markdown, priority: version.priority, status: version.state, hidden: guard, epic });
       crash('create');
       return { ref };
     },
@@ -66,11 +66,11 @@ export function memoryStore(seed, { clock }) {
     carriesGuard: (it, guard) => it.hidden === guard,
     async update(ref, it, version) {
       step('update', ref);
-      Object.assign(items.get(ref), { title: version.title, markdown: version.markdown, status: version.state, hidden: null });
+      Object.assign(items.get(ref), { title: version.title, markdown: version.markdown, priority: version.priority, status: version.state, hidden: null });
       crash('update');
     },
     placed: (node, ref) => ({ ...node, memRef: ref }),
-    onMap: (node, it) => ({ ...node, title: it.title, body: it.markdown, status: statusOf(it), definition: statusOf(it) === 'needs_decision' ? 'vague' : 'auto' }),
+    onMap: (node, it) => ({ ...node, title: it.title, body: it.markdown, priority: it.priority, status: statusOf(it), definition: statusOf(it) === 'needs_decision' ? 'vague' : 'auto' }),
     async mapAgain() {
       const root = { id: 'root', parentId: null, kind: 'project', title: 'A project in memory', body: '', status: 'planned', definition: 'auto', tags: [], links: [] };
       return { nodes: [root, ...[...items.values()].map(nodeOf)], project: {} };
