@@ -45,6 +45,12 @@ const md = (s) => s.replace(/[[\]*_`]/g, '\\$&');
 /** The id of an issue's node on the map. */
 export const issueNodeId = (number) => `issue-${number}`;
 
+/** An issue's priority, P0 to P3, from its first priority label (p0 to p3, any case, maybe with more after it), or ''. Saving writes it back the same way (SYNC-15). */
+export const priorityFrom = (labels) => {
+  const n = labels.map((l) => l.match(/^p([0-3])\b/i)?.[1]).find(Boolean);
+  return n ? `P${n}` : '';
+};
+
 /**
  * What an issue says about itself, as a node's fields: everything but where it sits, its kind and its links.
  * A full mapping and a webhook about one issue both use it, so they agree.
@@ -52,7 +58,6 @@ export const issueNodeId = (number) => `issue-${number}`;
  * @param {string[]} opts.placement tags the placement gave it ('placed-by-words', 'unplaced')
  */
 export function issueFields(i, { lifecycle, note, placement = [], kind }) {
-  const priority = i.labels.map((l) => l.match(/^p([0-3])\b/i)?.[1]).find(Boolean);
   // Milestones are about when, not where: they become the due date and a tag.
   const tags = [...new Set([...i.labels, ...(i.milestone ? [i.milestone.title] : [])].map((l) => l.toLowerCase().slice(0, 40)))];
   tags.push(...placement);
@@ -68,7 +73,7 @@ export function issueFields(i, { lifecycle, note, placement = [], kind }) {
     tags: tags.slice(0, 20),
     assignee: i.assignees[0] ?? '',
     due: i.milestone?.dueOn ? i.milestone.dueOn.slice(0, 10) : '',
-    priority: priority ? `P${priority}` : '',
+    priority: priorityFrom(i.labels),
     url: i.url,
   };
 }

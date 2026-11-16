@@ -8,7 +8,7 @@ import { fromRest, importGitHub } from '../../github.mjs';
 import { closedByOpenPrs } from '../../engine/lifecycle.mjs';
 import { issueFields, issueNodeId } from '../../engine/project.mjs';
 import { TransientError } from '../errors.mjs';
-import { labelsForNew, patchFor, sameVersion, stateAsRead, stateOf, versionOnGitHub } from './state.mjs';
+import { labelsForNew, patchFor, priorityAsRead, priorityOf, sameVersion, stateAsRead, stateOf, versionOnGitHub } from './state.mjs';
 
 const PLACEMENT_TAGS = new Set(['placed-by-words', 'unplaced']);
 export const githubKey = (repo) => `github:${repo.toLowerCase()}`;
@@ -45,8 +45,8 @@ export function githubStore({ repo, strict = true, app = null, fetchImpl = fetch
     },
     nodeIdOf: (ref) => issueNodeId(Number(ref)),
     mention: (ref) => `#${ref}`,
-    wanted: (node) => ({ ...editableOf(node), state: stateOf(node, { strict }) }),
-    asRead: (node) => ({ ...editableOf(node), state: stateAsRead(node, { strict }) }),
+    wanted: (node) => ({ ...editableOf(node), priority: priorityOf(node), state: stateOf(node, { strict }) }),
+    asRead: (node) => ({ ...editableOf(node), priority: priorityAsRead(node), state: stateAsRead(node, { strict }) }),
     same: sameVersion,
     read: (ref) => client().getIssue(repo, Number(ref)),
     version: (item) => versionOnGitHub(item, { strict }),

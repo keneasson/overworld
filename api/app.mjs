@@ -268,8 +268,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           patch.links = patch.links.filter((l) => known.has(l.to) && l.to !== nid);
         }
         let node = { ...current, ...patch, id: nid, updatedAt: new Date().toISOString() };
-        // A change to what the store holds (its text or its state) waits for a save (SYNC-07).
-        if (['title', 'body', 'status'].some((k) => k in patch && patch[k] !== current[k])) node = markEdited(current, node, stores.forProject(project));
+        // A change to what the store holds (its text, its state or its priority) waits for a save (SYNC-07, SYNC-15).
+        if (['title', 'body', 'status', 'priority'].some((k) => k in patch && patch[k] !== current[k])) node = markEdited(current, node, stores.forProject(project));
         await model.nodes.put(pid, [node]);
         const all = nodes.map((n) => (n.id === nid ? node : n));
         const updatedProject = await touchProject(project, all);

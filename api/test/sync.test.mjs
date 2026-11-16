@@ -108,6 +108,7 @@ async function harness(kind, { strict = false, budget } = {}) {
       epic: i.labels.some((l) => l.name === 'epic'),
       guarded: i.body.includes('overworld-new-item'),
       labels: i.labels.map((l) => l.name),
+      priority: i.labels.map((l) => l.name.match(/^p[0-3]\b/i)?.[0].toUpperCase()).find(Boolean) ?? '',
     });
     h = {
       github: { shop, call, deliver },
@@ -141,7 +142,7 @@ async function harness(kind, { strict = false, budget } = {}) {
     await model.nodes.put(pid, nodes);
     await model.projects.put({ id: pid, title: 'A project in memory', store: 'memory', nodeCount: nodes.length, createdAt: new Date(START).toISOString(), updatedAt: new Date(START).toISOString() });
     await model.links.link(mem.key, pid);
-    const read = (it) => ({ ref: it.ref, title: it.title, markdown: it.markdown, status: it.status, epic: it.epic, guarded: Boolean(it.hidden) });
+    const read = (it) => ({ ref: it.ref, title: it.title, markdown: it.markdown, status: it.status, epic: it.epic, guarded: Boolean(it.hidden), priority: it.priority ?? '' });
     h = {
       app: mem,
       sync,
@@ -417,6 +418,35 @@ const behaviours = [
       assert.ok(!a.guarded && !b.guarded, 'the guard against duplicates is gone');
       assert.equal(h.app.writes().filter((w) => w === 'create').length, 2);
       if (h.github) assert.deepEqual(a.labels, ['status:draft', 'epic'], 'on GitHub, the state and the epic are labels');
+    },
+  ],
+  [
+    'SYNC-15 a priority set in Overworld waits for a save, then reaches the store and reads back the same',
+    {},
+    async (h) => {
+      if (!h.github) h.app.items.get(h.ref(3)).priority = 'P1'; // the coupon bug is P1 in both stores
+      await h.call('POST', `/api/projects/${h.pid}/refresh`, {});
+      assert.equal((await h.nodeOf(3)).priority, 'P1');
+      await h.call('PATCH', `/api/projects/${h.pid}/nodes/${h.nodeId(3)}`, { priority: 'P0' });
+      await h.call('PATCH', `/api/projects/${h.pid}/nodes/${h.nodeId(4)}`, { priority: 'P2' });
+      await h.model.nodes.put(h.pid, [{ id: 'refunds', parentId: 'root', kind: 'task', title: 'Refunds', body: 'Kind: Task · Place: checkout\n\n## Why\n\nMoney back.', status: 'idea', priority: 'P3', tags: [], sync: 'unsaved' }]);
+
+      await h.call('POST', `/api/projects/${h.pid}/refresh`, {});
+      await h.sync.reconcile();
+      assert.deepEqual([(await h.nodeOf(3)).priority, (await h.nodeOf(4)).priority], ['P0', 'P2'], 'a refresh or the nightly reading keeps the change waiting');
+      assert.deepEqual(h.app.writes(), [], 'nothing reaches the store before the save');
+
+      await h.save();
+      await h.sync.drain(h.pid);
+      assert.deepEqual([h.stored(3).priority, h.stored(4).priority, h.storedTitled('Refunds')[0].priority], ['P0', 'P2', 'P3']);
+      if (h.github) {
+        assert.deepEqual(h.stored(3).labels, ['bug', 'P0'], 'on GitHub, the other priority label goes and unrelated labels stay');
+        assert.deepEqual(h.storedTitled('Refunds')[0].labels, ['P3'], 'a new item is created with its priority label');
+      }
+
+      await h.call('POST', `/api/projects/${h.pid}/refresh`, {});
+      const [three, four] = [await h.nodeOf(3), await h.nodeOf(4)];
+      assert.deepEqual([three.priority, three.sync, four.priority, four.sync], ['P0', undefined, 'P2', undefined], 'the map reads the same priority back');
     },
   ],
   [
