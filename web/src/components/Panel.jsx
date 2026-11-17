@@ -363,7 +363,7 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
               areaTexts={texts}
               comments={comments.filter((c) => c.itemKey === key)}
               commenting={commenting}
-              selectTitle={Boolean(node.refinement) && !theirs && editableOf(node).title === `New ${node.kind}`}
+              placeholderTitle={Boolean(node.refinement) && !theirs ? `New ${node.kind}` : null}
               conflict={editing.conflicts.has(key)}
               onChange={(after) => editing.change(key, after)}
               onComment={(anchor, text, extra) => editing.comment(key, anchor, text, extra)}
