@@ -495,6 +495,27 @@ button {
 .change-after {
   color: var(--text);
 }
+.talkable .clause {
+  cursor: pointer;
+  border-radius: 2px;
+}
+.talkable .clause:hover,
+.talkable .clause:focus-visible {
+  background: rgb(232 113 10 / 0.12);
+  outline: none;
+}
+.talkable mark.noted {
+  --kind: #e8710a;
+  --kind-soft: rgb(232 113 10 / 0.16);
+  color: inherit;
+  cursor: pointer;
+}
+.pick-comment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
 .change-talk {
   display: inline-flex;
   align-items: center;

@@ -180,3 +180,41 @@ export function refinementThreads(comments, refinement) {
   }
   return out;
 }
+
+const CLAUSE = /\b(given|when|then)\b/gi;
+/**
+ * The clauses of a behaviour as written ("CL-05 Given work, when claimed, then it is held."): where each of its Given,
+ * When and Then is in the text, so one can be commented on alone (#13 ADOPT-03). A behaviour not in that shape has none.
+ * @returns {{ part: 'Given' | 'When' | 'Then', start: number, end: number }[]}
+ */
+export function clausesOf(text = '') {
+  const starts = [];
+  for (const m of text.matchAll(CLAUSE)) {
+    const part = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+    const want = ['Given', 'When', 'Then'][starts.length];
+    if (part === want) starts.push({ part, start: m.index });
+  }
+  if (starts.length !== 3) return [];
+  return starts.map((c, i) => {
+    let end = i < 2 ? starts[i + 1].start : text.length;
+    while (end > c.start && /[\s,]/.test(text[end - 1])) end--;
+    return { ...c, end };
+  });
+}
+
+/**
+ * The text cut where each clause and each quoted comment starts and ends, for showing it with the quoted words marked:
+ * each piece says which clause it is in and which threads quote it (`threads` are { root } with an anchor's quote).
+ * @returns {{ start: number, end: number, clause: string | null, threads: object[] }[]}
+ */
+export function piecesOf(text, clauses, threads) {
+  const marks = threads.map((t) => ({ t, at: t.root.anchor?.quote ? locate(text, t.root.anchor) : null })).filter((m) => m.at);
+  const cuts = [...new Set([0, text.length, ...clauses.flatMap((c) => [c.start, c.end]), ...marks.flatMap((m) => [m.at.start, m.at.end])])].sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const [start, end] = [cuts[i], cuts[i + 1]];
+    if (start === end) continue;
+    out.push({ start, end, clause: clauses.find((c) => c.start <= start && end <= c.end)?.part ?? null, threads: marks.filter((m) => m.at.start <= start && end <= m.at.end).map((m) => m.t) });
+  }
+  return out;
+}
