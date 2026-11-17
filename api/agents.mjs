@@ -256,7 +256,8 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         note = { ...note, delivery: { ...note.delivery, state: 'delivered', to: `${agent.name} (${agent.id})`, at: iso(now) } };
         await model.comments.put(projectId, note);
       }
-      out.push({ note, prompt: notePrompt({ nodes, comments, note }) });
+      const refinement = note.anchor?.refinement ? await model.changesets.get(projectId, note.anchor.refinement) : null;
+      out.push({ note, prompt: notePrompt({ nodes, comments, note, refinement }) });
     }
     return out;
   }

@@ -32,6 +32,7 @@ export function annotationOf(c) {
 /** Where an anchor sits, in words: "Why", "NOTE-01", "an image in Why", "the place on the map". */
 export function whereOf(a = {}) {
   const on = onOf(a);
+  if (a.refinement) return `${a.behaviour ?? 'a change'} in a refinement`;
   if (on === 'place') return 'the place on the map';
   if (on === 'image') return `an image in ${a.section ?? 'the text'}`;
   return a.behaviour ?? a.section ?? 'the text';
@@ -88,7 +89,11 @@ export function cleanAnchor(a = {}) {
   const on = onOf(a);
   if (on === 'place') return { on };
   const behaviour = str(a.behaviour, 40, 'anchor.behaviour');
-  const out = { on, section: str(a.section, 60, 'anchor.section') ?? (behaviour ? 'Behaviours' : 'Why'), ...(behaviour ? { behaviour } : {}) };
+  // On a behaviour as a refinement proposes it (#13 ADOPT-14), not the adopted text: the thread stays with that behaviour
+  // through every revision of the refinement.
+  const refinement = str(a.refinement, 40, 'anchor.refinement');
+  const out = { on, section: str(a.section, 60, 'anchor.section') ?? (behaviour ? 'Behaviours' : 'Why'), ...(behaviour ? { behaviour } : {}), ...(refinement ? { refinement } : {}) };
+  if (refinement && !behaviour) throw new ValidationError('anchor.behaviour: required on a refinement');
   if (on === 'behaviour' && !behaviour) throw new ValidationError('anchor.behaviour: required');
   if (on === 'image') {
     out.src = str(a.src, 2000, 'anchor.src');
@@ -157,3 +162,21 @@ export const mentionsOf = (text = '') => [...new Set([...String(text).matchAll(/
 export const isAgentAlias = (name) => /^(claude|agents?)$/i.test(name);
 /** Is an annotation addressed to an agent? */
 export const toAgent = (c) => (c?.to ?? []).some((t) => t.agent);
+
+/**
+ * The threads on a refinement's behaviours (#13 ADOPT-14), by behaviour ID, and which of them wait for its author: a
+ * thread is unanswered while it is open and its last word isn't the author's. A person's question to an agent's
+ * refinement waits for the agent; an agent's question on a person's, for the person.
+ * @returns {Map<string, { threads: { root: object, replies: object[] }[], unanswered: number }>}
+ */
+export function refinementThreads(comments, refinement) {
+  const out = new Map();
+  for (const t of threadsOf(comments.filter((c) => c.anchor?.refinement === refinement.id))) {
+    const id = t.root.anchor.behaviour;
+    if (!out.has(id)) out.set(id, { threads: [], unanswered: 0 });
+    const at = out.get(id);
+    at.threads.push(t);
+    if (!isDismissed(t.root) && (t.replies.at(-1) ?? t.root).author !== refinement.author) at.unanswered += 1;
+  }
+  return out;
+}

@@ -6,6 +6,8 @@ import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
 import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
+import { Composer, Thread } from '../editor/Annotate.jsx';
+import { isDismissed, refinementThreads } from '@shared/annotations.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
 import { issueRefExtension } from '../model/links.js';
@@ -147,8 +149,8 @@ const when = (iso) => {
   return new Date(iso).toLocaleDateString();
 };
 
-/** One change in a refinement: what the spec says now, struck through, and what is proposed. */
-function Change({ label, change, before, after, ready, tick = null }) {
+/** One change in a refinement: what the spec says now, struck through, and what is proposed, and its conversation. */
+function Change({ label, change, before, after, ready, tick = null, talk = null }) {
   return (
     <li className={`change change-${change}`}>
       <div className="change-head">
@@ -160,11 +162,69 @@ function Change({ label, change, before, after, ready, tick = null }) {
             Ready for adoption
           </span>
         )}
+        {talk?.head}
       </div>
       {before && <del className="change-before">{before}</del>}
       {after && <ins className="change-after">{after}</ins>}
+      {talk?.body}
     </li>
   );
+}
+
+/**
+ * The conversation on one behaviour of a refinement (#13 ADOPT-03, ADOPT-14): pushback or a question for its author,
+ * anchored to the refinement and the behaviour, so it stays with the behaviour through every revision. A thread waiting
+ * for the author's word shows a badge.
+ */
+function useTalk({ cs, item, on, label, threads, editing }) {
+  const [writing, setWriting] = useState(false);
+  const [shut, setShut] = useState(() => new Set());
+  const here = threads.get(on) ?? { threads: [], unanswered: 0 };
+  const open = here.threads.filter((t) => !isDismissed(t.root));
+  const anchor = { on: 'behaviour', behaviour: on, refinement: cs.id };
+  return {
+    head: (
+      <span className="change-talk">
+        {here.unanswered > 0 && (
+          <span className="talk-badge" title={`Waiting for ${cs.author}`} aria-label={`${here.unanswered} waiting for ${cs.author}`}>
+            <Icon name="comment" size={12} /> {here.unanswered}
+          </span>
+        )}
+        <button type="button" className="link-btn" onClick={() => setWriting(true)} disabled={writing}>
+          Comment
+        </button>
+      </span>
+    ),
+    body: (writing || open.length > 0) && (
+      <div className="change-threads">
+        {open
+          .filter((t) => !shut.has(t.root.id))
+          .map((t) => (
+            <Thread
+              key={t.root.id}
+              heading={label}
+              thread={t}
+              you={editing.name}
+              onReply={(text) => editing.comment(item.key, t.root.anchor, text, { replyTo: t.root.id })}
+              onDismiss={editing.dismiss}
+              onClose={() => setShut((s) => new Set([...s, t.root.id]))}
+            />
+          ))}
+        {open.some((t) => shut.has(t.root.id)) && (
+          <button type="button" className="link-btn" onClick={() => setShut(new Set())}>
+            Show {open.filter((t) => shut.has(t.root.id)).length} hidden
+          </button>
+        )}
+        {writing && <Composer heading={label} what={`as ${cs.author} proposes it`} onPost={(text) => editing.comment(item.key, anchor, text)} onCancel={() => setWriting(false)} />}
+      </div>
+    ),
+  };
+}
+
+/** A behaviour row of a refinement, with its tick and its conversation. */
+function BehaviourChange({ b, cs, item, threads, editing, ready, tick }) {
+  const talk = useTalk({ cs, item, on: b.id, label: b.id, threads, editing });
+  return <Change label={b.id || 'Behaviour'} change={b.change} before={b.before} after={b.after} ready={ready} tick={tick} talk={b.id ? talk : null} />;
 }
 
 /** A tick on one change of a refinement (ADOPT-05). */
@@ -179,7 +239,9 @@ function Tick({ on, label, onChange, disabled }) {
  * acts on the ticked ones only, and the rest stay to decide (ADOPT-06). Open questions show as badges, and never hold it
  * back (ADOPT-08).
  */
-function Refinement({ cs, item, node, editing }) {
+function Refinement({ cs, item, node, editing, comments }) {
+  const threads = useMemo(() => refinementThreads(comments, cs), [comments, cs]);
+  const otherTalk = useTalk({ cs, item, on: OTHER_CHANGES, label: 'Other changes', threads, editing });
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
   const diff = useMemo(() => compareItems(editableOf(node), item.after), [node, item.after]);
@@ -225,12 +287,13 @@ function Refinement({ cs, item, node, editing }) {
           </label>
           <ul className="changes">
             {diff.behaviours.map((b, i) => (
-              <Change
+              <BehaviourChange
                 key={`b${b.key || i}`}
-                label={b.id || 'Behaviour'}
-                change={b.change}
-                before={b.before}
-                after={b.after}
+                b={b}
+                cs={cs}
+                item={item}
+                threads={threads}
+                editing={editing}
                 ready={ready.has(b.id)}
                 tick={<Tick on={ticks.has(b.key)} label={`Tick ${b.id || 'this behaviour'}`} onChange={(on) => tick(b.key, on)} disabled={editing.busy} />}
               />
@@ -240,7 +303,9 @@ function Refinement({ cs, item, node, editing }) {
                 <div className="change-head">
                   <Tick on={ticks.has(OTHER_CHANGES)} label="Tick the other changes" onChange={(on) => tick(OTHER_CHANGES, on)} disabled={editing.busy} />
                   <span className="change-label">Other changes</span>
+                  {otherTalk.head}
                 </div>
+                {otherTalk.body}
                 <ul className="changes">
                   {diff.title && <Change label="Title" change="changed" before={diff.title.before} after={diff.title.after} />}
                   {diff.sections.map((c) => (
@@ -325,6 +390,9 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
   const childKind = isMapped(tree) && ['project', 'area'].includes(node.kind) ? 'epic' : (CHILD_KIND[node.kind] ?? 'task');
   const isRoot = node.depth === 0;
   // Other people's and agents' proposed edits to this item (ADOPT-02); their new items show as new, below.
+  // A comment on a refinement's behaviour sits under that behaviour in the refinement while it is open (#13 ADOPT-14),
+  // and on the behaviour in the text once the refinement has closed.
+  const reviewing = new Set([...editing.others.map((cs) => cs.id), ...(editing.changeset ? [editing.changeset.id] : [])]);
   const proposals = editing.others.flatMap((cs) => cs.items.filter((it) => it.key === key && !it.new && it.after).map((it) => ({ cs, item: it })));
   // Every behaviour already written, drafts included, so a new behaviour's ID never collides.
   const texts = useMemo(() => (editable ? tree.list.map((n) => editing.drafts.get(itemKeyOf(n))?.markdown ?? n.body ?? '') : []), [editable, tree, editing.drafts]);
@@ -420,7 +488,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       </div>
 
       {proposals.map(({ cs, item }) => (
-        <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} />
+        <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} comments={comments.filter((c) => c.itemKey === key)} />
       ))}
       <div className="doc" ref={docRef} onFocusCapture={onDocFocus}>
         {editable ? (
@@ -430,7 +498,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
               value={editing.drafts.get(key) ?? editableOf(node)}
               issueNumber={issue?.number}
               areaTexts={texts}
-              comments={comments.filter((c) => c.itemKey === key)}
+              comments={comments.filter((c) => c.itemKey === key && !(c.anchor?.refinement && reviewing.has(c.anchor.refinement)))}
               commenting={commenting}
               placeholderTitle={Boolean(node.refinement) && !theirs ? `New ${node.kind}` : null}
               conflict={editing.conflicts.has(key)}

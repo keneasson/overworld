@@ -341,7 +341,7 @@ export function createMcp({ model, agents, call, log = console }) {
         const open = threadsOf(comments).filter((t) => isOpen(t.root));
         return {
           item: keyOf(node),
-          annotations: open.map(({ root: c, replies }) => ({
+          annotations: await Promise.all(open.map(async ({ root: c, replies }) => ({
             annotation: c.id,
             on: whereOf(c.anchor),
             ...(c.anchor?.quote ? { quoting: c.anchor.quote } : {}),
@@ -350,8 +350,9 @@ export function createMcp({ model, agents, call, log = console }) {
             ...(c.to?.length ? { to: c.to.map((t) => t.name) } : {}),
             ...(c.delivery ? { delivery: c.delivery.state } : {}),
             replies: replies.map((r) => ({ by: r.author, said: r.text })),
-            ...(toAgent(c) ? { prompt: notePrompt({ nodes, comments, note: c }) } : {}),
-          })),
+            ...(c.anchor?.refinement ? { refinement: c.anchor.refinement } : {}),
+            ...(toAgent(c) ? { prompt: notePrompt({ nodes, comments, note: c, refinement: c.anchor?.refinement ? await model.changesets.get(pid, c.anchor.refinement) : null }) } : {}),
+          }))),
         };
       },
     },

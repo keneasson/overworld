@@ -8,6 +8,7 @@ import { createApi } from '../app.mjs';
 import { modelFor } from '../model/index.mjs';
 import { fileTable } from '../model/table.mjs';
 import { fakeShop } from './fake-github.mjs';
+import { refinementThreads } from '../../shared/annotations.js';
 
 const issue = (n, title, extra = {}) => ({ id: `i${n}`, url: `https://github.com/octo/app/issues/${n}`, title: `#${n} ${title}`, kind: 'story', status: 'ready', order: n, parentId: 'web', ...extra });
 const body = ({ why = 'Because.', behaviours, questions = 'None' }) => `Part of #1\n\n## Why\n\n${why}\n\n## Behaviours\n\n${behaviours.map((b) => `- ${b}`).join('\n')}\n\n## Acceptance\n\nIt works.\n\n## Out of scope\n\nNothing.\n\n## Open questions\n\n${questions}\n`;
@@ -206,6 +207,50 @@ test("ADOPT-05 ADOPT-10 a person adopts or declines an agent's refinement, and t
   assert.deepEqual(decided.map((d) => [d.item, d.outcome, d.by, d.reason]), [['issue-11', 'adopted', 'Ken', undefined], ['issue-12', 'declined', 'Ken', 'Work must wait for its dependency.']]);
   assert.deepEqual(decided.map((d) => d.behaviours), [['CL-01', 'CL-02'], ['BL-01']], 'which behaviours, as people decide them one at a time: the proposal changed CL-01 and dropped CL-02');
   assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept|decline/.test(t.name)), 'the agent itself never adopts');
+});
+
+test('ADOPT-03 ADOPT-05 ADOPT-06 ADOPT-14 a person reviews a refinement one behaviour at a time, asks about one, and the agent answers with a revision that is adopted later', async () => {
+  const { agent, rest, pid, clock } = await setup();
+  const a = await agent('Builder');
+  await a.use('standup');
+  clock.now += 60_000;
+  const cl = (n, then) => `CL-0${n} Given work, when step ${n} happens, then ${then}.`;
+  const { refinement } = await a.use('refine', { place: 'issue-11' });
+  await a.use('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: [cl(1, 'it is held for two hours'), cl(2, 'it says so'), cl(3, 'it lasts longer'), cl(4, 'it is logged'), cl(5, 'it expires in five minutes')] }) });
+  const decide = (action, b) => rest('POST', `/api/projects/${pid}/changesets/${refinement}/items/issue-11/${action}`, { by: 'Ken', ...b });
+  const spec = async () => (await a.use('context', { issue: 'issue-11' })).behaviours.map((b) => `${b.id} ${b.text}`).join('\n');
+
+  // Three adopted, one declined with a reason, and a question on the fifth.
+  await decide('adopt', { behaviours: ['CL-01', 'CL-02', 'CL-03'] });
+  const declined = await decide('decline', { behaviours: ['CL-04'], reason: 'We log everything already.' });
+  assert.equal(declined.changeset.status, 'open', 'one still to decide');
+  const asked = (await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', anchor: { on: 'behaviour', behaviour: 'CL-05', refinement }, text: 'Why five minutes? A long build takes longer.', author: 'Ken' })).comment;
+  assert.deepEqual(asked.anchor, { on: 'behaviour', section: 'Behaviours', behaviour: 'CL-05', refinement }, 'on the behaviour as the refinement proposes it, not the adopted text');
+  const threads = async () => refinementThreads((await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments, (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((c) => c.id === refinement));
+  assert.equal((await threads()).get('CL-05').unanswered, 1, 'it waits for the refinement\'s author: a badge on CL-05');
+
+  // The author hears of it at standup, as other comments addressed to it, with what it proposed and how to answer.
+  const report = await a.use('standup');
+  const note = report.addressed_to_you.annotations.find((n) => n.annotation === asked.id);
+  assert.ok(note, 'addressed to the refinement\'s author');
+  assert.match(note.prompt, new RegExp(`CL-05, as your refinement ${refinement} proposes it`));
+  assert.match(note.prompt, /You propose:\n> CL-05 .*five minutes/);
+  assert.match(note.prompt, new RegExp(`propose\\(refinement: "${refinement}"`));
+  assert.deepEqual(report.addressed_to_you.your_refinements_decided.map((d) => [d.outcome, d.behaviours, d.reason]), [['adopted', ['CL-01', 'CL-02', 'CL-03'], undefined], ['declined', ['CL-04'], 'We log everything already.']]);
+
+  // The agent answers with a revision and a reply; the thread stays with CL-05 through it.
+  await a.use('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: [cl(1, 'it is held for two hours'), cl(2, 'it says so'), cl(3, 'it lasts longer'), cl(5, 'it expires when its build does')] }), annotations: [asked.id] });
+  await a.use('reply', { annotation: asked.id, item: 'issue-11', text: 'It now lasts as long as the build.', refinement });
+  const after = (await threads()).get('CL-05');
+  assert.equal(after.unanswered, 0, 'answered');
+  assert.deepEqual(after.threads[0].replies.map((r) => r.text), ['It now lasts as long as the build.']);
+  assert.doesNotMatch(await spec(), /CL-05/, 'nothing adopted yet');
+
+  // Adopted later: nothing is left, so the refinement closes.
+  const done = await decide('adopt', { behaviours: ['CL-05'] });
+  assert.equal(done.changeset.status, 'accepted');
+  assert.match(await spec(), /CL-05 .*when its build does/);
+  assert.doesNotMatch(await spec(), /CL-04/);
 });
 
 test('NEW-05 an agent proposes a new item, and it arrives in the refinement the way a person\'s does', async () => {
