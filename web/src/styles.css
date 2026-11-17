@@ -1843,31 +1843,6 @@ button.danger.armed {
   text-decoration: underline wavy #d97706 1px;
   text-underline-offset: 3px;
 }
-/* A heading the shape doesn't have (EDIT-19): a small mark after it, which makes it text; the text keeps its width. */
-.issue-doc-text h2.off-shape {
-  text-transform: none;
-  letter-spacing: 0;
-}
-.issue-doc-text .stray-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  margin-left: 6px;
-  padding: 0;
-  vertical-align: 1px;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-}
-.issue-doc-text .stray-mark:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
 .issue-doc-text h2.asking::after {
   content: attr(data-note);
   display: inline-block;
