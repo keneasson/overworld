@@ -138,6 +138,7 @@ export function Chips({ tree, lensId, setLens, showLinks, setShowLinks }) {
 
 const plural = { area: 'areas', epic: 'epics', feature: 'features', story: 'stories', task: 'tasks', bug: 'bugs' };
 
+// The place in view (MARK-19), and the way to it: named here even where its name and its region's have faded from the map.
 export function Breadcrumbs({ tree, focusId, onFly }) {
   const focus = focusId ? tree.byId.get(focusId) : null;
   const path = focus ? pathOf(focus) : [tree.root];
@@ -151,9 +152,11 @@ export function Breadcrumbs({ tree, focusId, onFly }) {
   return (
     <nav className="breadcrumbs" aria-label="You are here">
       {path.map((n, i) => (
-        <span key={n.id} className="crumb">
+        <span key={n.id} className={i === path.length - 1 ? 'crumb here' : 'crumb'}>
           {i > 0 && <Icon name="right" size={14} />}
-          <button onClick={() => onFly(n.id)}>{n.title}</button>
+          <button onClick={() => onFly(n.id)} aria-current={i === path.length - 1 ? 'location' : undefined}>
+            {n.title}
+          </button>
         </span>
       ))}
       <span className="level">{level}</span>
