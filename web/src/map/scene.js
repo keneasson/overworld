@@ -1,5 +1,6 @@
 import { buildTree } from '../model/tree.js';
 import { computeLayout } from './layout.js';
+import { behaviourHouses, lotsOf } from './houses.js';
 import { resolveSite } from './places.js';
 import { drawMap, fitScale } from './renderer.js';
 
@@ -10,13 +11,20 @@ export function buildScene(nodes, projectId, prev, projection = 'site') {
   const site = projection === 'site' ? resolveSite(tree) : null;
   // Anything that moves land: structure, size, and (in the Site projection) where things sit.
   const where = (n) => (site ? `:${site.places.get(n.id)}:${site.continents.get(n.id)?.surface ?? ''}${site.continents.get(n.id)?.own ? '!' : ''}` : '');
-  const sig = `${projection}|${tree.list.map((n) => `${n.id}:${n.parent?.id ?? ''}:${n.stats.raw.toFixed(2)}${where(n)}`).join('|')}`;
+  // Each behaviour an issue lists is a house on its block (MARK-16): adding, removing or moving one moves land too.
+  const houses = behaviourHouses(tree);
+  const sig = `${projection}|${tree.list.map((n) => `${n.id}:${n.parent?.id ?? ''}:${n.stats.raw.toFixed(2)}${where(n)}:${n.behaviourRows.map((b) => b.id).join(',')}`).join('|')}`;
   const reuse = prev && prev.sig === sig && prev.projectId === projectId;
-  const layout = reuse ? prev.layout : computeLayout(tree, projectId, { projection, site });
+  const layout = reuse ? prev.layout : computeLayout(tree, projectId, { projection, site, houses });
   let minLeafSize = Infinity;
   for (const n of tree.list) if (!n.children.length) minLeafSize = Math.min(minLeafSize, layout.geo.get(n.id).size);
   return {
     tree,
+    houses,
+    /** What stands inside a place on the map: its child issues and its behaviours' houses, in their order. */
+    kidsOf: (n) => lotsOf(n, houses).lots,
+    /** The item or house with this id. */
+    nodeOf: (id) => tree.byId.get(id) ?? houses.byId.get(id) ?? null,
     layout,
     geo: layout.geo,
     land: layout.land,

@@ -19,7 +19,8 @@ import { polygonArea, polygonCentroid, polygonContains } from 'd3';
 import polylabel from 'polylabel';
 import { bounds, circle, densify, ensureOrientation, hashString, makeWarp, mulberry32, roundedRect, scalePolygon, splitByWeights, streetRows } from './geometry.js';
 import { anchorsFor, resolveSite } from './places.js';
-import { isHouse } from './houses.js';
+import { HOUSE_WEIGHT } from '../model/tree.js';
+import { behaviourHouses, lotsOf } from './houses.js';
 
 export const PROJECTIONS = [
   { id: 'site', name: 'Site layout', blurb: 'Shaped like the product: screens, apps and services, with each part where you would look for it.' },
@@ -27,14 +28,14 @@ export const PROJECTIONS = [
 ];
 
 const DAMPING = 0.8;
-// Places hold their parts where you'd look for them; only an issue's children can be a street of houses.
-const NOT_BLOCKS = new Set(['project', 'area']);
 /** The geometry key of an issue's open land (MARK-18). */
 export const parkId = (n) => `${n.id}:park`;
 const weightOf = (n) => Math.pow(Math.max(n.stats.raw, 0.1), DAMPING);
+// A house is a lot of one behaviour's size (HOUSE_WEIGHT in tree.js).
+const lotWeight = (c) => (c.issue ? Math.pow(HOUSE_WEIGHT, DAMPING) : weightOf(c));
 
-export function computeLayout(tree, projectId, { projection = 'site', site } = {}) {
-  const out = projection === 'organic' ? organicLayout(tree, projectId) : siteLayout(tree, projectId, site ?? resolveSite(tree));
+export function computeLayout(tree, projectId, { projection = 'site', site, houses = behaviourHouses(tree) } = {}) {
+  const out = projection === 'organic' ? organicLayout(tree, projectId, houses) : siteLayout(tree, projectId, site ?? resolveSite(tree), houses);
   const [x0, y0, x1, y1] = out.land.map(bounds).reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])]);
   out.world = { x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0 };
   return out;
@@ -47,25 +48,29 @@ function describe(poly) {
   return { poly, area, size, bbox: bounds(poly), label: [p[0], p[1]], labelR: p.distance };
 }
 
-/** Lay out a subtree inside poly; split(n, kids, weights, poly) divides a parent among its children. */
-function placeTree(geo, n, poly, split) {
+/**
+ * Lay out a subtree inside poly; split(n, kids, weights, poly) divides a parent among its lots: its child issues and its
+ * behaviours' houses (lotsOf in houses.js). A block's lots stand in rows along streets (MARK-16).
+ */
+function placeTree(geo, n, poly, split, houses) {
   const g = describe(poly);
   geo.set(n.id, g);
-  const kids = n.children;
-  if (!kids.length) return;
-  // A big issue with few houses keeps its unbuilt scope as open land beside them: a park, its own cell of the lot (MARK-18).
+  const { lots, block } = lotsOf(n, houses);
+  if (!lots.length) return;
+  // Scope the houses don't fill yet is open land among them: a park, its own lot at the end of the rows (MARK-18).
   const park = n.stats.open > 0 ? { id: parkId(n), children: [] } : null;
-  if (kids.length === 1 && !park) {
-    placeTree(geo, kids[0], scalePolygon(poly, g.label, 0.78), split);
+  if (lots.length === 1 && !park && !lots[0].issue) {
+    placeTree(geo, lots[0], scalePolygon(poly, g.label, 0.78), split, houses);
     return;
   }
-  const all = park ? [...kids, park] : kids;
-  const weights = [...kids.map(weightOf), ...(park ? [Math.pow(n.stats.open, DAMPING)] : [])];
-  // An issue whose children are mostly houses is a residential block: its lots stand in rows along streets (MARK-16).
-  const block = !NOT_BLOCKS.has(n.kind) && !n.tags?.includes('code') && kids.filter(isHouse).length * 2 >= kids.length;
+  const all = park ? [...lots, park] : lots;
+  const weights = [...lots.map(lotWeight), ...(park ? [Math.pow(n.stats.open, DAMPING)] : [])];
   const polys = (block ? streetRows(poly, weights) : split(n, all, weights, poly)) ?? splitByWeights(poly, weights);
-  kids.forEach((k, i) => placeTree(geo, k, ensureOrientation(polys[i]), split));
-  if (park) geo.set(park.id, describe(ensureOrientation(polys[kids.length])));
+  lots.forEach((c, i) => {
+    if (c.issue) geo.set(c.id, describe(ensureOrientation(polys[i])));
+    else placeTree(geo, c, ensureOrientation(polys[i]), split, houses);
+  });
+  if (park) geo.set(park.id, describe(ensureOrientation(polys[lots.length])));
 }
 
 /** Bend every outline with one smooth warp so straight cuts read as borders and coasts. */
@@ -99,7 +104,7 @@ const SHAPES = {
 };
 const SHARED_CAPTION = { web: 'On screen', backoffice: 'Behind the screen' };
 
-function siteLayout(tree, projectId, site) {
+function siteLayout(tree, projectId, site, houses) {
   const geo = new Map();
   const root = tree.root;
 
@@ -165,13 +170,13 @@ function siteLayout(tree, projectId, site) {
     land.push(poly);
     const mid = c.x + 500 + c.w / 2;
     notes.push({ text: c.own ? c.own.title : SHARED_CAPTION[c.surface], at: [mid, c.y + dy - gap * 0.5], below: [mid, c.y + dy + c.h + gap * 0.5], w: c.w, own: Boolean(c.own) });
-    if (c.own) placeTree(geo, c.own, poly, split);
-    else if (c.kids.length === 1) placeTree(geo, c.kids[0], poly, split);
+    if (c.own) placeTree(geo, c.own, poly, split, houses);
+    else if (c.kids.length === 1) placeTree(geo, c.kids[0], poly, split, houses);
     else if (c.kids.length) {
       const weights = c.kids.map(weightOf);
       const places = c.surface === 'backoffice' ? c.kids.map(() => 'center') : c.kids.map((k) => site.places.get(k.id));
       const polys = anchoredCells(anchorsFor(places, poly, `${root.id}:${c.surface}`), weights, poly) ?? splitByWeights(poly, weights);
-      c.kids.forEach((k, i) => placeTree(geo, k, ensureOrientation(polys[i]), split));
+      c.kids.forEach((k, i) => placeTree(geo, k, ensureOrientation(polys[i]), split, houses));
     }
   }
 
@@ -274,12 +279,12 @@ function limitWeights(sites) {
 const ISLAND = { cx: 500, cy: 500, r: 470 };
 const sitesByProject = new Map();
 
-function organicLayout(tree, projectId) {
+function organicLayout(tree, projectId, houses) {
   const sites = sitesByProject.get(projectId) ?? new Map();
   sitesByProject.set(projectId, sites);
   const geo = new Map();
   const rootPoly = ensureOrientation(circle(ISLAND.cx, ISLAND.cy, ISLAND.r, 128));
-  placeTree(geo, tree.root, rootPoly, (n, kids, weights, poly) => voronoi(kids, weights, poly, n.id, sites));
+  placeTree(geo, tree.root, rootPoly, (n, kids, weights, poly) => voronoi(kids, weights, poly, n.id, sites), houses);
   // Bend every border with the same smooth warp so the map reads as terrain, not a diagram.
   const warp = makeWarp(ISLAND.cx, ISLAND.cy, hashString(projectId ?? 'map'));
   warpAll(geo, [], [], warp);

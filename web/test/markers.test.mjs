@@ -3,6 +3,7 @@ import { hsl, polygonContains } from 'd3';
 import assert from 'node:assert/strict';
 import { demoProject } from '../../api/seed.mjs';
 import { buildTree } from '../src/model/tree.js';
+import { itemKeyOf } from '@shared/issue-shape.js';
 import { LADDER, holdingsOf, housesOf, labelFor, markersOf, symbolsInUse } from '../src/map/labels.js';
 import { buildScene } from '../src/map/scene.js';
 import { fitScale, hitTest, overviewView, markerAt, nameFromOf, namesAt, namesOnScreen, placeInView, thresholds } from '../src/map/renderer.js';
@@ -10,7 +11,7 @@ import { pathOf } from '../src/model/tree.js';
 import { rectsOverlap } from '../src/map/geometry.js';
 import { placeNames } from '../src/map/names.js';
 import { lotsAt } from '../src/map/lots.js';
-import { HOUSE, claimsByNode, housesAt, isHouse } from '../src/map/houses.js';
+import { HOUSE, claimsByNode, houseId, housesAt, isHouse, openedBy } from '../src/map/houses.js';
 import { LENSES } from '../src/map/lenses.js';
 
 const root = { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' };
@@ -167,14 +168,17 @@ test('MARK-10 zooming in adds one layer of detail at a time: there, kind, name, 
 // Text measured as if every letter were 6.5px wide: enough to know where names would collide.
 const measuring = { font: '', measureText: (t) => ({ width: String(t).length * 6.5 }) };
 const namesOn = (scene, view, opts = {}) => namesOnScreen(measuring, scene, view, { theme: LENSES[0].theme, ...opts });
-// A town of districts of streets of houses, four levels below the project: one long street, and one house has an open question.
+// A town of districts of streets of houses (behaviours), four levels below the project: one long street, and a street of
+// issues where one has an open question.
 const town = () => [
   root,
   item('town', 'root', { kind: 'area' }),
   item('elsewhere', 'root', { kind: 'area' }),
   ...['north', 'south', 'east'].map((d) => item(d, 'town', { kind: 'epic' })),
-  ...['high', 'mill', 'church'].map((st) => item(st, 'north', { kind: 'feature' })),
-  ...['high', 'mill', 'church'].flatMap((st) => Array.from({ length: st === 'church' ? 30 : 6 }, (_, i) => item(`${st}${i}`, st, { title: `${st} street ${i + 1}`, ...(st === 'mill' && i === 2 ? { body: `${CLEAR.body}\n\n## Open questions\n- Which door?` } : {}) }))),
+  item('high', 'north', { kind: 'feature', body: behaviours('HIGH', range(1, 8)) }),
+  item('church', 'north', { kind: 'feature', body: behaviours('CHURCH', range(1, 30)) }),
+  item('mill', 'north', { kind: 'feature' }),
+  ...Array.from({ length: 6 }, (_, i) => item(`mill${i}`, 'mill', { title: `mill street ${i + 1}`, ...(i === 2 ? { body: `${CLEAR.body}\n\n## Open questions\n- Which door?` } : {}) })),
   ...['south', 'east', 'elsewhere'].flatMap((p) => Array.from({ length: 3 }, (_, i) => item(`${p}${i}`, p))),
 ];
 const W13 = 1200, H13 = 800;
@@ -336,17 +340,18 @@ test('MARK-15 an item whose outline can be read is its own lot, apart from its s
   }
 });
 
-// A neighbourhood: a street of houses, a big issue with only two houses so far (a park), and code land.
-const behaviours = (prefix, count) => `${CLEAR.body}\n\n## Behaviours\n\n${Array.from({ length: count }, (_, i) => `- ${prefix}-${String(i + 1).padStart(2, '0')} Given this, when that, then the other.`).join('\n')}`;
-const neighbourhood = ({ big = 0, parkKids = 2, busy = 0 } = {}) => [
+// A street like #15: an issue with nineteen behaviours, one of them grown into a child issue of its own when `split`; a
+// small child issue with three; a plain issue with none; and a big issue (`big`) with only a few behaviours so far.
+const behaviours = (prefix, ids) => `${CLEAR.body}\n\n## Behaviours\n\n${ids.map((i) => `- ${prefix}-${String(i).padStart(2, '0')} Given this, when that, then note ${i} is kept.`).join('\n')}`;
+const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+const street = ({ split = false, big = 2 } = {}) => [
   root,
-  item('street', 'root', { kind: 'feature' }),
-  ...['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((id) => item(id, 'street', id === 'b' && big ? { body: behaviours('BIG', big) } : {})),
-  item('code', 'street', { kind: 'task', tags: ['code'] }),
-  item('park', 'root', { kind: 'feature', body: behaviours('PARK', busy || 20) }),
-  ...Array.from({ length: parkKids }, (_, i) => item(`p${i}`, 'park')),
+  item('comments', 'root', { kind: 'feature', body: behaviours('NOTE', range(1, 19).filter((i) => !split || i !== 7)) }),
+  ...(split ? [item('n7', 'comments', { title: 'Note seven, grown', body: behaviours('NOTE', [7, 20, 21]) })] : []),
+  item('threads', 'root', { kind: 'feature', body: behaviours('THR', [1, 2]) }),
+  item('replies', 'threads', { body: behaviours('REP', [1, 2, 3]) }),
   item('plain', 'root', { kind: 'feature' }),
-  ...Array.from({ length: 2 }, (_, i) => item(`q${i}`, 'plain')),
+  item('big', 'root', { kind: 'feature', body: big ? behaviours('BIG', range(1, big)) : CLEAR.body }),
 ];
 const viewOn = (scene, id, k) => {
   const [x0, y0, x1, y1] = scene.geo.get(id).bbox;
@@ -354,74 +359,101 @@ const viewOn = (scene, id, k) => {
 };
 const housesIn = (scene, view, live) => housesAt(lotsAt(scene, view, { lens: LENSES[0], T: thresholds(1200, 800) }).grounds, { k: view.k, live });
 const inside = (poly, pts) => pts.every((p) => polygonContains(poly, p));
+// Close enough to read a block's houses, with all of the block on screen.
+const onStreet = (scene, id) => {
+  const [x0, y0, x1, y1] = scene.geo.get(id).bbox;
+  return viewOn(scene, id, Math.min(1100 / scene.geo.get(id).size, 1100 / (x1 - x0), 760 / (y1 - y0)));
+};
 
-test('MARK-16 zoomed in, an issue that is work is a house: a footprint on its own lot, in rows along a street, growing with what it holds', () => {
-  const scene = buildScene(neighbourhood(), 'houses', null, 'organic');
-  const near = viewOn(scene, 'street', 1200 / scene.geo.get('street').size);
-  const houses = housesIn(scene, near);
-  const ids = houses.map((h) => h.n.id).sort();
-  assert.deepEqual(ids.filter((id) => 'abcdefgh'.includes(id)), [...'abcdefgh'], 'every task on the street is a house');
-  assert.ok(!ids.includes('street') && !ids.includes('code'), 'a parent is a block, not a house; code land is not work');
-  // In rows along a street: the houses stand on a few lines across the block, several to a line, not scattered.
-  const street = houses.filter((x) => 'abcdefgh'.includes(x.n.id));
-  const [bx0, by0, bx1, by1] = scene.geo.get('street').bbox;
-  const wide = bx1 - bx0 >= by1 - by0;
-  const across = (h) => (wide ? h.g.label[1] : h.g.label[0]);
-  const rows = [];
-  for (const h of [...street].sort((a, b) => across(a) - across(b))) {
-    const row = rows.at(-1);
-    if (row && across(h) - across(row[0]) < 0.08 * (wide ? by1 - by0 : bx1 - bx0)) row.push(h);
-    else rows.push([h]);
+test('MARK-16 an issue is a block, and each of its behaviours is a house on its own lot in street rows, named by its ID; choosing one opens it', () => {
+  const scene = buildScene(street(), 'street', null, 'organic');
+  const near = onStreet(scene, 'comments');
+  const houses = housesIn(scene, near).filter((h) => h.n.issue?.id === 'comments');
+  assert.deepEqual(houses.map((h) => h.n.behaviour).sort(), range(1, 19).map((i) => `NOTE-${String(i).padStart(2, '0')}`), 'nineteen behaviours: a street of nineteen houses');
+  const block = scene.geo.get('comments').poly;
+  for (const h of houses) {
+    assert.ok(polygonContains(block, h.g.label), `${h.n.behaviour}'s lot is in its issue's block`);
+    assert.ok(inside(h.g.poly, h.corners), `${h.n.behaviour}'s house stands on its own lot`);
   }
-  assert.ok(rows.length >= 2 && rows.length <= 4 && rows.every((r) => r.length >= 2), `${street.length} houses in ${rows.length} rows of ${rows.map((r) => r.length).join(', ')}`);
-  for (const h of street) {
-    assert.ok(inside(h.g.poly, h.corners), `${h.n.id}'s house stands on its own lot`);
-    assert.ok(h.area < 0.6 * h.g.area, `${h.n.id}'s house doesn't fill its lot`);
-    const [[x0, y0], , [x1, y1]] = h.corners;
-    assert.ok(x1 - x0 > y1 - y0, `${h.n.id} faces the street like its neighbours`);
-  }
-  // Zoomed out, the houses aren't there yet: their lots are too small to hold one that can be read.
-  const far = { x: 600 - scene.world.cx * 0.05, y: 400 - scene.world.cy * 0.05, k: 0.05, width: 1200, height: 800 };
-  assert.equal(housesIn(scene, far).length, 0);
-  // The same lot with more to hold has a bigger house.
-  const bigger = buildScene(neighbourhood({ big: 12 }), 'houses', null, 'organic');
-  const area = (s, id) => housesIn(s, viewOn(s, 'street', near.k)).find((h) => h.n.id === id).area;
-  assert.ok(area(bigger, 'b') > 1.3 * area(scene, 'b'), 'twelve behaviours make a bigger house');
+  // In street rows: one behaviour's house stands beside the next, in ID order along each row, apart from the row ends.
+  const lots = [...houses].sort((a, b) => a.n.behaviour.localeCompare(b.n.behaviour)).map((h) => h.g);
+  const beside = lots.slice(1).filter((g, i) => Math.hypot(g.label[0] - lots[i].label[0], g.label[1] - lots[i].label[1]) < 1.4 * Math.max(g.size, lots[i].size)).length;
+  assert.ok(beside >= 10, `houses in rows, each beside the next (${beside} of 18)`);
+  // Named by its ID, and its words where there is room.
+  const named = namesOn(scene, near).filter((l) => l.n.issue?.id === 'comments' && l.named && l.alpha > 0.5);
+  assert.ok(named.length >= 5, `the houses are named (${named.length})`);
+  assert.ok(named.every((l) => l.n.title.startsWith(`${l.n.behaviour} `)), 'each by its behaviour ID, then its words');
+  // A child issue is a block within its parent's block, holding its own behaviours' houses.
+  const nested = housesIn(scene, onStreet(scene, 'threads'));
+  assert.equal(nested.filter((h) => h.n.issue?.id === 'replies').length, 3);
+  assert.ok(nested.filter((h) => h.n.issue?.id === 'replies').every((h) => polygonContains(scene.geo.get('replies').poly, h.g.label)), "the child's houses are on the child's block");
+  assert.ok(polygonContains(scene.geo.get('threads').poly, scene.geo.get('replies').label), "inside its parent's block");
+  // An issue is never a house itself; one with no behaviours is an empty lot.
+  assert.ok(!isHouse(scene.tree.byId.get('replies')) && !isHouse(scene.tree.byId.get('plain')));
+  assert.equal(housesIn(scene, onStreet(scene, 'plain')).filter((h) => h.n.issue?.id === 'plain').length, 0);
+  // Choosing a house opens its issue at that behaviour.
+  const seven = houses.find((h) => h.n.behaviour === 'NOTE-07');
+  const at = [seven.g.label[0] * near.k + near.x, seven.g.label[1] * near.k + near.y];
+  assert.deepEqual(openedBy(hitTest(scene, near, { labels: [] }, ...at)), { id: 'comments', behaviour: 'NOTE-07' });
+  assert.deepEqual(openedBy('comments'), { id: 'comments', behaviour: null }, 'anything else opens as itself');
 });
 
-test('MARK-17 a house being coded has a bulldozer on its lot, and the bulldozer leaves when the claim ends', () => {
-  const scene = buildScene(neighbourhood(), 'houses', null, 'organic');
+test('MARK-17 the house of the behaviour being coded has a bulldozer on its lot, and the bulldozer leaves when the claim ends', () => {
+  const scene = buildScene(street(), 'street', null, 'organic');
+  const comments = scene.tree.byId.get('comments');
   const now = Date.parse('2026-11-16T12:00:00Z');
-  const claim = (item, owner, until) => ({ behaviour: `X-${owner}`, item, owner, until });
-  const claims = [claim('node-a', 'ag1', '2026-11-16T14:00:00Z'), claim('node-a', 'ag1', '2026-11-16T14:00:00Z'), claim('node-c', 'ag2', '2026-11-16T11:00:00Z')];
+  const claim = (behaviour, owner, until) => ({ behaviour, item: itemKeyOf(comments), owner, until });
+  const claims = [claim('NOTE-04', 'ag1', '2026-11-16T14:00:00Z'), claim('NOTE-11', 'ag2', '2026-11-16T11:00:00Z')];
   const agents = claimsByNode(claims, scene.tree, now);
-  assert.deepEqual([...agents], [['a', 1]], "one agent at work on a; c's claim has ended");
-  const view = viewOn(scene, 'street', 1200 / scene.geo.get('street').size);
+  assert.equal(agents.get('comments'), 1, 'one agent at work on the issue');
+  const view = onStreet(scene, 'comments');
   const houses = housesIn(scene, view, { agents });
-  const a = houses.find((h) => h.n.id === 'a');
-  assert.ok(a.bulldozer && polygonContains(a.g.poly, a.bulldozer), 'the bulldozer is on its lot');
-  assert.ok(!polygonContains(a.corners, a.bulldozer), 'beside the house, not on it');
-  assert.deepEqual(houses.filter((h) => h.bulldozer).map((h) => h.n.id), ['a'], 'no other house is being coded');
+  assert.deepEqual(houses.filter((h) => h.bulldozer).map((h) => h.n.behaviour), ['NOTE-04'], "on the claimed behaviour's house only; NOTE-11's claim has ended");
+  const four = houses.find((h) => h.bulldozer);
+  assert.ok(polygonContains(four.g.poly, four.bulldozer), 'the bulldozer is on its lot');
+  assert.ok(!polygonContains(four.corners, four.bulldozer), 'beside the house, not on it');
   const later = claimsByNode(claims, scene.tree, Date.parse('2026-11-16T15:00:00Z'));
   assert.equal(housesIn(scene, view, { agents: later }).filter((h) => h.bulldozer).length, 0, 'gone when the claim ends');
 });
 
-test('MARK-18 a big issue with only a few houses is a park: open green land beside them, filling with houses as children are added', () => {
+test("MARK-18 a block's size is its issue's scope: with few behaviours it is mostly park, and houses fill the green as behaviours are added", () => {
   const T = thresholds(1200, 800);
-  const parkOf = (scene, lens = LENSES[0]) => lotsAt(scene, viewOn(scene, 'park', 1000 / scene.geo.get('park').size), { lens, T }).parks.find((p) => p.of.id === 'park');
-  const scene = buildScene(neighbourhood(), 'houses', null, 'organic');
-  const park = parkOf(scene);
-  assert.ok(park, 'twenty behaviours and two houses: mostly open land');
-  assert.ok(park.g.area > 0.5 * scene.geo.get('park').area, 'the green is most of the lot');
-  assert.ok(scene.geo.get('park').area > 2 * scene.geo.get('plain').area, "the lot's size shows how big the issue is");
+  const parkOf = (scene, lens = LENSES[0]) => lotsAt(scene, onStreet(scene, 'big'), { lens, T }).parks.find((p) => p.of.id === 'big');
+  const share = (s) => (parkOf(s)?.g.area ?? 0) / s.geo.get('big').area;
+  const scene = buildScene(street(), 'street', null, 'organic');
+  assert.ok(share(scene) > 0.5, `two behaviours on a big issue: mostly open green (${share(scene).toFixed(2)})`);
+  assert.equal(housesIn(scene, onStreet(scene, 'big')).filter((h) => h.n.issue?.id === 'big').length, 2, 'with its two houses on it');
+  const size = (s) => s.geo.get('big').area / s.geo.get('plain').area;
+  assert.ok(Math.abs(size(scene) - 1) < 0.25, `its size is its scope, not its houses: as big as a plain issue of its kind (${size(scene).toFixed(2)})`);
   // Park green in every lens, whatever colour the lens gives the land.
   const greens = new Set(LENSES.filter((l) => !l.theme.dark).map((l) => parkOf(scene, l).ground));
   assert.equal(greens.size, 1);
   assert.ok(hsl([...greens][0]).h > 90 && hsl([...greens][0]).h < 150, 'green');
-  // As children are added, houses fill the green.
-  const filling = buildScene(neighbourhood({ parkKids: 10 }), 'houses', null, 'organic');
-  const share = (s) => (parkOf(s)?.g.area ?? 0) / s.geo.get('park').area;
-  assert.ok(share(filling) < share(scene), `ten houses leave less green (${share(filling).toFixed(2)}) than two (${share(scene).toFixed(2)})`);
-  assert.equal(parkOf(buildScene(neighbourhood({ parkKids: 20 }), 'houses', null, 'organic')), undefined, 'built out: no park left');
-  assert.equal(parkOf(buildScene(neighbourhood({ busy: 2 }), 'houses', null, 'organic')), undefined, 'a small issue with its houses has no park');
+  // As behaviours are added, houses fill the green; once they outgrow the scope the block grows with them.
+  const four = buildScene(street({ big: 4 }), 'street', null, 'organic');
+  assert.ok(share(four) < share(scene), `four houses leave less green (${share(four).toFixed(2)}) than two`);
+  const built = buildScene(street({ big: 12 }), 'street', null, 'organic');
+  assert.equal(parkOf(built), undefined, 'built out: no park left');
+  assert.ok(size(built) > 1.3, 'and the block grows with its houses');
+  // Behaviours are houses, never land: the park is the only open land, and every behaviour has a house.
+  assert.equal(housesIn(built, onStreet(built, 'big')).filter((h) => h.n.issue?.id === 'big').length, 12);
+});
+
+test('MARK-20 a behaviour that grows into its own issue becomes that issue\'s block where its house stood, with its behaviours as houses', () => {
+  const before = buildScene(street(), 'street', null, 'organic');
+  const after = buildScene(street({ split: true }), 'street', null, 'organic');
+  // Where in its block a point is, as a share of the block's extent, so the comparison holds wherever the block itself moved.
+  const share = (scene, [px, py]) => {
+    const [x0, y0, x1, y1] = scene.geo.get('comments').bbox;
+    return [(px - x0) / (x1 - x0), (py - y0) / (y1 - y0)];
+  };
+  const back = (scene, [u, v]) => {
+    const [x0, y0, x1, y1] = scene.geo.get('comments').bbox;
+    return [x0 + u * (x1 - x0), y0 + v * (y1 - y0)];
+  };
+  const stood = share(before, before.geo.get(houseId(before.tree.byId.get('comments'), 'NOTE-07')).label);
+  assert.ok(polygonContains(after.geo.get('n7').poly, back(after, stood)), 'the new block stands where the house stood');
+  const grown = housesIn(after, onStreet(after, 'n7')).filter((h) => h.n.issue?.id === 'n7');
+  assert.deepEqual(grown.map((h) => h.n.behaviour).sort(), ['NOTE-07', 'NOTE-20', 'NOTE-21'], 'its behaviours are its houses, NOTE-07 among them');
+  assert.ok(!housesIn(after, onStreet(after, 'comments')).some((h) => h.n.issue?.id === 'comments' && h.n.behaviour === 'NOTE-07'), 'and the old house is gone');
 });

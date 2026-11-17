@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
@@ -242,8 +242,29 @@ function Refinement({ cs, item, node, editing }) {
  * properties change in place (EDIT-11), and comments sit on what they are about. The panel only ever holds this
  * one item (EDIT-13); its edits wait in the project's changeset when another is picked.
  */
-export function Details({ node, tree, lens, comments = [], editing, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const docRef = useRef(null);
+  // Opened from a behaviour's house on the map (#46 MARK-16): show that behaviour, once the document has rendered it.
+  useEffect(() => {
+    if (!atBehaviour) return undefined;
+    let tries = 0, frame = 0, timer = 0;
+    const look = () => {
+      const row = [...(docRef.current?.querySelectorAll('li, p') ?? [])].find((el) => el.textContent.trim().startsWith(atBehaviour));
+      if (!row) {
+        if (++tries < 60) frame = requestAnimationFrame(look);
+        return;
+      }
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      row.classList.add('at-behaviour');
+      timer = setTimeout(() => row.classList.remove('at-behaviour'), 2400);
+    };
+    look();
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+    };
+  }, [atBehaviour, node.id]);
   const s = node.stats;
   const key = itemKeyOf(node);
   const issue = issueOf(node);
@@ -353,7 +374,7 @@ export function Details({ node, tree, lens, comments = [], editing, commenting =
       {proposals.map(({ cs, item }) => (
         <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} />
       ))}
-      <div className="doc" onFocusCapture={onDocFocus}>
+      <div className="doc" ref={docRef} onFocusCapture={onDocFocus}>
         {editable ? (
           <Suspense fallback={readOnly}>
             <IssueForm

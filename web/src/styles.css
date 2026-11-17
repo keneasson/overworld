@@ -2517,3 +2517,10 @@ button.danger.armed {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* A behaviour opened from its house on the map (#46 MARK-16): marked for a moment where it stands in its issue. */
+.doc .at-behaviour {
+  background: color-mix(in srgb, var(--accent, #1a73e8) 16%, transparent);
+  border-radius: 6px;
+  transition: background 0.6s ease;
+}

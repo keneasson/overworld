@@ -109,6 +109,7 @@ export const streetOf = (parentSize) => Math.min(7, Math.max(1.5, parentSize * 0
  */
 export function lotsAt(scene, view, { lens, T }) {
   const { tree, geo } = scene;
+  const kidsOf = scene.kidsOf ?? ((n) => n.children);
   const { x, y, k, width: W, height: H } = view;
   const vp = [-x / k, -y / k, (W - x) / k, (H - y) / k];
   const inView = (bb) => bb[2] >= vp[0] && bb[0] <= vp[2] && bb[3] >= vp[1] && bb[1] <= vp[3];
@@ -119,16 +120,17 @@ export function lotsAt(scene, view, { lens, T }) {
     const g = geo.get(n.id);
     if (!inView(g.bbox)) return;
     const s = g.size * k;
-    const sub = n.children.length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
+    const sub = kidsOf(n).length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
     if (alpha > 0.01) grounds.push({ n, g, s, alpha, ground, here: alpha * (1 - sub) });
     if (sub <= 0.01) return;
     const lots = [];
-    for (const c of n.children) {
+    for (const c of kidsOf(n)) {
       const before = grounds.length;
-      walk(c, sub, shaded(lens.fill(c, tree), shadeOf(geo, c)));
+      // A behaviour's house stands on its block's own ground (MARK-16); a child issue is land of its own.
+      walk(c, sub, c.issue ? ground : shaded(lens.fill(c, tree), shadeOf(geo, c)));
       if (grounds.length > before) lots.push(grounds[before]);
     }
-    // A big issue's unbuilt scope is open land beside its houses: a park (MARK-18).
+    // An issue's scope its houses don't fill yet is open land among them: a park (MARK-18).
     const pg = geo.get(parkId(n));
     const park = pg && inView(pg.bbox) ? { g: pg, alpha: sub, ground: lens.theme.dark ? PARK.dark : PARK.light } : null;
     if (park) parks.push({ ...park, of: n, edge: edgeOf(park.ground, lens.theme.dark) });
