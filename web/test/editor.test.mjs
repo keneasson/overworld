@@ -143,6 +143,17 @@ test('EDIT-20 an empty section shows its hint, and only while nothing is written
   assert.equal(hintAt(state.doc, line, behaviours.offset), '');
 });
 
+test('EDIT-22 a new item\'s title is a placeholder: it opens empty, waiting, and a title left empty saves as the one it stands in for', async () => {
+  const { titleShown, titleToSave } = await import('../src/editor/title.js');
+  assert.equal(titleShown('New task', 'New task'), '', 'opens empty, with "New task" shown faintly');
+  assert.equal(titleToSave('', 'New task'), 'New task', 'abandoned empty, it is still "New task"');
+  assert.equal(titleToSave('  ', 'New task'), 'New task');
+  assert.equal(titleToSave('Refund to the card', 'New task'), 'Refund to the card');
+  assert.equal(titleShown('Refund to the card', 'New task'), 'Refund to the card', 'once titled, it shows its title');
+  assert.equal(titleShown('Card tokens', null), 'Card tokens', 'an item with a title opens with it');
+  assert.equal(titleToSave('', 'Card tokens'), 'Card tokens', 'a title cleared and left empty comes back');
+});
+
 test('EDIT-22 a new item takes the first of its parent\'s places, not all of them', () => {
   const parent = 'Kind: Epic · Place: the area editor (`web/src/editor`), the changeset API and sync (#3)';
   assert.equal(placeOf(newItemMarkdown({ kind: 'task', partOf: '#26', place: placeOf(parent) })), 'the area editor (`web/src/editor`)');

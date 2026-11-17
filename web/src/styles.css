@@ -2129,6 +2129,11 @@ button.danger.armed {
 .issue-doc.commenting .issue-doc-text {
   cursor: cell;
 }
+/* A new item's "New task" is a placeholder, waiting for a title (EDIT-22). */
+.issue-doc-title::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
 .issue-doc.commenting .issue-doc-title {
   cursor: default;
 }
