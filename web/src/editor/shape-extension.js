@@ -3,8 +3,8 @@
 // at the end of a behaviour starts the next one with its ID, and each annotation (#15) is a marker with its
 // author's initials at the words it is about, which stay highlighted (NOTE-13). Nothing here ever blocks typing.
 // A section's heading holds only its name (EDIT-16): every section has a line to type on, and words typed, pasted or
-// Entered into a shape heading go to that line instead. A heading the shape doesn't have carries a small marker that makes
-// it text again (EDIT-19), and an empty section shows its hint until anything is written there (EDIT-20).
+// Entered into a shape heading go to that line instead. A section heading the shape doesn't have can't be made: one typed
+// becomes a sub-heading of the section it's in (EDIT-19), and an empty section shows its hint until anything is written there (EDIT-20).
 
 import { Extension } from '@tiptap/core';
 import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
@@ -66,33 +66,6 @@ function notes(doc, { threads, active, onThread }) {
   return out;
 }
 
-/** The small marker on a heading the shape doesn't have (EDIT-19): it says so, and pressing it makes the heading text. */
-function strayMark(headingPos) {
-  return (view) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.contentEditable = 'false';
-    b.className = 'stray-mark';
-    b.textContent = '¶';
-    b.title = 'Not a section of this item: press to make it text';
-    b.setAttribute('aria-label', 'Not a section of this item. Make it text');
-    b.addEventListener('mousedown', (e) => e.preventDefault());
-    b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const tr = textAgain(view.state, headingPos);
-      if (tr) view.dispatch(tr);
-    });
-    return b;
-  };
-}
-
-/** Makes the heading at `pos` a paragraph of its section, if it is a heading the shape doesn't have (EDIT-19). */
-export function textAgain(state, pos) {
-  const node = state.doc.nodeAt(pos);
-  if (!isSection(node) || inShape(node)) return null;
-  return state.tr.setNodeMarkup(pos, state.schema.nodes.paragraph);
-}
-
 export const HINTS = {
   Why: 'The problem, for whom, and why now.',
   Behaviours: 'AREA-01 Given …, when …, then …',
@@ -119,10 +92,6 @@ function decorate(doc, opts) {
   doc.forEach((node, offset) => {
     if (node.type.name === 'heading' && node.attrs.level === 2) {
       section = canonical(node.textContent.trim());
-      if (!SECTIONS.includes(section)) {
-        out.push(Decoration.node(offset, offset + node.nodeSize, { class: 'off-shape' }));
-        out.push(Decoration.widget(offset + node.nodeSize - 1, strayMark(offset), { side: 1, key: `stray:${offset}`, ignoreSelection: true, stopEvent: () => true }));
-      }
       if (section === 'Open questions') questions = [offset, offset + node.nodeSize];
       return;
     }
@@ -149,6 +118,26 @@ function decorate(doc, opts) {
 
 const isSection = (node) => node?.type.name === 'heading' && node.attrs.level === 2;
 const inShape = (node) => isSection(node) && SECTIONS.includes(canonical(node.textContent.trim()));
+
+const sectionCount = (doc) => {
+  let n = 0;
+  doc.forEach((node) => isSection(node) && n++);
+  return n;
+};
+
+/**
+ * A section heading the shape doesn't have, just made ("## " typed, or pasted), becomes a sub-heading of the section it is in, so
+ * the shape can't be broken (EDIT-19). Only a heading that is new is changed, never one already there. Null when there is nothing to do.
+ */
+export function noStraySections(before, state) {
+  if (sectionCount(state.doc) <= sectionCount(before.doc)) return null;
+  const at = [];
+  state.doc.forEach((node, offset) => isSection(node) && !inShape(node) && at.push(offset));
+  if (!at.length) return null;
+  const tr = state.tr;
+  for (const pos of at) tr.setNodeMarkup(pos, null, { ...state.doc.nodeAt(pos).attrs, level: 3 });
+  return tr;
+}
 
 /** Each section with nothing under it gets an empty line to type on; null when every section has one (EDIT-16). */
 export function withBodies(state) {
@@ -188,7 +177,15 @@ function headingAt(state, shapeOnly) {
 /** Keeps a section's words out of its heading (EDIT-16). */
 export function sectionBodies() {
   return new Plugin({
-    appendTransaction: (trs, _, state) => (trs.some((t) => t.docChanged) ? withBodies(state) : null),
+    appendTransaction: (trs, before, state) => {
+      if (!trs.some((t) => t.docChanged)) return null;
+      const fixed = noStraySections(before, state);
+      const next = fixed ? state.apply(fixed) : state;
+      const bodies = withBodies(next);
+      if (!fixed) return bodies;
+      if (bodies) bodies.steps.forEach((step) => fixed.step(step));
+      return fixed;
+    },
     props: {
       handleTextInput(view, from, to, text) {
         const at = headingAt(view.state, true);

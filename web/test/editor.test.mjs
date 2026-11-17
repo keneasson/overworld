@@ -4,10 +4,10 @@ import { getSchema } from '@tiptap/core';
 import { MarkdownManager } from '@tiptap/markdown';
 import { EditorState, TextSelection } from '@tiptap/pm/state';
 import { liftListItem, sinkListItem } from '@tiptap/pm/schema-list';
-import { firstPlace, isWellFormed, newItemMarkdown, parseIssue, placeOf, sectionText } from '@shared/issue-shape.js';
+import { editableOf, firstPlace, isWellFormed, itemKeyOf, newItemMarkdown, parseIssue, placeOf, sectionText } from '@shared/issue-shape.js';
 import { EXTENSIONS, parseMarkdown, throughEditor } from '../src/editor/rich-text.js';
 import { fromDocument, toDocument } from '../src/editor/document.js';
-import { hintAt, openWithBodies, sectionBodies, textAgain } from '../src/editor/shape-extension.js';
+import { hintAt, openWithBodies, sectionBodies } from '../src/editor/shape-extension.js';
 import { commentHtml } from '../src/editor/comment-text.js';
 import { linkAt } from '../src/editor/issue-links.js';
 import { backOf, followLink, linkTarget } from '../src/model/links.js';
@@ -118,17 +118,16 @@ test('EDIT-18 words saved as headings open as the text of their section; opening
   assert.match(saved.head, /^Part of #26\nKind: Task · Place: web/);
 });
 
-test('EDIT-19 a heading typed outside the shape is text again at a press of its marker', () => {
+test('EDIT-19 a section heading the shape does not have cannot be made: typed, it becomes a sub-heading of its section', () => {
   const doc = open(toDocument('## Why\n\nBecause.\n\n## Acceptance\n'));
-  const state = doc.view.state;
   let pos = null;
-  state.doc.forEach((n, offset) => n.textContent === 'Because.' && (pos = offset));
-  doc.view.dispatch(state.tr.setNodeMarkup(pos, schema.nodes.heading, { level: 2 })); // "## " typed before it
-  assert.equal(textAgain(doc.view.state, 0), null, 'a section of the shape stays a heading');
   doc.view.state.doc.forEach((n, offset) => n.textContent === 'Because.' && (pos = offset));
-  doc.view.dispatch(textAgain(doc.view.state, pos));
-  assert.equal(markdownOf(doc.view.state).includes('## Because.'), false);
-  assert.equal(sectionText(parseIssue(markdownOf(doc.view.state)), 'Why'), 'Because.');
+  doc.view.dispatch(doc.view.state.tr.setNodeMarkup(pos, schema.nodes.heading, { level: 2 })); // "## " typed before it
+  const markdown = markdownOf(doc.view.state);
+  assert.doesNotMatch(markdown, /^## Because\./m, 'no section the shape does not have');
+  assert.match(markdown, /### Because\./);
+  assert.match(sectionText(parseIssue(markdown), 'Why'), /Because\./, 'still in its section');
+  assert.match(markdown, /## Acceptance/, 'the sections already there are left alone');
 });
 
 test('EDIT-20 an empty section shows its hint, and only while nothing is written there', () => {
@@ -221,4 +220,41 @@ test('EDIT-14 "#N" in an item\'s text, a child\'s summary or a comment is that i
   history.back();
   assert.equal(entries[i].url, '#n=e&v=1,2,3');
   assert.equal(backOf(history.state), null);
+});
+
+test('EDIT-24 one refused edit never blocks editing a new item: its refinement is kept, and a title being retyped waits', async () => {
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { createApi } = await import('../../api/app.mjs');
+  const { createModel } = await import('../../api/model/index.mjs');
+  const { readyToSave, refinementGone, yourChangeset } = await import('../src/model/changesets.js');
+  const model = await createModel({ DATA_FILE: join(await mkdtemp(join(tmpdir(), 'projectmap-')), 'db.json') });
+  const api = createApi({ model, accessKey: 'k', log: { error() {} } });
+  // What the app's request() does with a refusal: an error carrying its status and message.
+  const call = async (method, path, body) => {
+    const res = await api({ method, path, body, headers: { 'x-projectmap-key': 'k' } });
+    if (res.status >= 400) throw Object.assign(new Error(res.body?.error ?? ''), { status: res.status });
+    return res.body;
+  };
+  const pid = (await call('POST', '/api/projects', { title: 'Shop' })).project.id;
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { author: 'Ken' })).changeset;
+  const { node } = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/new`, { parentId: 'root', kind: 'task' });
+  const key = itemKeyOf(node);
+  const markdown = editableOf(node).markdown;
+
+  assert.equal(readyToSave({ title: '  ', markdown }), false, 'a title deleted to be retyped is not sent');
+  const refused = await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key, title: '', markdown }).catch((err) => err);
+  assert.equal(refused.status, 400);
+  assert.equal(refinementGone(refused), false, 'a refused edit keeps the refinement');
+  const done = await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key, title: 'Refund to the card', markdown });
+  assert.equal(done.node.title, 'Refund to the card', 'the next edit goes in');
+
+  // Someone stuck before this fix has an empty refinement of theirs opened after the refused edit: picking up again chooses the one holding their work.
+  await call('POST', `/api/projects/${pid}/changesets`, { author: 'Ken' });
+  const { changesets } = await call('GET', `/api/projects/${pid}/changesets`);
+  assert.equal(yourChangeset(changesets, 'Ken').id, cs.id);
+  const elsewhere = await call('PUT', `/api/projects/${pid}/changesets/${changesets.at(-1).id}/items`, { key, title: 'x', markdown }).catch((err) => err);
+  assert.equal(elsewhere.status, 409, 'a new item is only edited in its own refinement');
+  assert.equal(refinementGone(elsewhere), false);
 });

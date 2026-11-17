@@ -3,6 +3,7 @@ import { editableOf, itemKeyOf } from '@shared/issue-shape.js';
 import { isUnread } from '@shared/annotations.js';
 import { api, storage } from '../api.js';
 import { toSave } from '../model/sync.js';
+import { authorOf, readyToSave, refinementGone, yourChangeset } from '../model/changesets.js';
 
 const NAME = 'projectmap.name';
 const READ = 'projectmap.read'; // threads read without a name, remembered in this browser only (NOTE-03)
@@ -17,8 +18,6 @@ const SAVE_AFTER_MS = 700;
 const SYNC_POLL_MS = 2000; // while a save is on its way to GitHub
 const SYNC_POLL_TRIES = 20;
 const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
-// Who a changeset is by, as the API writes it: a person's name, or "Name (id)" for an agent.
-const authorOf = (name) => String(name ?? '').trim().slice(0, 80) || 'Someone';
 
 /**
  * Editing the project's items in the panel, one at a time (#41 EDIT-09, EDIT-13). Every edit goes into the
@@ -57,9 +56,9 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
         if (cancelled) return;
         // Yours is the open one you wrote; anyone else's is a refinement to look at and adopt or decline.
         const all = changesets.filter((c) => c.status === 'open');
-        const open = all.filter((c) => c.author === authorOf(storage.get(NAME))).at(-1) ?? null;
+        const open = yourChangeset(all, storage.get(NAME));
         setChangeset(open);
-        setOthers(all.filter((c) => c !== open));
+        setOthers(all.filter((c) => c !== open && !(c.author === authorOf(storage.get(NAME)) && !c.items.length))); // an empty one of yours is nobody's to adopt
         if (open) {
           csPromise.current = Promise.resolve(open);
           setDrafts(new Map(open.items.map((it) => [it.key, it.after])));
@@ -123,7 +122,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
   const save = useCallback(
     async (key) => {
       const after = pending.current.get(key);
-      if (!after) return;
+      if (!after || !readyToSave(after)) return; // a title being retyped waits until it has one again (EDIT-24)
       pending.current.delete(key);
       setSaving((n) => n + 1);
       try {
@@ -132,7 +131,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
         setChangeset(res.changeset);
         if (res.node) onAccepted([res.node]); // a new item changes on the map as it is written (NEW-03)
       } catch (err) {
-        csPromise.current = null;
+        // Only a refinement that is gone is replaced: a new item belongs to its own, and leaving it would block it (EDIT-24).
+        if (refinementGone(err)) csPromise.current = null;
         fail(err);
       } finally {
         setSaving((n) => n - 1);
