@@ -13,7 +13,7 @@ import { LIGHT_COLORS } from './lenses.js';
 import { LADDER, housesOf, labelFor, markersOf } from './labels.js';
 import { drawSymbol } from './symbols.js';
 import { lotsAt } from './lots.js';
-import { HOUSE, housesAt, isHouse } from './houses.js';
+import { HOUSE, housesAt, isHouse, lotsOf } from './houses.js';
 import { placeNames } from './names.js';
 import { rectsOverlap, smoothstep } from './geometry.js';
 
@@ -183,11 +183,29 @@ const houseSpots = new WeakMap();
  * Where a place's houses stand, in world coordinates: gathered round its centre like a town, the town
  * spreading as it grows, and never in the sea or a neighbour's land.
  */
-function lotsFor(n, g) {
+function lotsFor(n, g, scene) {
   const want = Math.min(MAX_HOUSES, housesOf(n));
   const key = `${want}`;
   const hit = houseSpots.get(g);
   if (hit?.key === key) return hit.points;
+  // A block's only buildings are its behaviours' houses (MARK-16): before they can be read, its town is one small square
+  // where each of them stands, its child blocks' too.
+  if (n.issue) {
+    houseSpots.set(g, { key, points: [g.label] });
+    return [g.label];
+  }
+  if (scene?.houses && lotsOf(n, scene.houses).block) {
+    const points = [];
+    const gather = (p) => {
+      for (const c of scene.kidsOf(p)) {
+        if (c.issue) points.push(scene.geo.get(c.id).label);
+        else gather(c);
+      }
+    };
+    gather(n);
+    houseSpots.set(g, { key, points });
+    return points;
+  }
   const rand = seeded(n.id);
   const [cx, cy] = g.label;
   const spread = g.labelR * Math.min(0.9, 0.3 + Math.sqrt(want) / 14);
@@ -206,12 +224,12 @@ function lotsFor(n, g) {
  * Busy places look like towns before anything in them can be read: one small house per thing the place holds.
  * Faint, under the fog and every label, so symbols and markers stay on top.
  */
-function drawTowns(ctx, towns, k, dark) {
+function drawTowns(ctx, towns, k, dark, scene) {
   ctx.fillStyle = dark ? '#c8d2f0' : '#4a4740';
   for (const { n, g, w } of towns) {
     const size = 3 / k;
     ctx.globalAlpha = 0.36 * w;
-    for (const [hx, hy] of lotsFor(n, g)) ctx.fillRect(hx - size / 2, hy - size / 2, size, size);
+    for (const [hx, hy] of lotsFor(n, g, scene)) ctx.fillRect(hx - size / 2, hy - size / 2, size, size);
   }
   ctx.globalAlpha = 1;
 }
@@ -395,15 +413,18 @@ function labelBlock(ctx, c, { k, theme, W, live }) {
   const r = root ? 18 : !label.symbol ? 4.5 : !label.title ? 9 : s >= 330 ? 15 : s >= 150 ? 13 : 11;
   const size = root ? Math.min(26, Math.max(19, s / 26)) : s >= 330 ? Math.min(17, Math.max(14, s / 26)) : s >= 150 ? 13.5 : s >= 95 ? 12 : 11;
   const font = `${root || s >= 150 ? 700 : 600} ${size}px ${FONT}`;
-  const maxW = root ? Math.min(420, W * 0.7) : Math.max(60, Math.min(s >= 330 ? 260 : 190, g.labelR * k * 1.8));
-  const lines = wrap(ctx, label.title, font, maxW, label.lines);
+  // A house's name stays on its own lot (#46 MARK-16): its ID always, its words below as the lot has room for them.
+  const lot = g.footprint ? { w: (g.bbox[2] - g.bbox[0]) * k - 6, h: (g.bbox[3] - g.bbox[1]) * k - 4 } : null;
+  const maxW = root ? Math.min(420, W * 0.7) : lot ? Math.max(40, lot.w) : Math.max(60, Math.min(s >= 330 ? 260 : 190, g.labelR * k * 1.8));
+  const lh = Math.round(size * 1.25);
+  const head = 2 * r + (label.title ? 4 : 2);
+  const wordLines = lot && label.lines > 1 ? Math.min(2, Math.floor((lot.h - head) / lh) - 1) : 0;
+  const lines = !lot || !label.title ? wrap(ctx, label.title, font, maxW, label.lines) : [n.behaviour, ...(wordLines > 0 ? wrap(ctx, label.title.slice(n.behaviour.length).trim(), font, maxW, wordLines) : [])];
   ctx.font = font;
   const titleW = Math.max(0, ...lines.map((l) => ctx.measureText(l).width));
   ctx.font = `700 10.5px ${FONT}`;
   const badges = label.badges.map((b) => ({ ...b, w: 16 + (b.on ? 12 : 0) + (b.count > 1 ? ctx.measureText(String(b.count)).width + 3 : 0) + 6 }));
   const badgesW = badges.reduce((sum, b) => sum + b.w + 3, 0);
-  const lh = Math.round(size * 1.25);
-  const head = 2 * r + (lines.length ? 4 : 2);
   // The symbol stays centred over the title; badges hang off its right side, balanced by empty room on the left.
   const w = Math.max(titleW, 2 * r + 2 * (badgesW ? badgesW + 4 : 0)) + (root ? 32 : 0);
   const h = head + lines.length * lh + (root ? 20 : 0);
@@ -412,10 +433,12 @@ function labelBlock(ctx, c, { k, theme, W, live }) {
   ctx.font = font;
   const fullW = label.title ? ctx.measureText(label.title).width : 0;
   const roomLines = lines.length ? Math.min(label.lines, fullW / maxW + 1) : 0;
-  const room = {
-    w: Math.max(w, Math.max(Math.min(maxW, fullW), 2 * r + 2 * (badgesW ? badgesW + 4 : 0)) + (root ? 32 : 0)),
-    h: Math.max(h, head + roomLines * lh + (root ? 20 : 0)),
-  };
+  const room = lot
+    ? { w, h }
+    : {
+        w: Math.max(w, Math.max(Math.min(maxW, fullW), 2 * r + 2 * (badgesW ? badgesW + 4 : 0)) + (root ? 32 : 0)),
+        h: Math.max(h, head + roomLines * lh + (root ? 20 : 0)),
+      };
   return { label, r, lines, font, lh, head, badges, w, h, room, panel: root };
 }
 
@@ -563,6 +586,8 @@ export function namesOnScreen(ctx, scene, view, { selectedId = null, live, theme
     if (!onScreen(p, c.n.depth ? 300 : Math.max(W, H))) continue;
     const block = labelBlock(ctx, c, { k, theme, W, live });
     if (c.n.depth === 0) p = cartouche(p, block);
+    // A block's name hangs from its top edge, in the strip kept clear of its houses (MARK-16).
+    else if (c.g.top != null) p = [p[0], Math.max(p[1], c.g.top * k + y + block.room.h / 2 + 2)];
     // The room it takes changes smoothly, never at once, so its neighbours never jump: as a region's items are named
     // its markers count only its own and it narrows; a label grows a step at a time (MARK-10), and its room grows
     // towards the next step before it gets there.
@@ -700,7 +725,7 @@ export function drawMap(ctx, scene, view, opts) {
   const houses = thumbnail ? [] : housesAt(grounds, { geo, k, live });
   const built = new Map(houses.map((h) => [h.n.id, h.alpha]));
   for (const t of towns) t.w *= 1 - (built.get(t.n.id) ?? 0);
-  if (towns.length) drawTowns(ctx, towns, k, theme.dark);
+  if (towns.length) drawTowns(ctx, towns, k, theme.dark, scene);
   if (houses.length) drawBuildings(ctx, houses, k, theme.dark);
   if (fogged.length) drawFog(ctx, fogged, k, time, theme.dark);
   // Bulldozers stand above the fog: work going on is news, however little is known about the land (MARK-17).
