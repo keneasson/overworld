@@ -2,7 +2,13 @@
 // zoom level needs: weight (map area), progress, health, bugs, definition…
 
 import { ROOT_ID } from '@shared/schema.js';
+import { editableOf, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
 
+// An issue's own scope beyond its child issues is open land (#46 MARK-18): each behaviour it lists that no house has taken
+// on yet weighs this much, so a big issue with only a few houses is a big lot, mostly park.
+const OPEN_PER_BEHAVIOUR = 0.6;
+const PLACES = new Set(['project', 'area']);
+const ownBehaviours = (n) => (n.tags.includes('code') || PLACES.has(n.kind) ? 0 : parseBehaviours(sectionText(parseIssue(editableOf(n).markdown), 'Behaviours')).filter((r) => r.id).length);
 const BASE_WEIGHT = { project: 8, area: 6, epic: 5, feature: 4, story: 3, task: 2, bug: 1.6, behavior: 1.2 };
 const CONTAINER = new Set(['project', 'area', 'epic', 'feature']);
 const SEVERITY = { off_track: 4, at_risk: 3, on_track: 2, not_started: 1, done: 0 };
@@ -118,6 +124,9 @@ function rollup(n, today) {
     blocked: n.status === 'blocked' ? 1 : 0,
     behaviours: n.kind === 'behavior' ? 1 : 0,
     behavioursKept: n.kind === 'behavior' && done ? 1 : 0,
+    // The behaviours the issue lists itself, and how much of its scope isn't built into houses yet (MARK-18).
+    own: ownBehaviours(n),
+    open: 0,
     owners: new Map(),
     owner: n.assignee || '',
   };
@@ -147,7 +156,9 @@ function rollup(n, today) {
       for (const key of ['items', 'leaves', 'doneLeaves', 'openBugs', 'bugs', 'newFeatures', 'newFeaturesDone', 'poorlyDefined', 'blocked', 'behaviours', 'behavioursKept']) s[key] += cs[key];
       for (const [who, w] of cs.owners) s.owners.set(who, (s.owners.get(who) ?? 0) + w);
     }
-    s.raw = n.weight ?? area;
+    // Each child issue takes on its own behaviours, at least one, of its parent's scope; what's left is open land.
+    if (s.own && !n.tags.includes('code')) s.open = Math.max(0, s.own - kids.reduce((t, c) => t + Math.max(1, c.stats.own), 0)) * OPEN_PER_BEHAVIOUR;
+    s.raw = n.weight ?? area + s.open;
     s.work = rejected ? 0 : total;
     s.progress = done || !total ? 1 : progress / total;
     s.defAvg = (def + defSum / area) / 2;

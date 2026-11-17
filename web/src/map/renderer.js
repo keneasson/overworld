@@ -12,6 +12,7 @@ import { LIGHT_COLORS } from './lenses.js';
 import { LADDER, housesOf, labelFor } from './labels.js';
 import { drawSymbol } from './symbols.js';
 import { lotsAt } from './lots.js';
+import { housesAt } from './houses.js';
 import { rectsOverlap, smoothstep } from './geometry.js';
 
 export const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif';
@@ -172,13 +173,45 @@ function lotsFor(n, g) {
  * Busy places look like towns before anything in them can be read: one small house per thing the place holds.
  * Faint, under the fog and every label, so symbols and markers stay on top.
  */
-function drawHouses(ctx, towns, k, dark) {
+function drawTowns(ctx, towns, k, dark) {
   ctx.fillStyle = dark ? '#c8d2f0' : '#4a4740';
   for (const { n, g, w } of towns) {
     const size = 3 / k;
     ctx.globalAlpha = 0.36 * w;
     for (const [hx, hy] of lotsFor(n, g)) ctx.fillRect(hx - size / 2, hy - size / 2, size, size);
   }
+  ctx.globalAlpha = 1;
+}
+
+/** Houses (MARK-16): light grey building footprints with a slightly darker edge, like buildings on a street map. */
+function drawBuildings(ctx, houses, k, dark) {
+  ctx.lineJoin = 'miter';
+  for (const { corners, alpha } of houses) {
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    corners.forEach(([hx, hy], i) => (i ? ctx.lineTo(hx, hy) : ctx.moveTo(hx, hy)));
+    ctx.closePath();
+    ctx.fillStyle = dark ? '#4a5470' : '#e8e7e3';
+    ctx.fill();
+    ctx.strokeStyle = dark ? '#6c7896' : '#c4c2bc';
+    ctx.lineWidth = 1 / k;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.lineJoin = 'round';
+}
+
+/** A bulldozer on the lot of a house being coded (MARK-17): construction yellow, so it reads as work going on. */
+function drawBulldozer(ctx, [bx, by], size, alpha) {
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(bx, by, size * 0.62, 0, Math.PI * 2);
+  ctx.fillStyle = '#fbbc04';
+  ctx.fill();
+  ctx.lineWidth = size * 0.07;
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
+  drawSymbol(ctx, 'bulldozer', bx, by, size * 0.78, '#3c2f00');
   ctx.globalAlpha = 1;
 }
 
@@ -503,7 +536,7 @@ export function drawMap(ctx, scene, view, opts) {
   let hatchPattern = null;
   const fogged = [];
   const towns = [];
-  const { grounds, streets } = lotsAt(scene, view, { lens, T });
+  const { grounds, streets, parks } = lotsAt(scene, view, { lens, T });
   for (const { n, g, s, alpha, ground, here } of grounds) {
     const path = pathFor(g);
     ctx.globalAlpha = alpha;
@@ -520,10 +553,16 @@ export function drawMap(ctx, scene, view, opts) {
     // Fog lies over the unknown parts of what you can see, wherever they are inside it (FOG-01).
     if (lens.fog && here > 0.02) for (const f of fogPatches(n, { fog: lens.fog, geo, k, inView })) fogged.push({ g: f.g, s, w: here * f.w });
   }
+  // A big issue's open land is park green in every lens (MARK-18).
+  for (const p of parks) {
+    ctx.globalAlpha = p.alpha;
+    ctx.fillStyle = p.ground;
+    ctx.fill(pathFor(p.g));
+  }
   // Each lot is set back from its neighbours by a street of its parent's ground, inside its own edge. Drawn inside the
   // lot, so the two halves of a street between neighbours meet, and the parent's wider streets go over its lots' own.
-  for (const { ground, alpha, width, lots } of streets) {
-    for (const lot of lots) {
+  for (const { ground, alpha, width, lots, park } of streets) {
+    for (const lot of park ? [...lots, park] : lots) {
       const path = pathFor(lot.g);
       ctx.save();
       ctx.clip(path);
@@ -547,8 +586,15 @@ export function drawMap(ctx, scene, view, opts) {
     ctx.lineWidth = 2.2 / k;
     ctx.stroke(pathFor(g));
   }
-  if (towns.length) drawHouses(ctx, towns, k, theme.dark);
+  // A house holds what its town stood for (MARK-16): its own small squares hand over to the building as it appears.
+  const houses = thumbnail ? [] : housesAt(grounds, { geo, k, live });
+  const built = new Map(houses.map((h) => [h.n.id, h.alpha]));
+  for (const t of towns) t.w *= 1 - (built.get(t.n.id) ?? 0);
+  if (towns.length) drawTowns(ctx, towns, k, theme.dark);
+  if (houses.length) drawBuildings(ctx, houses, k, theme.dark);
   if (fogged.length) drawFog(ctx, fogged, k, time, theme.dark);
+  // Bulldozers stand above the fog: work going on is news, however little is known about the land (MARK-17).
+  for (const h of houses) if (h.bulldozer) drawBulldozer(ctx, h.bulldozer, h.size / k, h.alpha);
 
   const hovered = hoverId && tree.byId.get(hoverId);
   if (hovered && !thumbnail) {

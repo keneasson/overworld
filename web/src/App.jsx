@@ -17,6 +17,7 @@ import { Icon } from './components/Icon.jsx';
 import { isNewer } from './model/version.js';
 import { backOf, followLink, linkTarget, repoOf } from './model/links.js';
 import { LinkContext } from './components/links-context.js';
+import { claimsByNode } from './map/houses.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -179,6 +180,28 @@ export function App() {
       .then((d) => latest.current.projectId === projectId && setOpenNotes(d.open))
       .catch(() => {});
   }, [projectId]);
+  // Live claims (MCP-04): a house being coded has a bulldozer on its lot (#46 MARK-17), and the item an agent badge. Agents
+  // claim through MCP while the map is open, so look again now and then; a claim that ends takes its bulldozer with it.
+  const [claims, setClaims] = useState([]);
+  useEffect(() => {
+    setClaims([]);
+    if (!projectId) return undefined;
+    const pid = projectId;
+    const load = () =>
+      api
+        .claims(pid)
+        .then((d) => latest.current.projectId === pid && setClaims(d.claims ?? []))
+        .catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === 'visible' && load(), 30000);
+    return () => clearInterval(t);
+  }, [projectId]);
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!claims.length) return undefined;
+    const t = setInterval(() => setClock(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, [claims.length]);
   const loadComments = useCallback(
     (keys) => {
       const pid = projectId;
@@ -420,8 +443,9 @@ export function App() {
         const n = !it.new && byKey.get(it.key);
         if (n) refinements.set(n.id, (refinements.get(n.id) ?? 0) + 1);
       }
-    return { refinements, notes };
-  }, [editing.others, editing.name, editing.hasRead, tree, comments, openNotes]);
+    const agents = tree ? claimsByNode(claims, tree, clock) : new Map();
+    return { refinements, notes, agents };
+  }, [editing.others, editing.name, editing.hasRead, tree, comments, openNotes, claims, clock]);
   // Agents propose through MCP while the map is open: look again when an item opens, and now and then.
   const { reloadRefinements } = editing;
   useEffect(() => {
