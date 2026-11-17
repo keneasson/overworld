@@ -83,7 +83,8 @@ jobs:
   teardown:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.event.action == 'closed' || (github.event.action == 'unlabeled' && github.event.label.name == 'preview'))
+      ((github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview')) ||
+       (github.event.action == 'unlabeled' && github.event.label.name == 'preview'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -105,7 +106,12 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - run: node scripts/ci/run.mjs teardown "projectmap-pr-$PR" "pull request ${{ github.event.action }}"
-      - run: |
+      - id: teardown
+        run: node scripts/ci/run.mjs teardown "projectmap-pr-$PR" "pull request ${{ github.event.action }}"
+      # Only when something was torn down. A merged pull request can be locked to comments, and a
+      # comment nobody needs must never fail the run.
+      - if: steps.teardown.outputs.torn == 'true'
+        continue-on-error: true
+        run: |
           printf '%s\n' "🛰️ The preview was torn down: its stack, table and logs are gone." > "$RUNNER_TEMP/preview.md"
           node scripts/ci/run.mjs comment "$PR" "$RUNNER_TEMP/preview.md"

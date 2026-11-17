@@ -45,7 +45,10 @@ function pullRequest(number) {
 
 function teardown(stack, reason = '') {
   if (previewNumber(stack) == null) throw new Error(`${stack} is not a preview; only previews are torn down here`);
-  if (!previewStacks().some((s) => s.name === stack)) return console.log(`→ ${stack} isn't running; nothing to tear down`);
+  if (!previewStacks().some((s) => s.name === stack)) {
+    console.log(`→ ${stack} isn't running; nothing to tear down`);
+    return false;
+  }
   const described = aws('cloudformation', 'describe-stacks', '--stack-name', stack);
   const table = described?.Stacks?.[0]?.Outputs?.find((o) => o.OutputKey === 'TableName')?.OutputValue;
   console.log(`→ Tearing down ${stack}${reason ? `: ${reason}` : ''}`);
@@ -53,6 +56,7 @@ function teardown(stack, reason = '') {
   sh('aws', ['cloudformation', 'wait', 'stack-delete-complete', '--stack-name', stack, '--region', region]);
   // The template retains tables so production's survives a stack deletion; a preview's goes with it.
   if (table && canDropTable(stack)) sh('aws', ['dynamodb', 'delete-table', '--table-name', table, '--region', region], { allowFail: true });
+  return true;
 }
 
 function deleteDeployments(ids) {
@@ -75,7 +79,10 @@ const commands = {
     });
   },
 
-  teardown,
+  // Says whether anything was torn down, so the workflow only reports a teardown that happened.
+  teardown(stack, reason) {
+    output({ torn: teardown(stack, reason) });
+  },
 
   sweep() {
     const stacks = previewStacks();
