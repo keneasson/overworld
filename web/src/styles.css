@@ -495,6 +495,29 @@ button {
 .change-after {
   color: var(--text);
 }
+.change-talk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.talk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: #fbbc04;
+  color: #3c2a00;
+  font-size: 11px;
+  font-weight: 700;
+}
+.change-threads {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
 .change-tick {
   margin: 0;
   accent-color: var(--accent);

@@ -526,10 +526,20 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (body?.replyTo && !root) throw new HttpError(404, 'The thread to reply in is gone');
         const anchor = root ? root.anchor : cleanAnchor(body?.anchor ?? {});
         const at = new Date(clock()).toISOString();
+        const fromAgent = typeof body?.fromAgent === 'string' ? body.fromAgent : null;
+        // On a behaviour in a refinement (#13 ADOPT-14): it is for the refinement's author, as a comment on a pull request is.
+        const refinement = anchor.refinement ? await model.changesets.get(pid, anchor.refinement) : null;
+        if (anchor.refinement && !refinement) throw new HttpError(404, 'That refinement is gone');
+        const writer = author(body?.author);
+        const forAuthor = refinement && !fromAgent && refinement.author !== writer;
+        const agents = mentionsOf(said).length || forAuthor ? await model.agents.list(pid) : [];
         // Addressed to whoever it mentions (NOTE-14). One for an agent waits in the inbox until an agent replies, and
         // every agent call hands it on at once (NOTE-17); the thread says where it is.
-        const to = addresseesOf(said, mentionsOf(said).length ? await model.agents.list(pid) : []);
-        const fromAgent = typeof body?.fromAgent === 'string' ? body.fromAgent : null;
+        const to = addresseesOf(said, agents);
+        if (forAuthor && !to.some((t) => t.name === refinement.author)) {
+          const agent = agents.find((a) => !a.revokedAt && refinement.author === `${a.name} (${a.id})`);
+          to.unshift(agent ? { name: refinement.author, agent: true, agentId: agent.id } : { name: refinement.author });
+        }
         const comment = {
           id: commentId(),
           itemKey,
@@ -538,7 +548,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           text: said,
           ...(to.length ? { to } : {}),
           ...(typeof body?.refinement === 'string' && body.refinement ? { refinement: body.refinement.slice(0, 40) } : {}),
-          author: author(body?.author),
+          author: writer,
           createdAt: at,
         };
         if (!root) comment.readBy = [comment.author];

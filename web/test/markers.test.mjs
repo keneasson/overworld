@@ -220,7 +220,7 @@ test('MARK-13 each kind of place is named over its own zoom range; where names c
       for (const a of names) for (const b of names) {
         if (a === b || !rectsOverlap(a.rect, b.rect)) continue;
         assert.ok(a.alpha + b.alpha <= 1.001, `${a.n.title} and ${b.n.title} don't both show where they overlap (${at})`);
-        if (a.shown > 0.99 && b.shown > 0.99) crowded++;
+        if (a.shown > 0.5 && b.shown > 0.5) crowded++;
       }
       // Never popping: no name comes or goes all at once between two close zooms.
       const now = new Map(names.map((l) => [l.n.id, l]));
