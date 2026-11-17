@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { hsl, polygonContains } from 'd3';
+import { hsl, polygonArea, polygonContains } from 'd3';
 import assert from 'node:assert/strict';
 import { demoProject } from '../../api/seed.mjs';
 import { buildTree } from '../src/model/tree.js';
@@ -379,10 +379,17 @@ test('MARK-16 an issue is a block, and each of its behaviours is a house on its 
   const lots = [...houses].sort((a, b) => a.n.behaviour.localeCompare(b.n.behaviour)).map((h) => h.g);
   const beside = lots.slice(1).filter((g, i) => Math.hypot(g.label[0] - lots[i].label[0], g.label[1] - lots[i].label[1]) < 1.4 * Math.max(g.size, lots[i].size)).length;
   assert.ok(beside >= 10, `houses in rows, each beside the next (${beside} of 18)`);
-  // Named by its ID, and its words where there is room.
-  const named = namesOn(scene, near).filter((l) => l.n.issue?.id === 'comments' && l.named && l.alpha > 0.5);
-  assert.ok(named.length >= 5, `the houses are named (${named.length})`);
-  assert.ok(named.every((l) => l.n.title.startsWith(`${l.n.behaviour} `)), 'each by its behaviour ID, then its words');
+  // Straight rows: the next house is either level with the last, to its right, or starts a new row below it.
+  const close = (a, b) => Math.abs(a - b) < 1e-6;
+  for (let i = 1; i < lots.length; i++) {
+    const [p, q] = [lots[i - 1].label, lots[i].label];
+    assert.ok((close(p[1], q[1]) && q[0] > p[0]) || q[1] > p[1], `NOTE-${i + 1} follows NOTE-${i} along its row or on the next`);
+  }
+  // Every house is named, by its ID at least, and with its words below where its lot has room.
+  const named = namesOn(scene, near).filter((l) => l.n.issue?.id === 'comments' && l.named && l.alpha > 0.99);
+  assert.equal(named.length, 19, 'no house left unnamed beside named ones');
+  assert.ok(named.every((l) => l.block.lines[0] === l.n.behaviour), 'each by its behaviour ID first');
+  assert.ok(named.some((l) => l.block.lines.length > 1), 'and its words where there is room');
   // A child issue is a block within its parent's block, holding its own behaviours' houses.
   const nested = housesIn(scene, onStreet(scene, 'threads'));
   assert.equal(nested.filter((h) => h.n.issue?.id === 'replies').length, 3);
@@ -419,7 +426,8 @@ test('MARK-17 the house of the behaviour being coded has a bulldozer on its lot,
 test("MARK-18 a block's size is its issue's scope: with few behaviours it is mostly park, and houses fill the green as behaviours are added", () => {
   const T = thresholds(1200, 800);
   const parkOf = (scene, lens = LENSES[0]) => lotsAt(scene, onStreet(scene, 'big'), { lens, T }).parks.find((p) => p.of.id === 'big');
-  const share = (s) => (parkOf(s)?.g.area ?? 0) / s.geo.get('big').area;
+  // Of the block as drawn: its land also holds the street round it.
+  const share = (s) => (parkOf(s)?.g.area ?? 0) / Math.abs(polygonArea(s.geo.get('big').poly));
   const scene = buildScene(street(), 'street', null, 'organic');
   assert.ok(share(scene) > 0.5, `two behaviours on a big issue: mostly open green (${share(scene).toFixed(2)})`);
   assert.equal(housesIn(scene, onStreet(scene, 'big')).filter((h) => h.n.issue?.id === 'big').length, 2, 'with its two houses on it');
@@ -447,12 +455,12 @@ test('MARK-20 a behaviour that grows into its own issue becomes that issue\'s bl
     const [x0, y0, x1, y1] = scene.geo.get('comments').bbox;
     return [(px - x0) / (x1 - x0), (py - y0) / (y1 - y0)];
   };
-  const back = (scene, [u, v]) => {
-    const [x0, y0, x1, y1] = scene.geo.get('comments').bbox;
-    return [x0 + u * (x1 - x0), y0 + v * (y1 - y0)];
-  };
-  const stood = share(before, before.geo.get(houseId(before.tree.byId.get('comments'), 'NOTE-07')).label);
-  assert.ok(polygonContains(after.geo.get('n7').poly, back(after, stood)), 'the new block stands where the house stood');
+  // The new block is wider than one house, so its neighbours make room for it: it covers much of the house's old lot.
+  const lot = before.geo.get(houseId(before.tree.byId.get('comments'), 'NOTE-07')).bbox;
+  const [u0, v0] = share(before, [lot[0], lot[1]]), [u1, v1] = share(before, [lot[2], lot[3]]);
+  const [a0, b0] = share(after, after.geo.get('n7').bbox.slice(0, 2)), [a1, b1] = share(after, after.geo.get('n7').bbox.slice(2));
+  const covered = (Math.max(0, Math.min(u1, a1) - Math.max(u0, a0)) * Math.max(0, Math.min(v1, b1) - Math.max(v0, b0))) / ((u1 - u0) * (v1 - v0));
+  assert.ok(covered > 0.25, `the new block stands where the house stood (${covered.toFixed(2)} of its lot)`);
   const grown = housesIn(after, onStreet(after, 'n7')).filter((h) => h.n.issue?.id === 'n7');
   assert.deepEqual(grown.map((h) => h.n.behaviour).sort(), ['NOTE-07', 'NOTE-20', 'NOTE-21'], 'its behaviours are its houses, NOTE-07 among them');
   assert.ok(!housesIn(after, onStreet(after, 'comments')).some((h) => h.n.issue?.id === 'comments' && h.n.behaviour === 'NOTE-07'), 'and the old house is gone');

@@ -17,7 +17,7 @@ import { voronoiMapSimulation } from 'd3-voronoi-map';
 import { weightedVoronoi } from 'd3-weighted-voronoi';
 import { polygonArea, polygonCentroid, polygonContains } from 'd3';
 import polylabel from 'polylabel';
-import { bounds, circle, densify, ensureOrientation, hashString, makeWarp, mulberry32, roundedRect, scalePolygon, splitByWeights, streetRows } from './geometry.js';
+import { bounds, circle, densify, ensureOrientation, hashString, inscribedRect, makeWarp, mulberry32, rectPoly, roundedRect, scalePolygon, splitByWeights, streetRows } from './geometry.js';
 import { anchorsFor, resolveSite } from './places.js';
 import { HOUSE_WEIGHT } from '../model/tree.js';
 import { behaviourHouses, lotsOf } from './houses.js';
@@ -71,6 +71,77 @@ function placeTree(geo, n, poly, split, houses) {
     else placeTree(geo, c, ensureOrientation(polys[i]), split, houses);
   });
   if (park) geo.set(park.id, describe(ensureOrientation(polys[lots.length])));
+}
+
+const NOT_BLOCKS = new Set(['project', 'area']);
+
+// ---------- Blocks: an issue's houses in rows (#46 MARK-15, MARK-16, MARK-18) ----------
+
+// The street round a block, and between a block and the blocks inside it, as a share of its short side.
+const KERB = 0.035;
+// The strip along the top of a block where its name stands, like a street name, clear of its houses.
+const NAME_BAND = 0.16;
+
+/**
+ * Lay out every issue that is a block (lotsOf in houses.js) as a clean rectangle inside the land it was given, after the
+ * warp has bent the borders around it: its houses in straight rows in ID order, its child issues as smaller blocks in the
+ * same rows, and what is left over as park. Borders wander between places; a street of houses is straight.
+ */
+function squareBlocks(geo, n, houses) {
+  const { lots, block } = lotsOf(n, houses);
+  // An issue is a block: one of houses, or a plain issue's empty lot. A place, or an issue made of issues, keeps its land.
+  if (block || (!lots.length && n.depth > 0 && !NOT_BLOCKS.has(n.kind) && !n.tags?.includes('code'))) {
+    const land = geo.get(n.id);
+    const r = inscribedRect(land.poly);
+    if (r) {
+      const m = KERB * Math.min(r[2] - r[0], r[3] - r[1]);
+      placeBlock(geo, n, [r[0] + m, r[1] + m, r[2] - m, r[3] - m], houses, land.area);
+      return;
+    }
+  }
+  for (const c of lots) if (!c.issue) squareBlocks(geo, c, houses);
+}
+
+/** A block inside its land: `area` is that land's, the street round the block included, so its size is still its work's. */
+function placeBlock(geo, n, rect, houses, area) {
+  const [x0, y0, x1, y1] = rect;
+  const w = x1 - x0, h = y1 - y0;
+  // `top` is where its name hangs from: inside the block, never over the row above it.
+  const g = { ...describe(rectPoly(rect)), area, size: Math.sqrt(area), top: y0 };
+  geo.set(n.id, g);
+  geo.delete(parkId(n));
+  const { lots } = lotsOf(n, houses);
+  if (!lots.length) return;
+  // Its name stands in a strip along the top, so no house sits under it.
+  const band = Math.min(h * NAME_BAND, w * 0.3);
+  g.label = [(x0 + x1) / 2, y0 + band / 2];
+  g.labelR = w / 2;
+  const rows = [x0, y0 + band, x1, y1];
+  const weights = lots.map(lotWeight);
+  // A leaf's scope its houses don't fill yet is park (MARK-18), and so is the rest of the last row: a block is full.
+  const unit = Math.pow(HOUSE_WEIGHT, DAMPING);
+  const total = weights.reduce((s, v) => s + v, 0) + Math.pow(n.stats.open, DAMPING) * (n.stats.open > 0);
+  const [rw, rh] = [rows[2] - rows[0], rows[3] - rows[1]];
+  const count = Math.max(1, Math.round(Math.sqrt((1.3 * (total / unit) * Math.min(rw, rh)) / Math.max(rw, rh))));
+  const cells = total / unit, fill = (count * Math.ceil(cells / count) - cells) * unit;
+  const park = total - weights.reduce((s, v) => s + v, 0) + (fill > unit * 0.3 ? fill : 0);
+  const all = park > 0 ? [...weights, park] : weights;
+  // As many rows as its weight in houses needs, so a behaviour that grows into an issue doesn't reflow the street (MARK-20).
+  const polys = streetRows(rectPoly(rows), all, count);
+  let foot = Infinity;
+  lots.forEach((c, i) => {
+    const [a0, b0, a1, b1] = bounds(polys[i]);
+    if (c.issue) {
+      geo.set(c.id, describe(ensureOrientation(polys[i])));
+      foot = Math.min(foot, a1 - a0, (b1 - b0) / 0.6);
+    } else {
+      const m = KERB * Math.min(a1 - a0, b1 - b0);
+      placeBlock(geo, c, [a0 + m, b0 + m, a1 - m, b1 - m], houses, Math.abs(polygonArea(polys[i])));
+    }
+  });
+  if (park > 0) geo.set(parkId(n), describe(ensureOrientation(polys[lots.length])));
+  // Every house on a block is the same size, so its rows read as a street whatever its lots are.
+  for (const c of lots) if (c.issue) geo.get(c.id).footprint = [foot * 0.34, foot * 0.34 * 0.6];
 }
 
 /** Bend every outline with one smooth warp so straight cuts read as borders and coasts. */
@@ -192,7 +263,9 @@ function siteLayout(tree, projectId, site, houses) {
   const all = land.flat();
   const [bx0, by0, bx1, by1] = bounds(all);
   const warp = makeWarp((bx0 + bx1) / 2, (by0 + by1) / 2, hashString(projectId ?? 'map'), { lobes: 0.15, waves: 0.7 });
-  return { geo, land: warpAll(geo, land, notes, warp), notes, projection: 'site' };
+  const warped = warpAll(geo, land, notes, warp);
+  squareBlocks(geo, root, houses);
+  return { geo, land: warped, notes, projection: 'site' };
 }
 
 const PIN = 0.4;
@@ -288,6 +361,7 @@ function organicLayout(tree, projectId, houses) {
   // Bend every border with the same smooth warp so the map reads as terrain, not a diagram.
   const warp = makeWarp(ISLAND.cx, ISLAND.cy, hashString(projectId ?? 'map'));
   warpAll(geo, [], [], warp);
+  squareBlocks(geo, tree.root, houses);
   return { geo, land: [geo.get(tree.root.id).poly], notes: [], projection: 'organic' };
 }
 

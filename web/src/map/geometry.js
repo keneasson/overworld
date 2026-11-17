@@ -145,12 +145,12 @@ function cutAt(poly, a, b, share) {
  * Lots in rows along streets, like houses on a residential block (#46 MARK-16): rows run along the block's long side,
  * as many as keep each lot a little wider than deep, and each row is cut into lots in order, sized by weight.
  */
-export function streetRows(poly, weights) {
+export function streetRows(poly, weights, rowCount = null) {
   const n = weights.length;
   const [x0, y0, x1, y1] = bounds(poly);
   const across = x1 - x0 >= y1 - y0;
   const long = across ? x1 - x0 : y1 - y0, short = across ? y1 - y0 : x1 - x0;
-  const rows = Math.max(1, Math.min(n, Math.round(Math.sqrt((1.3 * n * short) / long))));
+  const rows = Math.max(1, Math.min(n, rowCount ?? Math.round(Math.sqrt((1.3 * n * short) / long))));
   // Fill rows in order, each about an equal share of the weight.
   const total = weights.reduce((s, w) => s + w, 0);
   const groups = [[]];
@@ -235,3 +235,52 @@ export function smoothstep(e0, e1, x) {
 export function rectsOverlap(a, b, pad = 0) {
   return a.x - pad < b.x + b.w && a.x + a.w + pad > b.x && a.y - pad < b.y + b.h && a.y + a.h + pad > b.y;
 }
+
+/**
+ * The largest upright rectangle inside a polygon, near enough: [x0, y0, x1, y1]. A block is drawn square inside the land
+ * it is given, however that land's border wanders (#46 MARK-16), like a city block inside a district. No longer than
+ * `aspect` times its width, so it reads as a block rather than a strip.
+ */
+export function inscribedRect(poly, { cells = 28, aspect = 2.4 } = {}) {
+  const [x0, y0, x1, y1] = bounds(poly);
+  const dx = (x1 - x0) / cells, dy = (y1 - y0) / cells;
+  const inside = ([px, py]) => {
+    let hit = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [ax, ay] = poly[i], [bx, by] = poly[j];
+      if (ay > py !== by > py && px < ((bx - ax) * (py - ay)) / (by - ay) + ax) hit = !hit;
+    }
+    return hit;
+  };
+  // A cell counts when its corners and middle are all on the land.
+  const corner = Array.from({ length: cells + 1 }, (_, j) => Array.from({ length: cells + 1 }, (_, i) => inside([x0 + i * dx, y0 + j * dy])));
+  const ok = Array.from({ length: cells }, (_, j) =>
+    Array.from({ length: cells }, (_, i) => corner[j][i] && corner[j][i + 1] && corner[j + 1][i] && corner[j + 1][i + 1] && inside([x0 + (i + 0.5) * dx, y0 + (j + 0.5) * dy])),
+  );
+  let best = null, bestScore = 0;
+  const run = new Array(cells).fill(0);
+  for (let j = 0; j < cells; j++) {
+    for (let i = 0; i < cells; i++) run[i] = ok[j][i] ? run[i] + 1 : 0;
+    // Every rectangle ending on this row: for each column span, as tall as its shortest column.
+    for (let a = 0; a < cells; a++) {
+      let h = Infinity;
+      for (let b = a; b < cells && run[b]; b++) {
+        h = Math.min(h, run[b]);
+        const w = (b - a + 1) * dx, hh = h * dy;
+        const long = Math.max(w, hh) / Math.min(w, hh);
+        const score = w * hh * Math.min(1, aspect / long);
+        if (score > bestScore) [bestScore, best] = [score, [x0 + a * dx, y0 + (j - h + 1) * dy, x0 + (b + 1) * dx, y0 + (j + 1) * dy]];
+      }
+    }
+  }
+  if (!best) return null;
+  // Too long a rectangle is trimmed to the aspect, keeping its middle.
+  let [rx0, ry0, rx1, ry1] = best;
+  const w = rx1 - rx0, h = ry1 - ry0;
+  if (w > h * aspect) [rx0, rx1] = [rx0 + (w - h * aspect) / 2, rx1 - (w - h * aspect) / 2];
+  if (h > w * aspect) [ry0, ry1] = [ry0 + (h - w * aspect) / 2, ry1 - (h - w * aspect) / 2];
+  return [rx0, ry0, rx1, ry1];
+}
+
+/** A rectangle [x0, y0, x1, y1] as a polygon with positive area. */
+export const rectPoly = ([x0, y0, x1, y1]) => ensureOrientation([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);

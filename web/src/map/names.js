@@ -24,7 +24,8 @@ export function placeNames(cands, { selected = null } = {}) {
   const placed = [];
   for (const c of order) {
     let keep = 1;
-    if (c.n !== selected) for (const q of placed) keep *= 1 - q.alpha * near(q.rect, c.rect);
+    // Houses on a block never crowd each other: each name stays on its own lot (MARK-16), and its lots are rows that don't overlap.
+    if (c.n !== selected) for (const q of placed) if (!(q.g.footprint && c.g.footprint)) keep *= 1 - q.alpha * near(q.rect, c.rect);
     placed.push({ ...c, alpha: c.alpha * keep, shown: c.alpha });
   }
   return placed.filter((p) => p.alpha > 0.02);

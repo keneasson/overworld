@@ -112,7 +112,8 @@ export function housesAt(grounds, { k, live = {} }) {
     if (show < 0.02) continue;
     // A house stands in the middle of its lot, never filling it, leaving room for a bulldozer beside it. Every house
     // faces the same way, wider than deep, so a block's houses line up like a street's.
-    let hw = g.labelR * 0.62, hh = hw * 0.6;
+    // On a block every house is built the same size (its footprint); elsewhere a house fits its lot.
+    let [hw, hh] = g.footprint ?? [g.labelR * 0.62, g.labelR * 0.62 * 0.6];
     const [cx, cy] = g.label;
     const box = () => [
       [cx - hw, cy - hh],
