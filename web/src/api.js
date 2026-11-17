@@ -67,6 +67,7 @@ export const api = {
   restoreComment: (pid, c) => request('POST', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}/restore`, {}),
   openNotes: (pid) => request('GET', `/api/projects/${pid}/notes`),
   answerPrompt: (pid, c, body) => request('POST', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}/prompt`, body),
+  claims: (pid) => request('GET', `/api/projects/${pid}/claims`),
   listAgents: (pid) => request('GET', `/api/projects/${pid}/agents`),
   createAgent: (pid, body) => request('POST', `/api/projects/${pid}/agents`, body),
   revokeAgent: (pid, id) => request('DELETE', `/api/projects/${pid}/agents/${id}`),

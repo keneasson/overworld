@@ -6,6 +6,10 @@
 
 import { hsl } from 'd3';
 import { smoothstep } from './geometry.js';
+import { parkId } from './layout.js';
+
+// Open land is park green in every lens, like a park on a street map (MARK-18): it says "not built yet", not what the lens measures.
+export const PARK = { light: '#c8ecc4', dark: '#2e5b3d' };
 
 // Lightness steps for neighbouring lots. Siblings that touch never share one; a handful is enough for any map.
 const SHADES = [0, 0.075, -0.065, 0.14, -0.12, 0.2, -0.17];
@@ -95,7 +99,8 @@ export const streetOf = (parentSize) => Math.min(7, Math.max(1.5, parentSize * 0
 /**
  * The lots drawn at this view, in paint order (MARK-15, crossfading in as MARK-10 lets each layer appear): every place
  * on screen with its ground, and every group of lots with the street between them and their edges. `here` is how much
- * of a place is its own land at this zoom rather than its children's, for what is drawn on it (houses, fog).
+ * of a place is its own land at this zoom rather than its children's, for what is drawn on it (houses, fog). `parks` is
+ * the open land of big issues with few houses (MARK-18), drawn over their parent's ground like a lot.
  */
 export function lotsAt(scene, view, { lens, T }) {
   const { tree, geo } = scene;
@@ -104,6 +109,7 @@ export function lotsAt(scene, view, { lens, T }) {
   const inView = (bb) => bb[2] >= vp[0] && bb[0] <= vp[2] && bb[3] >= vp[1] && bb[1] <= vp[3];
   const grounds = [];
   const streets = [];
+  const parks = [];
   const walk = (n, alpha, ground) => {
     const g = geo.get(n.id);
     if (!inView(g.bbox)) return;
@@ -117,9 +123,14 @@ export function lotsAt(scene, view, { lens, T }) {
       walk(c, sub, shaded(lens.fill(c, tree), shadeOf(geo, c)));
       if (grounds.length > before) lots.push(grounds[before]);
     }
+    // A big issue's unbuilt scope is open land beside its houses: a park (MARK-18).
+    const pg = geo.get(parkId(n));
+    const park = pg && inView(pg.bbox) ? { g: pg, alpha: sub, ground: lens.theme.dark ? PARK.dark : PARK.light } : null;
+    if (park) parks.push({ ...park, of: n, edge: edgeOf(park.ground, lens.theme.dark) });
     // The root's children are the countries, drawn with their own borders; lots start inside them.
-    if (n.depth > 0 && lots.length) streets.push({ of: n, ground, alpha: sub, width: streetOf(s), lots: lots.map((l) => ({ ...l, edge: edgeOf(l.ground, lens.theme.dark) })) });
+    if (n.depth > 0 && (lots.length || park))
+      streets.push({ of: n, ground, alpha: sub, width: streetOf(s), lots: lots.map((l) => ({ ...l, edge: edgeOf(l.ground, lens.theme.dark) })), park: park && parks.at(-1) });
   };
   walk(tree.root, 1, lens.fill(tree.root, tree));
-  return { grounds, streets };
+  return { grounds, streets, parks };
 }

@@ -5,6 +5,18 @@
 
 import { BookOpen, Bot, Bug, CircleHelp, Cloud, CodeXml, FilePen, Flag, Flame, GitPullRequest, Landmark, Map as MapIcon, MessageCircle, Puzzle, ScrollText, SquareCheck } from 'lucide';
 
+// Lucide has no bulldozer, so it is drawn here in Lucide's style (24×24, 2px round strokes): tracks, body and cab, the
+// arm and the blade.
+const Bulldozer = [
+  ['rect', { x: '2', y: '15', width: '14', height: '6', rx: '3' }],
+  ['circle', { cx: '6', cy: '18', r: '1' }],
+  ['circle', { cx: '12', cy: '18', r: '1' }],
+  ['path', { d: 'M4 15v-4h8l2 4' }],
+  ['path', { d: 'M6 11V6h4l1 5' }],
+  ['path', { d: 'M16 17h3' }],
+  ['path', { d: 'M19 11c1.5 2 1.5 7 0 9h3' }],
+];
+
 const SOURCES = {
   // What kind of work an item is.
   project: MapIcon,
@@ -25,6 +37,8 @@ const SOURCES = {
   fire: Flame,
   fog: Cloud,
   code: CodeXml,
+  // Houses (#46): a house being coded.
+  bulldozer: Bulldozer,
 };
 
 export const SYMBOL_NAMES = Object.keys(SOURCES);

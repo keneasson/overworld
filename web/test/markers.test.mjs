@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { hsl } from 'd3';
+import { hsl, polygonContains } from 'd3';
 import assert from 'node:assert/strict';
 import { demoProject } from '../../api/seed.mjs';
 import { buildTree } from '../src/model/tree.js';
@@ -7,6 +7,7 @@ import { LADDER, holdingsOf, housesOf, labelFor, markersOf, symbolsInUse } from 
 import { buildScene } from '../src/map/scene.js';
 import { fitScale, hitTest, markerAt, namesAt, thresholds } from '../src/map/renderer.js';
 import { lotsAt } from '../src/map/lots.js';
+import { claimsByNode, housesAt } from '../src/map/houses.js';
 import { LENSES } from '../src/map/lenses.js';
 
 const root = { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' };
@@ -250,4 +251,82 @@ test('MARK-15 an item whose outline can be read is its own lot, apart from its s
     const [a, b] = [hsl(ground), hsl(lens.fill(n, tree))];
     if (b.s > 0.1) assert.ok(Math.abs(a.h - b.h) < 3, `${n.title} keeps the lens's colour`);
   }
+});
+
+// A neighbourhood: a street of houses, a big issue with only two houses so far (a park), and code land.
+const behaviours = (prefix, count) => `${CLEAR.body}\n\n## Behaviours\n\n${Array.from({ length: count }, (_, i) => `- ${prefix}-${String(i + 1).padStart(2, '0')} Given this, when that, then the other.`).join('\n')}`;
+const neighbourhood = ({ big = 0, parkKids = 2, busy = 0 } = {}) => [
+  root,
+  item('street', 'root', { kind: 'feature' }),
+  ...['a', 'b', 'c', 'd'].map((id) => item(id, 'street', id === 'b' && big ? { body: behaviours('BIG', big) } : {})),
+  item('code', 'street', { kind: 'task', tags: ['code'] }),
+  item('park', 'root', { kind: 'feature', body: behaviours('PARK', busy || 20) }),
+  ...Array.from({ length: parkKids }, (_, i) => item(`p${i}`, 'park')),
+  item('plain', 'root', { kind: 'feature' }),
+  ...Array.from({ length: 2 }, (_, i) => item(`q${i}`, 'plain')),
+];
+const viewOn = (scene, id, k) => {
+  const [x0, y0, x1, y1] = scene.geo.get(id).bbox;
+  return { x: 600 - ((x0 + x1) / 2) * k, y: 400 - ((y0 + y1) / 2) * k, k, width: 1200, height: 800 };
+};
+const housesIn = (scene, view, live) => housesAt(lotsAt(scene, view, { lens: LENSES[0], T: thresholds(1200, 800) }).grounds, { k: view.k, live });
+const inside = (poly, pts) => pts.every((p) => polygonContains(poly, p));
+
+test('MARK-16 zoomed in, an issue that is work is a house: a footprint on its own lot, facing its neighbours, growing with what it holds', () => {
+  const scene = buildScene(neighbourhood(), 'houses', null, 'organic');
+  const near = viewOn(scene, 'street', 1200 / scene.geo.get('street').size);
+  const houses = housesIn(scene, near);
+  const ids = houses.map((h) => h.n.id).sort();
+  assert.deepEqual(ids.filter((id) => 'abcd'.includes(id)), ['a', 'b', 'c', 'd'], 'every task on the street is a house');
+  assert.ok(!ids.includes('street') && !ids.includes('code'), 'a parent is a block, not a house; code land is not work');
+  for (const h of houses.filter((x) => 'abcd'.includes(x.n.id))) {
+    assert.ok(inside(h.g.poly, h.corners), `${h.n.id}'s house stands on its own lot`);
+    assert.ok(h.area < 0.6 * h.g.area, `${h.n.id}'s house doesn't fill its lot`);
+    const [[x0, y0], , [x1, y1]] = h.corners;
+    assert.ok(x1 - x0 > y1 - y0, `${h.n.id} faces the street like its neighbours`);
+  }
+  // Zoomed out, the houses aren't there yet: their lots are too small to hold one that can be read.
+  const far = { x: 600 - scene.world.cx * 0.05, y: 400 - scene.world.cy * 0.05, k: 0.05, width: 1200, height: 800 };
+  assert.equal(housesIn(scene, far).length, 0);
+  // The same lot with more to hold has a bigger house.
+  const bigger = buildScene(neighbourhood({ big: 12 }), 'houses', null, 'organic');
+  const area = (s, id) => housesIn(s, viewOn(s, 'street', near.k)).find((h) => h.n.id === id).area;
+  assert.ok(area(bigger, 'b') > 1.3 * area(scene, 'b'), 'twelve behaviours make a bigger house');
+});
+
+test('MARK-17 a house being coded has a bulldozer on its lot, and the bulldozer leaves when the claim ends', () => {
+  const scene = buildScene(neighbourhood(), 'houses', null, 'organic');
+  const now = Date.parse('2026-11-16T12:00:00Z');
+  const claim = (item, owner, until) => ({ behaviour: `X-${owner}`, item, owner, until });
+  const claims = [claim('node-a', 'ag1', '2026-11-16T14:00:00Z'), claim('node-a', 'ag1', '2026-11-16T14:00:00Z'), claim('node-c', 'ag2', '2026-11-16T11:00:00Z')];
+  const agents = claimsByNode(claims, scene.tree, now);
+  assert.deepEqual([...agents], [['a', 1]], "one agent at work on a; c's claim has ended");
+  const view = viewOn(scene, 'street', 1200 / scene.geo.get('street').size);
+  const houses = housesIn(scene, view, { agents });
+  const a = houses.find((h) => h.n.id === 'a');
+  assert.ok(a.bulldozer && polygonContains(a.g.poly, a.bulldozer), 'the bulldozer is on its lot');
+  assert.ok(!polygonContains(a.corners, a.bulldozer), 'beside the house, not on it');
+  assert.deepEqual(houses.filter((h) => h.bulldozer).map((h) => h.n.id), ['a'], 'no other house is being coded');
+  const later = claimsByNode(claims, scene.tree, Date.parse('2026-11-16T15:00:00Z'));
+  assert.equal(housesIn(scene, view, { agents: later }).filter((h) => h.bulldozer).length, 0, 'gone when the claim ends');
+});
+
+test('MARK-18 a big issue with only a few houses is a park: open green land beside them, filling with houses as children are added', () => {
+  const T = thresholds(1200, 800);
+  const parkOf = (scene, lens = LENSES[0]) => lotsAt(scene, viewOn(scene, 'park', 1000 / scene.geo.get('park').size), { lens, T }).parks.find((p) => p.of.id === 'park');
+  const scene = buildScene(neighbourhood(), 'houses', null, 'organic');
+  const park = parkOf(scene);
+  assert.ok(park, 'twenty behaviours and two houses: mostly open land');
+  assert.ok(park.g.area > 0.5 * scene.geo.get('park').area, 'the green is most of the lot');
+  assert.ok(scene.geo.get('park').area > 2 * scene.geo.get('plain').area, "the lot's size shows how big the issue is");
+  // Park green in every lens, whatever colour the lens gives the land.
+  const greens = new Set(LENSES.filter((l) => !l.theme.dark).map((l) => parkOf(scene, l).ground));
+  assert.equal(greens.size, 1);
+  assert.ok(hsl([...greens][0]).h > 90 && hsl([...greens][0]).h < 150, 'green');
+  // As children are added, houses fill the green.
+  const filling = buildScene(neighbourhood({ parkKids: 10 }), 'houses', null, 'organic');
+  const share = (s) => (parkOf(s)?.g.area ?? 0) / s.geo.get('park').area;
+  assert.ok(share(filling) < share(scene), `ten houses leave less green (${share(filling).toFixed(2)}) than two (${share(scene).toFixed(2)})`);
+  assert.equal(parkOf(buildScene(neighbourhood({ parkKids: 20 }), 'houses', null, 'organic')), undefined, 'built out: no park left');
+  assert.equal(parkOf(buildScene(neighbourhood({ busy: 2 }), 'houses', null, 'organic')), undefined, 'a small issue with its houses has no park');
 });

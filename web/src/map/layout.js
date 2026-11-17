@@ -26,6 +26,8 @@ export const PROJECTIONS = [
 ];
 
 const DAMPING = 0.8;
+/** The geometry key of an issue's open land (MARK-18). */
+export const parkId = (n) => `${n.id}:park`;
 const weightOf = (n) => Math.pow(Math.max(n.stats.raw, 0.1), DAMPING);
 
 export function computeLayout(tree, projectId, { projection = 'site', site } = {}) {
@@ -48,13 +50,17 @@ function placeTree(geo, n, poly, split) {
   geo.set(n.id, g);
   const kids = n.children;
   if (!kids.length) return;
-  if (kids.length === 1) {
+  // A big issue with few houses keeps its unbuilt scope as open land beside them: a park, its own cell of the lot (MARK-18).
+  const park = n.stats.open > 0 ? { id: parkId(n), children: [] } : null;
+  if (kids.length === 1 && !park) {
     placeTree(geo, kids[0], scalePolygon(poly, g.label, 0.78), split);
     return;
   }
-  const weights = kids.map(weightOf);
-  const polys = split(n, kids, weights, poly) ?? splitByWeights(poly, weights);
+  const all = park ? [...kids, park] : kids;
+  const weights = [...kids.map(weightOf), ...(park ? [Math.pow(n.stats.open, DAMPING)] : [])];
+  const polys = split(n, all, weights, poly) ?? splitByWeights(poly, weights);
   kids.forEach((k, i) => placeTree(geo, k, ensureOrientation(polys[i]), split));
+  if (park) geo.set(park.id, describe(ensureOrientation(polys[kids.length])));
 }
 
 /** Bend every outline with one smooth warp so straight cuts read as borders and coasts. */
