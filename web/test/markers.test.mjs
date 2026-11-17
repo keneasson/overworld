@@ -5,9 +5,12 @@ import { demoProject } from '../../api/seed.mjs';
 import { buildTree } from '../src/model/tree.js';
 import { LADDER, holdingsOf, housesOf, labelFor, markersOf, symbolsInUse } from '../src/map/labels.js';
 import { buildScene } from '../src/map/scene.js';
-import { fitScale, hitTest, markerAt, namesAt, thresholds } from '../src/map/renderer.js';
+import { fitScale, hitTest, overviewView, markerAt, nameFromOf, namesAt, namesOnScreen, placeInView, thresholds } from '../src/map/renderer.js';
+import { pathOf } from '../src/model/tree.js';
+import { rectsOverlap } from '../src/map/geometry.js';
+import { placeNames } from '../src/map/names.js';
 import { lotsAt } from '../src/map/lots.js';
-import { claimsByNode, housesAt } from '../src/map/houses.js';
+import { HOUSE, claimsByNode, housesAt, isHouse } from '../src/map/houses.js';
 import { LENSES } from '../src/map/lenses.js';
 
 const root = { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' };
@@ -15,7 +18,7 @@ const CLEAR = { summary: 'A clear piece of work', body: 'Enough detail to say wh
 const item = (id, parentId, extra = {}) => ({ id, parentId, title: id, kind: parentId === 'root' ? 'epic' : 'task', status: 'ready', ...CLEAR, ...extra });
 const types = (markers) => Object.fromEntries(markers.map((m) => [m.type, m.count]));
 
-test('MARK-01 every region big enough is named at every zoom, and the selected region always is', () => {
+test('MARK-01 every region big enough is named at every zoom, until its items\' items are, and the selected region always is', () => {
   const scene = buildScene(demoProject().nodes, 'demo', null, 'organic');
   const W = 1200, H = 800;
   const T = thresholds(W, H);
@@ -26,16 +29,18 @@ test('MARK-01 every region big enough is named at every zoom, and the selected r
     const { labels } = namesAt(scene, view);
     const named = new Map();
     for (const l of labels) named.set(l.n.id, (named.get(l.n.id) ?? 0) + l.alpha);
+    assert.ok(labels.some((l) => l.named && l.alpha > 0.5), `something is named at zoom ${k.toFixed(2)}`);
     const size = (n) => scene.geo.get(n.id).size * k;
     for (const n of scene.tree.list) {
-      if (!n.depth) continue;
+      // Which kinds are named at which zoom, and when a region hands its name over, is MARK-13's.
+      if (!n.depth || n.children.some((c) => c.children.some((gc) => size(gc) >= 36))) continue;
       // Drawn: every ancestor is big enough that its children's land has fully faded in.
       let drawn = true;
       for (let a = n.parent; a; a = a.parent) if (size(a) < T.sub * 1.25) drawn = false;
       const [x0, y0, x1, y1] = scene.geo.get(n.id).bbox;
       const centre = [((x0 + x1) / 2) * k + view.x, ((y0 + y1) / 2) * k + view.y];
       const onScreen = centre[0] > 0 && centre[0] < W && centre[1] > 0 && centre[1] < H;
-      if (drawn && onScreen && size(n) >= 62) {
+      if (drawn && onScreen && size(n) >= Math.max(62, nameFromOf(n) + 12)) {
         assert.ok((named.get(n.id) ?? 0) >= 0.5, `${n.title} is named at zoom ${k.toFixed(2)}`);
       }
     }
@@ -159,37 +164,115 @@ test('MARK-10 zooming in adds one layer of detail at a time: there, kind, name, 
   assert.equal(seen, 4);
 });
 
-test('MARK-13 zooming in only adds: a region keeps its pin beside its items, and each marker is counted once', () => {
-  const scene = buildScene(demoProject().nodes, 'demo', null, 'organic');
-  const W = 1200, H = 800;
-  const k0 = fitScale(W, H, scene.world) * 0.8;
-  const { cx, cy } = scene.world;
-  const at = (k) => ({ x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H });
-  const inside = (n, v) => {
-    const [px, py] = scene.geo.get(n.id).label;
-    const sx = px * v.k + v.x, sy = py * v.k + v.y;
-    return sx > 0 && sx < W && sy > 0 && sy < H;
-  };
-  let before = new Map(), together = 0;
-  for (let k = k0; k < k0 * 40; k *= 1.08) {
-    const v = at(k);
-    const { labels } = namesAt(scene, v);
-    const now = new Map(labels.filter((l) => l.n.depth > 0).map((l) => [l.n.id, l]));
-    for (const [id, l] of before) {
-      if (l.alpha < 0.9 || !inside(l.n, v)) continue;
-      assert.ok((now.get(id)?.alpha ?? 0) >= 0.9, `${l.n.title} stays named while it is on screen (zoom ${k.toFixed(2)})`);
-    }
-    for (const l of now.values()) if (l.n.children.some((c) => now.has(c.id))) together++;
-    before = now;
+// Text measured as if every letter were 6.5px wide: enough to know where names would collide.
+const measuring = { font: '', measureText: (t) => ({ width: String(t).length * 6.5 }) };
+const namesOn = (scene, view, opts = {}) => namesOnScreen(measuring, scene, view, { theme: LENSES[0].theme, ...opts });
+// A town of districts of streets of houses, four levels below the project: one long street, and one house has an open question.
+const town = () => [
+  root,
+  item('town', 'root', { kind: 'area' }),
+  item('elsewhere', 'root', { kind: 'area' }),
+  ...['north', 'south', 'east'].map((d) => item(d, 'town', { kind: 'epic' })),
+  ...['high', 'mill', 'church'].map((st) => item(st, 'north', { kind: 'feature' })),
+  ...['high', 'mill', 'church'].flatMap((st) => Array.from({ length: st === 'church' ? 30 : 6 }, (_, i) => item(`${st}${i}`, st, { title: `${st} street ${i + 1}`, ...(st === 'mill' && i === 2 ? { body: `${CLEAR.body}\n\n## Open questions\n- Which door?` } : {}) }))),
+  ...['south', 'east', 'elsewhere'].flatMap((p) => Array.from({ length: 3 }, (_, i) => item(`${p}${i}`, p))),
+];
+const W13 = 1200, H13 = 800;
+const looking = (scene, [cx, cy], k) => ({ x: W13 / 2 - cx * k, y: H13 / 2 - cy * k, k, width: W13, height: H13 });
+// Zooming in from the whole map to a place, in steps of 2%.
+const zoomInTo = (scene, [px, py], from, to) => {
+  const steps = [];
+  for (let k = from; k < to; k *= 1.02) {
+    const t = Math.min(1, Math.log(k / from) / Math.log(to / from));
+    steps.push(looking(scene, [scene.world.cx + (px - scene.world.cx) * t, scene.world.cy + (py - scene.world.cy) * t], k));
   }
-  assert.ok(together > 0, 'a region and its items are named together');
+  return steps;
+};
 
+test('MARK-13 each kind of place is named over its own zoom range; where names collide the more important stays, never overlapping, never popping', () => {
+  const demo = buildScene(demoProject().nodes, 'demo', null, 'organic');
+  const streets = buildScene(town(), 'town', null, 'organic');
+  const high = streets.geo.get('high');
+  const kStreet = 1100 / high.size;
+  const k0 = (s) => fitScale(W13, H13, s.world) * 0.8;
+  const runs = [
+    [demo, zoomInTo(demo, [demo.world.cx, demo.world.cy], k0(demo), k0(demo) * 40)],
+    [streets, zoomInTo(streets, high.label, k0(streets) / 20, kStreet * 1.3)],
+  ];
+  const firstNamed = new Map();
+  let together = 0, crowded = 0;
+  for (const [scene, views] of runs) {
+    let before = new Map();
+    for (const v of views) {
+      const names = namesOn(scene, v);
+      const at = `zoom ${v.k.toFixed(2)} on ${scene.tree.root.title}`;
+      for (const l of names) {
+        // Houses only on a street: a house is named once its house is drawn (MARK-16), not before.
+        if (isHouse(l.n)) assert.ok(l.s >= HOUSE.from, `${l.n.title} isn't named before its house is drawn (${at})`);
+        const kind = isHouse(l.n) ? 'house' : l.n.kind;
+        if (scene === streets && l.named && l.alpha > 0.5 && !firstNamed.has(kind)) firstNamed.set(kind, v.k);
+      }
+      // Never overlapping: where two names would, one has made room for the other.
+      for (const a of names) for (const b of names) {
+        if (a === b || !rectsOverlap(a.rect, b.rect)) continue;
+        assert.ok(a.alpha + b.alpha <= 1.001, `${a.n.title} and ${b.n.title} don't both show where they overlap (${at})`);
+        if (a.shown > 0.99 && b.shown > 0.99) crowded++;
+      }
+      // Never popping: no name comes or goes all at once between two close zooms.
+      const now = new Map(names.map((l) => [l.n.id, l]));
+      for (const id of new Set([...before.keys(), ...now.keys()])) {
+        const was = before.get(id), is = now.get(id);
+        const [px, py] = (is ?? was).g.label;
+        const there = px * v.k + v.x > 0 && px * v.k + v.x < W13 && py * v.k + v.y > 0 && py * v.k + v.y < H13;
+        if (!there || !before.size) continue;
+        assert.ok(Math.abs((is?.alpha ?? 0) - (was?.alpha ?? 0)) < 0.5, `${(is ?? was).n.title} fades rather than pops (${at})`);
+      }
+      for (const l of names) if (l.named && l.alpha > 0.5 && l.n.children.some((c) => now.get(c.id)?.named && now.get(c.id).alpha > 0.5)) together++;
+      before = now;
+    }
+  }
+  const overview = { ...overviewView(demo, W13, H13), width: W13, height: H13 };
+  assert.ok((namesOn(demo, overview).find((l) => l.n.depth === 0)?.alpha ?? 0) > 0.95, "at the overview, the project's card is named");
+  assert.ok(together > 0, 'a region is still named beside its named items');
+  assert.ok(crowded > 0, 'names do collide on the way in, and make room');
+  const order = ['area', 'epic', 'feature', 'house'].map((kind) => firstNamed.get(kind));
+  assert.ok(order.every((k, i) => k && (!i || k > order[i - 1])), `areas are named first, then epics, then features, then houses (${order.map((k) => k?.toFixed(2))})`);
+
+  // Where two names collide the more important stays: the selected item, then one with something going on, then the bigger.
+  const two = buildTree([root, item('big', 'root'), item('small', 'root')]);
+  const big = two.byId.get('big'), small = two.byId.get('small');
+  const name = (n, size, extra = {}) => ({ n, g: { size }, s: size, alpha: 1, named: true, rect: { x: 0, y: 0, w: 100, h: 40 }, ...extra });
+  const stays = (cands, opts) => placeNames(cands, opts).map((l) => l.n.id);
+  assert.deepEqual(stays([name(small, 80), name(big, 200)]), ['big'], 'the bigger stays');
+  assert.deepEqual(stays([name(small, 80, { urgent: true }), name(big, 200)]), ['small'], 'something going on outranks size');
+  assert.deepEqual(stays([name(small, 80), name(big, 200, { urgent: true })], { selected: small }), ['small'], 'the selected item outranks all');
+  const fading = placeNames([name(small, 80), name(big, 200, { alpha: 0.3 })]);
+  assert.ok(fading.find((l) => l.n === small).alpha >= 0.69, 'it gives way only as far as the other shows');
+
+  // Zoomed in on a street: its houses are named, the outer areas aren't.
+  const street = namesOn(streets, looking(streets, high.label, kStreet));
+  const shows = (id) => street.find((l) => l.n.id === id)?.alpha ?? 0;
+  assert.ok(street.filter((l) => l.n.parent?.id === 'high' && l.named && l.alpha > 0.5).length >= 3, 'the houses are named');
+  assert.equal(shows('town'), 0, 'the town is not');
+  assert.equal(shows('north'), 0, 'nor its district, whose streets\' houses are named');
   // Beside its named items a region shows only what is its own, so a question is never counted twice.
   const asks = `${CLEAR.body}\n\n## Open questions\n- Which store?`;
   const tree = buildTree([root, item('epic', 'root', { body: asks }), item('task', 'epic', { body: asks })]);
   const epic = tree.byId.get('epic');
   assert.deepEqual(types(labelFor(epic, 200).badges), { question: 2 }, 'alone, it rolls up what it holds');
   assert.deepEqual(types(labelFor(epic, 200, undefined, true).badges), { question: 1 }, 'beside its items, only its own');
+});
+
+test('MARK-19 the place in view is named in the header, with the way to it, even where its name has faded from the map', () => {
+  const streets = buildScene(town(), 'town', null, 'organic');
+  const high = streets.geo.get('high');
+  const view = looking(streets, high.label, 1100 / high.size);
+  const here = placeInView(streets, view);
+  assert.equal(here?.id, 'high', 'among its houses, the street is the place in view');
+  assert.deepEqual(pathOf(here).map((n) => n.id), ['root', 'town', 'north', 'high'], 'the header names the way to it');
+  assert.equal(namesOn(streets, view).find((l) => l.n.id === 'town'), undefined, 'though the town is no longer named on the map');
+  const out = placeInView(streets, looking(streets, [streets.world.cx, streets.world.cy], fitScale(W13, H13, streets.world) * 0.8));
+  assert.equal((out ?? streets.tree.root).id, 'root', 'zoomed out, the whole project');
 });
 
 test('MARK-15 an item whose outline can be read is its own lot, apart from its siblings, inside its parent\'s lot', () => {

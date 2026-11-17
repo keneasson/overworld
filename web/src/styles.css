@@ -276,6 +276,11 @@ button {
 .crumb button:hover {
   background: var(--surface-2);
 }
+/* The place in view (MARK-19): its name leaves the map as you zoom in among its items, so the header names it. */
+.crumb.here button {
+  font-weight: 700;
+  font-size: 14px;
+}
 .level {
   margin-left: 8px;
   padding-left: 10px;

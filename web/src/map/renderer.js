@@ -3,16 +3,18 @@
 // Every node has a screen size s = sqrt(area) * zoom. Two thresholds drive the map:
 //   sub   — when a node is this big its children's borders, colours and labels appear
 //   yield — when a node is this big its children count as what is on screen (roads, focus)
-// Zooming in only ever adds: a region keeps its label as its children's labels join it (MARK-13),
-// so the subject shifts from macro (areas) to micro (a single task) without anything vanishing.
+// Zooming in, a region keeps its label as its children's labels join it, so the subject shifts from macro (areas)
+// to micro (a single task); each kind of place is named over its own zoom range, and outer names fade as their items'
+// items come to be named (MARK-13).
 
 import { hsl, polygonContains } from 'd3';
 import { isInside, pathOf } from '../model/tree.js';
 import { LIGHT_COLORS } from './lenses.js';
-import { LADDER, housesOf, labelFor } from './labels.js';
+import { LADDER, housesOf, labelFor, markersOf } from './labels.js';
 import { drawSymbol } from './symbols.js';
 import { lotsAt } from './lots.js';
-import { housesAt } from './houses.js';
+import { HOUSE, housesAt, isHouse } from './houses.js';
+import { placeNames } from './names.js';
 import { rectsOverlap, smoothstep } from './geometry.js';
 
 export const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif';
@@ -27,19 +29,35 @@ export function thresholds(width, height) {
 }
 
 /**
- * Which regions are named at this view (MARK-01), and how strongly (0 to 1). A region shows its label once
- * it is big enough, and what the label holds grows one step at a time with its size on screen (LADDER in
- * labels.js: there, kind, name, markers). Like a city on a map, it keeps its pin as you zoom in: its items'
- * labels join it rather than replace it, and only leaving the screen takes it away (MARK-13). `holds` is how far
- * its items are named; from then on its markers count only what is its own, so nothing on screen is counted twice.
- * The selected region is always named, whatever its size.
+ * Where each kind of place starts to be named (MARK-13): its screen size in pixels, the square root of its area. Like
+ * a map naming countries, then cities, then streets: areas when zoomed out, then epics, then features, and houses
+ * only on a street, once their lot holds a house (MARK-16).
+ */
+const NAME_FROM = { area: 14, epic: 20, feature: 28, story: 28, house: HOUSE.from };
+export const nameFromOf = (n) => (isHouse(n) ? NAME_FROM.house : NAME_FROM[n.kind] ?? LADDER[0].from);
+
+/** How far off screen (px) names still count. */
+const EDGE = 200;
+
+/**
+ * Which regions are named at this view (MARK-01), and how strongly (0 to 1). Each kind of place is named over its
+ * own zoom range (NAME_FROM), and what its label holds grows one step at a time with its size on screen (LADDER in
+ * labels.js: there, kind, name, markers). Like a city on a map, a region keeps its pin as its items are named beside
+ * it, and fades once the map is close enough to name its items' items, as a province's name goes once you're among a
+ * city's streets (MARK-13). `holds` is how far its items are named; from then on its markers count only what is its
+ * own, so nothing on screen is counted twice. `named` says its title shows. The selected region is always named.
  */
 export function namesAt(scene, view, { selectedId = null, T = thresholds(view.width, view.height) } = {}) {
   const { tree, geo } = scene;
   const { x, y, k, width: W, height: H } = view;
-  const vp = [-x / k, -y / k, (W - x) / k, (H - y) / k];
+  // A little beyond the edges too: a name just off screen still makes its neighbours on it give way, until it's far off.
+  const m = EDGE / k;
+  const vp = [-x / k - m, -y / k - m, (W - x) / k + m, (H - y) / k + m];
   const inView = (bb) => bb[2] >= vp[0] && bb[0] <= vp[2] && bb[3] >= vp[1] && bb[1] <= vp[3];
+  const name = LADDER.find((l) => l.stage === 'name').from;
   const labels = [];
+  // How surely each place is named on screen, fully once its title shows: its grandparent's name gives way to it.
+  const fits = new Map();
   const walk = (n, alpha) => {
     const g = geo.get(n.id);
     if (!inView(g.bbox)) return;
@@ -47,17 +65,31 @@ export function namesAt(scene, view, { selectedId = null, T = thresholds(view.wi
     const sub = n.children.length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
     // The project's own name is the card in the sea, so it steps aside once its land is well under way.
     const handover = n.depth === 0 && n.children.length ? smoothstep(T.yld * 0.88, T.yld, s) : 0;
-    const there = LADDER[0].from;
-    const own = alpha * (1 - handover) * smoothstep(there, there + 8, s);
-    if (own > 0.02) labels.push({ n, g, s, alpha: own, holds: n.depth > 0 && sub > 0.5 });
+    const from = n.depth ? nameFromOf(n) : LADDER[0].from;
+    const own = alpha * (1 - handover) * smoothstep(from, from + 12, s);
+    if (own > 0.02) {
+      labels.push({ n, g, s, alpha: own, holds: n.depth > 0 && sub > 0.5, sub: n.depth > 0 ? sub : 0, named: n.depth === 0 || s >= name });
+      // Counted as it comes onto the screen, not all at once as it crosses the edge.
+      const [px, py] = g.label, sx = px * k + x, sy = py * k + y;
+      const onScreen = smoothstep(0, 80, Math.min(sx, W - sx, sy, H - sy));
+      if (onScreen > 0) fits.set(n.id, onScreen * own * smoothstep(name - 12, name, s));
+    }
     if (sub > 0.01) for (const c of n.children) walk(c, sub);
   };
   walk(tree.root, 1);
+  // The project's card has its own handover (above).
+  for (const l of labels) {
+    if (!l.n.depth) continue;
+    let below = 0;
+    for (const c of l.n.children) for (const gc of c.children) below = Math.max(below, fits.get(gc.id) ?? 0);
+    l.alpha *= 1 - below;
+  }
+  for (let i = labels.length - 1; i >= 0; i--) if (labels[i].alpha <= 0.02) labels.splice(i, 1);
   const selected = selectedId && tree.byId.get(selectedId);
   if (selected && inView(geo.get(selected.id).bbox)) {
     const at = labels.find((l) => l.n === selected);
     if (at) at.alpha = 1;
-    else labels.push({ n: selected, g: geo.get(selected.id), s: Math.max(62, geo.get(selected.id).size * k), alpha: 1 });
+    else labels.push({ n: selected, g: geo.get(selected.id), s: Math.max(62, geo.get(selected.id).size * k), alpha: 1, named: true });
   }
   return { labels };
 }
@@ -352,6 +384,8 @@ function ellipsize(ctx, text, maxW) {
 // A light fill gets a dark outline, a dark one a white outline.
 const inkOn = (fill) => (hsl(fill).l > 0.72 ? '#3c4043' : '#ffffff');
 
+// The sizes on screen where a label's block steps up: each LADDER stage, and its two larger type sizes below.
+const BLOCK_STEPS = [...LADDER.map((l) => l.from), 150, 330];
 function labelBlock(ctx, c, { k, theme, W, live }) {
   const { n, s, g } = c;
   const label = labelFor(n, s, live, c.holds);
@@ -372,7 +406,16 @@ function labelBlock(ctx, c, { k, theme, W, live }) {
   // The symbol stays centred over the title; badges hang off its right side, balanced by empty room on the left.
   const w = Math.max(titleW, 2 * r + 2 * (badgesW ? badgesW + 4 : 0)) + (root ? 32 : 0);
   const h = head + lines.length * lh + (root ? 20 : 0);
-  return { label, r, lines, font, lh, head, badges, w, h, panel: root };
+  // The room it takes from other names: as wide as its title could wrap to and as many lines as it might need, so it
+  // changes smoothly as the zoom does, where the drawn title rewraps a word at a time.
+  ctx.font = font;
+  const fullW = label.title ? ctx.measureText(label.title).width : 0;
+  const roomLines = lines.length ? Math.min(label.lines, fullW / maxW + 1) : 0;
+  const room = {
+    w: Math.max(w, Math.max(Math.min(maxW, fullW), 2 * r + 2 * (badgesW ? badgesW + 4 : 0)) + (root ? 32 : 0)),
+    h: Math.max(h, head + roomLines * lh + (root ? 20 : 0)),
+  };
+  return { label, r, lines, font, lh, head, badges, w, h, room, panel: root };
 }
 
 function drawBlock(ctx, block, rect, alpha, theme) {
@@ -488,6 +531,72 @@ function drawPin(ctx, x, y) {
   ctx.fill();
 }
 
+/** What makes a name more important than its neighbours: something going on there. */
+const URGENT = new Set(['fire', 'question', 'agent']);
+
+/**
+ * The names drawn at this view, each with its block, the box it is drawn in (`drawn`), the room it takes from other
+ * names (`rect`, around it) and how strongly it shows. They make room for each other (placeNames in names.js), and come
+ * outer names first, so a name fading in over one fading out is drawn on top.
+ */
+export function namesOnScreen(ctx, scene, view, { selectedId = null, live, theme, insets = {}, T = thresholds(view.width, view.height) } = {}) {
+  const { x, y, k, width: W, height: H } = view;
+  const selected = selectedId && scene.tree.byId.get(selectedId);
+  // The project card sits in open sea beside the land, like the title cartouche on an
+  // old map: west of it on wide screens, north of it on tall ones. As you zoom in it
+  // slides along the coast, then waits at the screen edge until it fades.
+  const ins = insets ?? {};
+  const cartouche = ([px, py], block) => {
+    const m = 20;
+    const minX = (ins.left ?? 0) + m + block.w / 2, maxX = Math.max(minX, W - m - block.w / 2);
+    const minY = (ins.top ?? 0) + m + block.h / 2, maxY = Math.max(minY, H - (ins.bottom ?? 0) - m - block.h / 2);
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+    const wide = W - (ins.left ?? 0) >= H - (ins.top ?? 0) - (ins.bottom ?? 0);
+    if (wide) return [Math.max(minX, Math.min(px, scene.world.x0 * k + x - m - block.w / 2)), clamp(py, minY, maxY)];
+    return [clamp(px, minX, maxX), Math.max(minY, Math.min(py, scene.world.y0 * k + y - m - block.h / 2))];
+  };
+  const onScreen = ([sx, sy], m) => sx > -m && sx < W + m && sy > -m && sy < H + m;
+  const cands = [];
+  for (const c of namesAt(scene, view, { selectedId, T }).labels) {
+    let p = [c.g.label[0] * k + x, c.g.label[1] * k + y];
+    if (!onScreen(p, c.n.depth ? 300 : Math.max(W, H))) continue;
+    const block = labelBlock(ctx, c, { k, theme, W, live });
+    if (c.n.depth === 0) p = cartouche(p, block);
+    // The room it takes changes smoothly, never at once, so its neighbours never jump: as a region's items are named
+    // its markers count only its own and it narrows; a label grows a step at a time (MARK-10), and its room grows
+    // towards the next step before it gets there.
+    const lerp = (a, b, t) => ({ w: Math.max(a.w, a.w + (b.w - a.w) * t), h: Math.max(a.h, a.h + (b.h - a.h) * t) });
+    let room = block.room;
+    if (c.holds) room = lerp(room, labelBlock(ctx, { ...c, holds: false }, { k, theme, W, live }).room, 1 - smoothstep(0.5, 1, c.sub));
+    const next = c.n.depth ? BLOCK_STEPS.find((t) => t > c.s) : null;
+    const t = next ? smoothstep(next / 1.25, next, c.s) : 0;
+    if (t) room = lerp(room, labelBlock(ctx, { ...c, s: next }, { k, theme, W, live }).room, t);
+    const rect = { x: p[0] - room.w / 2, y: p[1] - room.h / 2, w: room.w, h: room.h };
+    cands.push({ ...c, block, at: p, rect, urgent: c.n.status === 'in_progress' || markersOf(c.n, live).some((m) => URGENT.has(m.type)) });
+  }
+  return placeNames(cands, { selected })
+    .map((c) => ({ ...c, drawn: { x: c.at[0] - c.block.w / 2, y: c.at[1] - c.block.h / 2, w: c.block.w, h: c.block.h } }))
+    .sort((a, b) => a.n.depth - b.n.depth || (a.n === selected) - (b.n === selected));
+}
+
+/**
+ * The place in view (MARK-19): the deepest region around the centre whose items are what is on screen. The header
+ * names it and the way to it, so a place whose name has faded off the map is still named.
+ */
+export function placeInView(scene, view, { center, T = thresholds(view.width, view.height) } = {}) {
+  const { tree, geo } = scene;
+  const { x, y, k, width: W, height: H } = view;
+  const [cx, cy] = center ?? [W / 2, H / 2];
+  const cw = [(cx - x) / k, (cy - y) / k];
+  const yields = (n) => n.children.length && smoothstep(T.yld * 0.95, T.yld * 1.1, geo.get(n.id).size * k) >= 0.5;
+  let focus = null;
+  for (let cur = tree.root; cur && yields(cur); ) {
+    focus = cur;
+    cur = cur.children.find((ch) => polygonContains(geo.get(ch.id).poly, cw));
+  }
+  return focus;
+}
+
 // ---------- main draw ----------
 
 /**
@@ -576,7 +685,6 @@ export function drawMap(ctx, scene, view, opts) {
       ctx.restore();
     }
   }
-  const { labels: labelCands } = thumbnail ? { labels: [] } : namesAt(scene, view, { selectedId, T });
 
   // Country borders on top of the lots inside them.
   ctx.strokeStyle = theme.border;
@@ -785,43 +893,11 @@ export function drawMap(ctx, scene, view, opts) {
     }
   }
 
-  // The project card sits in open sea beside the land, like the title cartouche on an
-  // old map: west of it on wide screens, north of it on tall ones. As you zoom in it
-  // slides along the coast, then waits at the screen edge until it fades.
-  const ins = opts.insets ?? {};
-  const cartouche = ([px, py], block) => {
-    const m = 20;
-    const minX = (ins.left ?? 0) + m + block.w / 2, maxX = Math.max(minX, W - m - block.w / 2);
-    const minY = (ins.top ?? 0) + m + block.h / 2, maxY = Math.max(minY, H - (ins.bottom ?? 0) - m - block.h / 2);
-    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-    const wide = W - (ins.left ?? 0) >= H - (ins.top ?? 0) - (ins.bottom ?? 0);
-    if (wide) return [Math.max(minX, Math.min(px, scene.world.x0 * k + x - m - block.w / 2)), clamp(py, minY, maxY)];
-    return [clamp(px, minX, maxX), Math.max(minY, Math.min(py, scene.world.y0 * k + y - m - block.h / 2))];
-  };
-
-  // Labels with greedy collision avoidance: shallow and big first, selection always.
-  labelCands.sort((a, b) => (b.n === selected) - (a.n === selected) || a.n.depth - b.n.depth || b.s - a.s);
-  const placed = [];
+  const shown = namesOnScreen(ctx, scene, view, { selectedId, live, theme, insets: opts.insets, T });
   const labels = [];
-  for (const c of labelCands) {
-    let p = toScreen(c.g.label);
-    if (!onScreen(p, c.n.depth ? 300 : Math.max(W, H))) continue;
-    const block = labelBlock(ctx, c, { k, theme, W, live });
-    if (c.n.depth === 0) p = cartouche(p, block);
-    // A region whose items are named may step just above or below its spot to make room for theirs.
-    const spots = c.holds ? [0, -1, 1].map((d) => [p[0], p[1] + d * (block.h + 6)]) : [p];
-    let rect = null;
-    for (const [px, py] of spots) {
-      const r = { x: px - block.w / 2, y: py - block.h / 2, w: block.w, h: block.h };
-      if (c.n === selected || !placed.some((q) => rectsOverlap(q, r, 3))) {
-        rect = r;
-        break;
-      }
-    }
-    if (!rect) continue;
-    if (c.alpha >= 0.3) placed.push(rect);
-    const markers = drawBlock(ctx, block, rect, c.alpha, theme);
-    labels.push({ id: c.n.id, rect, alpha: c.alpha, markers });
+  for (const c of shown) {
+    const markers = drawBlock(ctx, c.block, c.drawn, c.alpha, theme);
+    labels.push({ id: c.n.id, rect: c.drawn, alpha: c.alpha, markers });
   }
 
   if (selected) {
@@ -830,14 +906,7 @@ export function drawMap(ctx, scene, view, opts) {
     if (onScreen(p, 30)) drawPin(ctx, p[0], p[1]);
   }
 
-  // Focus: the deepest region around the centre whose children are labelled.
-  const c = opts.center ?? [W / 2, H / 2];
-  const cw = [(c[0] - x) / k, (c[1] - y) / k];
-  let focus = null;
-  for (let cur = tree.root; cur && yieldOf(cur) >= 0.5; ) {
-    focus = cur;
-    cur = cur.children.find((ch) => polygonContains(geo.get(ch.id).poly, cw));
-  }
+  const focus = placeInView(scene, view, { center: opts.center, T });
   return { labels, focusId: focus?.id ?? null, drifting: fogged.length > 0 };
 }
 
