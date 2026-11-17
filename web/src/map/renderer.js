@@ -49,6 +49,7 @@ const EDGE = 200;
  */
 export function namesAt(scene, view, { selectedId = null, T = thresholds(view.width, view.height) } = {}) {
   const { tree, geo } = scene;
+  const kidsOf = scene.kidsOf ?? ((n) => n.children);
   const { x, y, k, width: W, height: H } = view;
   // A little beyond the edges too: a name just off screen still makes its neighbours on it give way, until it's far off.
   const m = EDGE / k;
@@ -62,7 +63,7 @@ export function namesAt(scene, view, { selectedId = null, T = thresholds(view.wi
     const g = geo.get(n.id);
     if (!inView(g.bbox)) return;
     const s = g.size * k;
-    const sub = n.children.length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
+    const sub = kidsOf(n).length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
     // The project's own name is the card in the sea, so it steps aside once its land is well under way.
     const handover = n.depth === 0 && n.children.length ? smoothstep(T.yld * 0.88, T.yld, s) : 0;
     const from = n.depth ? nameFromOf(n) : LADDER[0].from;
@@ -74,14 +75,14 @@ export function namesAt(scene, view, { selectedId = null, T = thresholds(view.wi
       const onScreen = smoothstep(0, 80, Math.min(sx, W - sx, sy, H - sy));
       if (onScreen > 0) fits.set(n.id, onScreen * own * smoothstep(name - 12, name, s));
     }
-    if (sub > 0.01) for (const c of n.children) walk(c, sub);
+    if (sub > 0.01) for (const c of kidsOf(n)) walk(c, sub);
   };
   walk(tree.root, 1);
   // The project's card has its own handover (above).
   for (const l of labels) {
     if (!l.n.depth) continue;
     let below = 0;
-    for (const c of l.n.children) for (const gc of c.children) below = Math.max(below, fits.get(gc.id) ?? 0);
+    for (const c of kidsOf(l.n)) for (const gc of kidsOf(c)) below = Math.max(below, fits.get(gc.id) ?? 0);
     l.alpha *= 1 - below;
   }
   for (let i = labels.length - 1; i >= 0; i--) if (labels[i].alpha <= 0.02) labels.splice(i, 1);
@@ -122,7 +123,7 @@ export function nodeView(scene, n, W, H, insets) {
   const T = thresholds(W, H);
   const [x0, y0, x1, y1] = g.bbox;
   const kFit = Math.min(a.w / (x1 - x0), a.h / (y1 - y0)) * 0.86;
-  let k = n.children.length ? Math.max(kFit, (1.22 * T.yld) / g.size) : Math.min(kFit * 1.15, (0.9 * T.vmin) / g.size);
+  let k = (scene.kidsOf?.(n) ?? n.children).length ? Math.max(kFit, (1.22 * T.yld) / g.size) : Math.min(kFit * 1.15, (0.9 * T.vmin) / g.size);
   if (n.depth === 0) return overviewView(scene, W, H, insets);
   k = Math.min(k, scene.maxK ?? Infinity);
   const [cx, cy] = g.label;
@@ -572,7 +573,7 @@ export function namesOnScreen(ctx, scene, view, { selectedId = null, live, theme
     const t = next ? smoothstep(next / 1.25, next, c.s) : 0;
     if (t) room = lerp(room, labelBlock(ctx, { ...c, s: next }, { k, theme, W, live }).room, t);
     const rect = { x: p[0] - room.w / 2, y: p[1] - room.h / 2, w: room.w, h: room.h };
-    cands.push({ ...c, block, at: p, rect, urgent: c.n.status === 'in_progress' || markersOf(c.n, live).some((m) => URGENT.has(m.type)) });
+    cands.push({ ...c, block, at: p, rect, urgent: (!c.n.issue && c.n.status === 'in_progress') || markersOf(c.n, live).some((m) => URGENT.has(m.type)) });
   }
   return placeNames(cands, { selected })
     .map((c) => ({ ...c, drawn: { x: c.at[0] - c.block.w / 2, y: c.at[1] - c.block.h / 2, w: c.block.w, h: c.block.h } }))
@@ -580,15 +581,16 @@ export function namesOnScreen(ctx, scene, view, { selectedId = null, live, theme
 }
 
 /**
- * The place in view (MARK-19): the deepest region around the centre whose items are what is on screen. The header
- * names it and the way to it, so a place whose name has faded off the map is still named.
+ * The place in view (MARK-19): the deepest region around the centre whose items are what is on screen: an issue among
+ * its behaviours' houses, never a house. The header names it and the way to it, so a place whose name has faded off
+ * the map is still named.
  */
 export function placeInView(scene, view, { center, T = thresholds(view.width, view.height) } = {}) {
   const { tree, geo } = scene;
   const { x, y, k, width: W, height: H } = view;
   const [cx, cy] = center ?? [W / 2, H / 2];
   const cw = [(cx - x) / k, (cy - y) / k];
-  const yields = (n) => n.children.length && smoothstep(T.yld * 0.95, T.yld * 1.1, geo.get(n.id).size * k) >= 0.5;
+  const yields = (n) => (scene.kidsOf?.(n) ?? n.children).length && smoothstep(T.yld * 0.95, T.yld * 1.1, geo.get(n.id).size * k) >= 0.5;
   let focus = null;
   for (let cur = tree.root; cur && yields(cur); ) {
     focus = cur;
@@ -704,7 +706,7 @@ export function drawMap(ctx, scene, view, opts) {
   // Bulldozers stand above the fog: work going on is news, however little is known about the land (MARK-17).
   for (const h of houses) if (h.bulldozer) drawBulldozer(ctx, h.bulldozer, h.size / k, h.alpha);
 
-  const hovered = hoverId && tree.byId.get(hoverId);
+  const hovered = hoverId && (scene.nodeOf?.(hoverId) ?? tree.byId.get(hoverId));
   if (hovered && !thumbnail) {
     ctx.globalAlpha = 0.9;
     ctx.strokeStyle = theme.dark ? '#ffffff' : '#202124';
@@ -958,7 +960,7 @@ export function hitTest(scene, view, info, sx, sy) {
   let byLabel = null;
   for (let i = (info?.labels.length ?? 0) - 1; i >= 0 && !byLabel; i--) {
     const l = info.labels[i];
-    if (l.alpha >= 0.5 && sx >= l.rect.x && sx <= l.rect.x + l.rect.w && sy >= l.rect.y && sy <= l.rect.y + l.rect.h) byLabel = scene.tree.byId.get(l.id) ?? null;
+    if (l.alpha >= 0.5 && sx >= l.rect.x && sx <= l.rect.x + l.rect.w && sy >= l.rect.y && sy <= l.rect.y + l.rect.h) byLabel = scene.nodeOf?.(l.id) ?? scene.tree.byId.get(l.id) ?? null;
   }
   const { tree, geo, land } = scene;
   const { x, y, k, width: W, height: H } = view;
@@ -967,8 +969,9 @@ export function hitTest(scene, view, info, sx, sy) {
   let byLand = null;
   if (land.some((ring) => polygonContains(ring, p))) {
     byLand = tree.root;
-    while (byLand.children.length && geo.get(byLand.id).size * k >= T.sub * 1.02) {
-      const next = byLand.children.find((c) => polygonContains(geo.get(c.id).poly, p));
+    const kidsOf = scene.kidsOf ?? ((n) => n.children);
+    while (kidsOf(byLand).length && geo.get(byLand.id).size * k >= T.sub * 1.02) {
+      const next = kidsOf(byLand).find((c) => polygonContains(geo.get(c.id).poly, p));
       if (!next) break;
       byLand = next;
     }

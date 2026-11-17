@@ -17,7 +17,7 @@ import { Icon } from './components/Icon.jsx';
 import { isNewer } from './model/version.js';
 import { backOf, followLink, linkTarget, repoOf } from './model/links.js';
 import { LinkContext } from './components/links-context.js';
-import { claimsByNode } from './map/houses.js';
+import { claimsByNode, openedBy } from './map/houses.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -306,11 +306,19 @@ export function App() {
   }, [panelMode, mobile, sheetFull, panelW]);
 
   // The panel holds one item at a time (EDIT-13): picking another replaces it, and its edits wait in the changeset.
-  const pick = useCallback((id) => {
+  // Choosing a behaviour's house on the map opens its issue at that behaviour (MARK-16).
+  const [atBehaviour, setAtBehaviour] = useState(null);
+  const pick = useCallback((target) => {
+    const { id, behaviour } = openedBy(target);
     setSelectedId(id);
+    setAtBehaviour(behaviour);
     if (id) mapRef.current?.flyTo(id);
   }, []);
-  const onMapSelect = useCallback((id) => setSelectedId(id), []);
+  const onMapSelect = useCallback((target) => {
+    const { id, behaviour } = openedBy(target);
+    setSelectedId(id);
+    setAtBehaviour(behaviour);
+  }, []);
   // Following a link in an item's text (EDIT-14): the map flies to the item and it opens, and Back returns here.
   const follow = useCallback(
     (id) => {
@@ -390,7 +398,8 @@ export function App() {
   useEffect(() => {
     if (!commenting) setPlacePick(null);
   }, [commenting]);
-  const onCommentPick = useCallback((id, x, y) => setPlacePick({ id, x, y }), []);
+  // A comment on a house is a comment on its issue.
+  const onCommentPick = useCallback((id, x, y) => setPlacePick({ id: openedBy(id).id, x, y }), []);
 
   const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
   const newVersion = useNewVersion();
@@ -685,6 +694,7 @@ export function App() {
                 <Details
                   key={selected.id}
                   node={selected}
+                  atBehaviour={atBehaviour}
                   tree={tree}
                   lens={lens}
                   comments={comments}

@@ -4,11 +4,20 @@
 import { ROOT_ID } from '@shared/schema.js';
 import { editableOf, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
 
-// An issue's own scope beyond its child issues is open land (#46 MARK-18): each behaviour it lists that no house has taken
-// on yet weighs this much, so a big issue with only a few houses is a big lot, mostly park.
-const OPEN_PER_BEHAVIOUR = 0.6;
+// Each behaviour an issue lists is a house on its own lot in the issue's block (#46 MARK-16), and weighs this much of
+// the map. A leaf issue's block is its scope: with few behaviours it is mostly open land, a park, and houses fill it as
+// behaviours are added (MARK-18). An issue's own houses come on top of its child issues' blocks.
+export const HOUSE_WEIGHT = 0.6;
 const PLACES = new Set(['project', 'area']);
-const ownBehaviours = (n) => (n.tags.includes('code') || PLACES.has(n.kind) ? 0 : parseBehaviours(sectionText(parseIssue(editableOf(n).markdown), 'Behaviours')).filter((r) => r.id).length);
+const inIdOrder = (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true });
+/** The behaviours an issue lists itself, as { id, words }, in behaviour ID order: the houses on its block. */
+const behaviourRowsOf = (n) =>
+  n.tags.includes('code') || PLACES.has(n.kind) || n.kind === 'behavior'
+    ? []
+    : parseBehaviours(sectionText(parseIssue(editableOf(n).markdown), 'Behaviours'))
+        .filter((r) => r.id)
+        .map((r) => ({ id: r.id, words: (r.then || r.text || r.when || r.given || '').trim() }))
+        .sort(inIdOrder);
 const BASE_WEIGHT = { project: 8, area: 6, epic: 5, feature: 4, story: 3, task: 2, bug: 1.6, behavior: 1.2 };
 const CONTAINER = new Set(['project', 'area', 'epic', 'feature']);
 const SEVERITY = { off_track: 4, at_risk: 3, on_track: 2, not_started: 1, done: 0 };
@@ -95,6 +104,7 @@ export function buildTree(rawNodes, today = new Date().toISOString().slice(0, 10
 }
 
 function rollup(n, today) {
+  n.behaviourRows = behaviourRowsOf(n);
   const kids = n.children;
   const leaf = kids.length === 0;
   const done = n.status === 'done';
@@ -125,15 +135,19 @@ function rollup(n, today) {
     behaviours: n.kind === 'behavior' ? 1 : 0,
     behavioursKept: n.kind === 'behavior' && done ? 1 : 0,
     // The behaviours the issue lists itself, and how much of its scope isn't built into houses yet (MARK-18).
-    own: ownBehaviours(n),
+    own: n.behaviourRows.length,
     open: 0,
     owners: new Map(),
     owner: n.assignee || '',
   };
 
+  const houses = s.own * HOUSE_WEIGHT;
   if (leaf) {
     const est = n.estimate != null ? 0.7 + Math.min(n.estimate, 13) * 0.1 : 1;
-    s.raw = n.weight ?? (BASE_WEIGHT[n.kind] ?? 2) * est;
+    const scope = (BASE_WEIGHT[n.kind] ?? 2) * est;
+    // Its scope until its houses outgrow it; whatever the houses don't fill yet is park.
+    s.open = houses ? Math.max(0, scope - houses) : 0;
+    s.raw = n.weight ?? Math.max(scope, houses);
     s.work = rejected ? 0 : s.raw;
     s.progress = { done: 1, review: 0.85, in_progress: 0.45, blocked: 0.2 }[n.status] ?? 0;
     if (done || rejected) s.health = 'done';
@@ -156,9 +170,7 @@ function rollup(n, today) {
       for (const key of ['items', 'leaves', 'doneLeaves', 'openBugs', 'bugs', 'newFeatures', 'newFeaturesDone', 'poorlyDefined', 'blocked', 'behaviours', 'behavioursKept']) s[key] += cs[key];
       for (const [who, w] of cs.owners) s.owners.set(who, (s.owners.get(who) ?? 0) + w);
     }
-    // Each child issue takes on its own behaviours, at least one, of its parent's scope; what's left is open land.
-    if (s.own && !n.tags.includes('code')) s.open = Math.max(0, s.own - kids.reduce((t, c) => t + Math.max(1, c.stats.own), 0)) * OPEN_PER_BEHAVIOUR;
-    s.raw = n.weight ?? area + s.open;
+    s.raw = n.weight ?? area + houses;
     s.work = rejected ? 0 : total;
     s.progress = done || !total ? 1 : progress / total;
     s.defAvg = (def + defSum / area) / 2;

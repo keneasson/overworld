@@ -183,6 +183,8 @@ export function symbolsInUse(tree, live) {
   const kinds = new Set(), fills = new Set(), badges = new Set(), markers = new Map();
   for (const n of tree.list) {
     kinds.add(n.kind);
+    // The behaviours an issue lists are houses on its block (MARK-16), each with the behaviour symbol.
+    if (n.behaviourRows?.length) kinds.add('behavior');
     fills.add(statusKey(n));
     for (const b of badgesOf(n, live)) badges.add(b.type);
     for (const m of markersOf(n, live)) if (!BADGES.includes(m.type)) markers.set(`${m.type}${m.on ?? ''}`, m);
