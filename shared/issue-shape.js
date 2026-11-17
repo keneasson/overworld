@@ -282,10 +282,9 @@ export const hasOpenQuestions = (content) => Boolean(contentOf(content)) && !/^(
  */
 export function compareItems(adopted, proposed) {
   const a = parseIssue(adopted.markdown), b = parseIssue(proposed.markdown);
-  const said = (r) => writeBehaviour(r).replace(/^\s*[-*]\s+/, '').replace(/\s+/g, ' ').trim();
   const rows = (shape) => {
     const out = new Map();
-    for (const r of parseBehaviours(sectionText(shape, 'Behaviours'))) out.set(r.id || `text:${said(r)}`, said(r));
+    for (const r of parseBehaviours(sectionText(shape, 'Behaviours'))) out.set(changeKeyOf(r), said(r));
     return out;
   };
   const changes = (before, after) => [...new Set([...before.keys(), ...after.keys()])].flatMap((k) => {
@@ -296,7 +295,47 @@ export function compareItems(adopted, proposed) {
   const sections = (shape) => new Map([['Head', contentOf(shape.head)], ...shape.sections.filter((s) => s.name !== 'Behaviours').map((s) => [s.name, contentOf(s.raw)])].filter(([, t]) => t));
   return {
     title: adopted.title === proposed.title ? null : { before: adopted.title, after: proposed.title },
-    behaviours: changes(rows(a), rows(b)).map(({ key, ...c }) => ({ id: key.startsWith('text:') ? '' : key, ...c })),
+    behaviours: changes(rows(a), rows(b)).map(({ key, ...c }) => ({ key, id: key.startsWith('text:') ? '' : key, ...c })),
     sections: changes(sections(a), sections(b)).map(({ key, ...c }) => ({ name: key, ...c })),
   };
+}
+
+// A behaviour row as said, whitespace aside, and the key a refinement's change to it goes by: its ID, or its words.
+const said = (r) => writeBehaviour(r).replace(/^\s*[-*]\s+/, '').replace(/\s+/g, ' ').trim();
+const changeKeyOf = (r) => r.id || `text:${said(r)}`;
+
+/** Everything a refinement changes that isn't a behaviour (its title and other sections), ticked as one (#13 ADOPT-05). */
+export const OTHER_CHANGES = 'other';
+
+/** What can be ticked in a refinement of an item: each changed behaviour by its key, then its other changes as one. */
+export const changeKeys = (diff) => [...diff.behaviours.map((b) => b.key), ...(diff.title || diff.sections.length ? [OTHER_CHANGES] : [])];
+
+/**
+ * `into` with the ticked changes of `from` (keys from changeKeys): each ticked behaviour as `from` has it (changed,
+ * added where `from` puts it, or removed), and with OTHER_CHANGES its title and other sections too. Nothing else moves,
+ * so adopting some of a refinement leaves the rest of the item as it was, and declining some takes those back out of it.
+ */
+export function mergeChanges(into, from, picks) {
+  const pick = new Set(picks);
+  const other = pick.has(OTHER_CHANGES);
+  const rows = parseBehaviours(sectionText(parseIssue(into.markdown), 'Behaviours'));
+  const theirs = parseBehaviours(sectionText(parseIssue(from.markdown), 'Behaviours'));
+  const byKey = new Map(theirs.map((r) => [changeKeyOf(r), r]));
+  let moved = false;
+  for (const key of pick) {
+    if (key === OTHER_CHANGES) continue;
+    const at = rows.findIndex((r) => changeKeyOf(r) === key), row = byKey.get(key);
+    if (at >= 0 && row) rows[at] = row;
+    else if (at >= 0) rows.splice(at, 1);
+    else if (row) {
+      // After the last behaviour before it in `from` that is here too; first if there is none.
+      const before = theirs.slice(0, theirs.indexOf(row)).map(changeKeyOf).reverse();
+      const after = before.map((k) => rows.findIndex((r) => changeKeyOf(r) === k)).find((i) => i >= 0) ?? -1;
+      rows.splice(after + 1, 0, row);
+    } else continue;
+    moved = true;
+  }
+  const base = other ? from : into;
+  if (!moved && !other) return { title: into.title, markdown: into.markdown };
+  return { title: base.title, markdown: writeIssue(parseIssue(base.markdown), { Behaviours: rows.map((r) => r.raw).join('\n') }) };
 }

@@ -3,7 +3,7 @@
 
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
-import { issueOf, newItemMarkdown, parseIssue, placeOf, writeIssue } from '../shared/issue-shape.js';
+import { changeKeys, compareItems, issueOf, mergeChanges, newItemMarkdown, parseIssue, placeOf, writeIssue } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
 import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './edits.mjs';
@@ -408,8 +408,11 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     [
       'POST',
       /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/items\/(issue-\d+|node-[\w-]+)\/(adopt|decline)$/,
-      // A person's yes or no to one item of someone else's refinement (ADOPT-05). Adopting changes the map, and the item
-      // waits for a save like any accepted edit (SYNC-07); declining drops it, with a reason its author sees at standup.
+      // A person's yes or no to someone else's refinement of an item, one behaviour at a time (ADOPT-05): `behaviours`
+      // lists the ticked changes (behaviour IDs, and 'other' for its title and other sections), and without it, all of
+      // them. Adopting merges just those into the item, which waits for a save like any accepted edit (SYNC-07);
+      // declining takes them out of the proposal, with a reason its author sees at standup. The item stays in the
+      // refinement until nothing is left in it, and the refinement until no item is (ADOPT-06).
       // Agents have no tool that reaches this (ADOPT-10).
       async ({ params: [pid, cid, key, action], body }) => {
         const cs = await loadChangeset(pid, cid, { open: true });
@@ -419,19 +422,36 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const now = new Date(clock()).toISOString(); // the agents' clock: its standup reports what was decided since
         const by = author(body?.by);
         const { project, nodes } = await loadProject(pid);
+        const before = findItem(nodes, key);
+        if (!before) throw new HttpError(404, 'No such item on the map');
+        const all = changeKeys(compareItems(editableOf(before), entry.after));
+        if (body?.behaviours != null && !Array.isArray(body.behaviours)) throw new ValidationError('behaviours: expected a list of behaviour IDs');
+        const picks = body?.behaviours == null ? all : [...new Set(body.behaviours.map(String))];
+        if (!picks.length && all.length) throw new ValidationError('behaviours: tick at least one');
+        const unknown = picks.filter((p) => !all.includes(p));
+        if (unknown.length) throw new ValidationError(`behaviours: not changed in this refinement: ${unknown.join(', ')}`);
+        const whole = all.every((p) => picks.includes(p));
         let changed = [];
         if (action === 'adopt') {
           // Open questions don't hold it back: they show as badges, and are answered in their threads (ADOPT-08).
           if (conflictsOf({ items: [entry] }, nodes).length) throw Object.assign(new HttpError(409, `Changed since this was proposed: ${entry.nodeTitle}`), { conflicts: [key] });
-          const before = findItem(nodes, key);
-          changed = [markEdited(before, applyTo(before, entry.after, now), stores.forProject(project))];
+          const adopted = whole ? entry.after : mergeChanges(editableOf(before), entry.after, picks);
+          changed = [markEdited(before, applyTo(before, adopted, now), stores.forProject(project))];
           await model.nodes.put(pid, changed);
           await touchProject(project, nodes.map((n) => (n.id === before.id ? changed[0] : n)));
-        }
-        const decided = { key, nodeTitle: entry.nodeTitle, by, at: now, ...(entry.readyForAdoption?.length ? { readyForAdoption: entry.readyForAdoption } : {}) };
+          // What is left is proposed against the item as it now is.
+          entry.base = editableOf(changed[0]);
+        } else entry.after = mergeChanges(entry.after, editableOf(before), picks);
+        const ready = entry.readyForAdoption?.filter((id) => picks.includes(id)) ?? [];
+        const decided = { key, nodeTitle: entry.nodeTitle, behaviours: picks, by, at: now, ...(ready.length ? { readyForAdoption: ready } : {}) };
         if (action === 'adopt') cs.adopted = [...(cs.adopted ?? []), decided];
         else cs.declined = [...(cs.declined ?? []), { ...decided, reason: text(body?.reason ?? '', 2000, 'reason').trim() }];
-        cs.items = cs.items.filter((it) => it.key !== key);
+        const spec = changed[0] ? editableOf(changed[0]) : editableOf(before);
+        const left = whole ? [] : changeKeys(compareItems(spec, entry.after));
+        if (left.length) {
+          entry.readyForAdoption = entry.readyForAdoption?.filter((id) => left.includes(id));
+          if (!entry.readyForAdoption?.length) delete entry.readyForAdoption;
+        } else cs.items = cs.items.filter((it) => it.key !== key);
         cs.updatedAt = now;
         // A refinement with nothing left in it is closed: adopted if anything in it was.
         if (!cs.items.length) Object.assign(cs, cs.adopted?.length ? { status: 'accepted', acceptedAt: now } : { status: 'declined' });

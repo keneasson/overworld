@@ -90,10 +90,11 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
   }, [projectId, fail]);
 
   // Adopt or decline one item of someone else's refinement (ADOPT-05). Adopting changes the map and waits for a save.
-  async function decide(cs, key, action, reason = '') {
+  // `behaviours` is what was ticked (ADOPT-05); without it, the whole item.
+  async function decide(cs, key, action, reason = '', behaviours) {
     setBusy(true);
     try {
-      const res = await api.decideChangesetItem(projectId, cs.id, key, action, { by: name, reason });
+      const res = await api.decideChangesetItem(projectId, cs.id, key, action, { by: name, reason, ...(behaviours ? { behaviours } : {}) });
       setOthers((os) => os.map((o) => (o.id === res.changeset.id ? res.changeset : o)).filter((o) => o.status === 'open'));
       if (res.nodes.length) {
         onAccepted(res.nodes);
@@ -108,8 +109,8 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
       setBusy(false);
     }
   }
-  const adopt = (cs, key) => decide(cs, key, 'adopt');
-  const decline = (cs, key, reason) => decide(cs, key, 'decline', reason);
+  const adopt = (cs, key, behaviours) => decide(cs, key, 'adopt', '', behaviours);
+  const decline = (cs, key, reason, behaviours) => decide(cs, key, 'decline', reason, behaviours);
 
   const ensureChangeset = useCallback(() => {
     csPromise.current ??= api.createChangeset(projectId, { author: name }).then(({ changeset: cs }) => {

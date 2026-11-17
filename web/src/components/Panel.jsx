@@ -4,7 +4,7 @@ import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
 import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
-import { compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
+import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
@@ -148,10 +148,11 @@ const when = (iso) => {
 };
 
 /** One change in a refinement: what the spec says now, struck through, and what is proposed. */
-function Change({ label, change, before, after, ready }) {
+function Change({ label, change, before, after, ready, tick = null }) {
   return (
     <li className={`change change-${change}`}>
       <div className="change-head">
+        {tick}
         <span className="change-label">{label}</span>
         <span className={`change-kind change-kind-${change}`}>{CHANGE_LABEL[change]}</span>
         {ready && (
@@ -166,18 +167,39 @@ function Change({ label, change, before, after, ready }) {
   );
 }
 
+/** A tick on one change of a refinement (ADOPT-05). */
+function Tick({ on, label, onChange, disabled }) {
+  return <input type="checkbox" className="change-tick" checked={on} aria-label={label} onChange={(e) => onChange(e.target.checked)} disabled={disabled} />;
+}
+
 /**
  * Someone else's refinement of this item (ADOPT-02): who proposed it and when, what it changes against the spec,
- * which behaviours are ready for adoption (ADOPT-04), and the person's yes or no (ADOPT-05). Open questions show as
- * badges, and never hold it back (ADOPT-08).
+ * which behaviours are ready for adoption (ADOPT-04), and the person's yes or no, one behaviour at a time (ADOPT-05):
+ * each changed behaviour has a tick, its other changes one more, and those marked ready start ticked. Adopt or Decline
+ * acts on the ticked ones only, and the rest stay to decide (ADOPT-06). Open questions show as badges, and never hold it
+ * back (ADOPT-08).
  */
 function Refinement({ cs, item, node, editing }) {
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
   const diff = useMemo(() => compareItems(editableOf(node), item.after), [node, item.after]);
+  const keys = useMemo(() => changeKeys(diff), [diff]);
   const ready = new Set(item.readyForAdoption ?? []);
-  const nothing = !diff.title && !diff.behaviours.length && !diff.sections.length;
+  const [ticks, setTicks] = useState(() => new Set(keys.filter((k) => ready.has(k))));
+  const ticked = keys.filter((k) => ticks.has(k));
+  const tick = (k, on) => setTicks((t) => (on ? new Set([...t, k]) : new Set([...t].filter((x) => x !== k))));
+  const all = keys.length > 0 && ticked.length === keys.length;
+  const nothing = !keys.length;
   const key = item.key;
+  // With nothing to tick (it proposes the item as it is), the whole item is decided.
+  const picks = nothing ? undefined : ticked;
+  const done = () => {
+    setTicks(new Set());
+    setDeclining(false);
+    setReason('');
+  };
+  const count = nothing ? '' : ` ${ticked.length}`;
+  const other = diff.title || diff.sections.length;
   return (
     <section className="refinement" aria-label={`Refinement by ${cs.author}`}>
       <div className="refinement-head">
@@ -190,21 +212,47 @@ function Refinement({ cs, item, node, editing }) {
       {nothing ? (
         <p className="empty-note">It proposes the item as it already is.</p>
       ) : (
-        <ul className="changes">
-          {diff.title && <Change label="Title" change="changed" before={diff.title.before} after={diff.title.after} />}
-          {diff.behaviours.map((b, i) => (
-            <Change key={`b${b.id || i}`} label={b.id || 'Behaviour'} change={b.change} before={b.before} after={b.after} ready={ready.has(b.id)} />
-          ))}
-          {diff.sections.map((c) => (
-            <Change key={`s${c.name}`} label={c.name === 'Head' ? 'Part of · Kind · Place' : c.name} change={c.change} before={c.before} after={c.after} />
-          ))}
-        </ul>
+        <>
+          <label className="refinement-all">
+            <input
+              type="checkbox"
+              checked={all}
+              ref={(el) => el && (el.indeterminate = ticked.length > 0 && !all)}
+              onChange={(e) => setTicks(new Set(e.target.checked ? keys : []))}
+              disabled={editing.busy}
+            />
+            Select all
+          </label>
+          <ul className="changes">
+            {diff.behaviours.map((b, i) => (
+              <Change
+                key={`b${b.key || i}`}
+                label={b.id || 'Behaviour'}
+                change={b.change}
+                before={b.before}
+                after={b.after}
+                ready={ready.has(b.id)}
+                tick={<Tick on={ticks.has(b.key)} label={`Tick ${b.id || 'this behaviour'}`} onChange={(on) => tick(b.key, on)} disabled={editing.busy} />}
+              />
+            ))}
+            {other && (
+              <li className="change change-other">
+                <div className="change-head">
+                  <Tick on={ticks.has(OTHER_CHANGES)} label="Tick the other changes" onChange={(on) => tick(OTHER_CHANGES, on)} disabled={editing.busy} />
+                  <span className="change-label">Other changes</span>
+                </div>
+                <ul className="changes">
+                  {diff.title && <Change label="Title" change="changed" before={diff.title.before} after={diff.title.after} />}
+                  {diff.sections.map((c) => (
+                    <Change key={`s${c.name}`} label={c.name === 'Head' ? 'Part of · Kind · Place' : c.name} change={c.change} before={c.before} after={c.after} />
+                  ))}
+                </ul>
+              </li>
+            )}
+          </ul>
+        </>
       )}
-      {ready.size > 0 && (
-        <p className="refinement-ready">
-          Ready for adoption: {[...ready].join(', ')}
-        </p>
-      )}
+      {ready.size > 0 && <p className="refinement-ready">Ready for adoption: {[...ready].join(', ')}</p>}
       {declining ? (
         <div className="refinement-decline">
           <textarea aria-label="Why decline (optional)" placeholder="Why not? (optional: its author sees this)" value={reason} maxLength={2000} rows={2} onChange={(e) => setReason(e.target.value)} />
@@ -212,24 +260,24 @@ function Refinement({ cs, item, node, editing }) {
             <button type="button" onClick={() => setDeclining(false)} disabled={editing.busy}>
               Keep it
             </button>
-            <button type="button" className="armed" onClick={() => editing.decline(cs, key, reason)} disabled={editing.busy}>
-              Decline
+            <button type="button" className="armed" onClick={async () => (await editing.decline(cs, key, reason, picks)) && done()} disabled={editing.busy || (!nothing && !ticked.length)}>
+              Decline{count}
             </button>
           </div>
         </div>
       ) : (
         <div className="edit-actions">
-          <button type="button" onClick={() => setDeclining(true)} disabled={editing.busy}>
-            Decline…
+          <button type="button" onClick={() => setDeclining(true)} disabled={editing.busy || (!nothing && !ticked.length)}>
+            Decline{count}…
           </button>
           <button
             type="button"
             className="primary"
-            onClick={() => editing.adopt(cs, key)}
-            disabled={editing.busy}
-            title="Adopt it: the item takes this text, and waits for a save to reach GitHub"
+            onClick={async () => (await editing.adopt(cs, key, picks)) && done()}
+            disabled={editing.busy || (!nothing && !ticked.length)}
+            title="Adopt the ticked changes: the item takes them, and waits for a save to reach GitHub"
           >
-            <Icon name="check" size={16} /> Adopt
+            <Icon name="check" size={16} /> Adopt{count}
           </button>
         </div>
       )}

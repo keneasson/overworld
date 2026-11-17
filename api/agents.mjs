@@ -366,7 +366,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const refinements = changesets.filter((cs) => cs.status === 'open' && cs.author === me).map((cs) => ({ refinement: cs.id, place: data.nodes.find((n) => n.id === cs.scopeId)?.title ?? cs.scopeId, items: cs.items.length }));
     // People's yes or no to this agent's refinements since the last standup (ADOPT-05): declined ones say why.
     const decided = changesets.filter((cs) => cs.author === me).flatMap((cs) => [...(cs.adopted ?? []).map((d) => ({ ...d, outcome: 'adopted' })), ...(cs.declined ?? []).map((d) => ({ ...d, outcome: 'declined' }))])
-      .filter((d) => !last || d.at > last.at).map((d) => ({ item: d.key, title: title(d.key), outcome: d.outcome, by: d.by, at: d.at, ...(d.reason ? { reason: d.reason } : {}) }));
+      .filter((d) => !last || d.at > last.at).map((d) => ({ item: d.key, title: title(d.key), outcome: d.outcome, ...(d.behaviours?.length ? { behaviours: d.behaviours } : {}), by: d.by, at: d.at, ...(d.reason ? { reason: d.reason } : {}) }));
     const unsaved = pending.filter((n) => n.sync && n.sync !== 'saving').map((n) => ({ item: keyOf(n), title: n.title, state: n.sync }));
     const holding = held.map((item) => ({ item, title: title(item), behaviours: mine.filter((c) => c.item === item).map((c) => c.behaviour), until: mine.find((c) => c.item === item).until }));
 
