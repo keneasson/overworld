@@ -204,6 +204,7 @@ test("ADOPT-05 ADOPT-10 a person adopts or declines an agent's refinement, and t
   assert.match((await a.use('context', { issue: 'issue-12' })).behaviours[0].text, /then this waits/, 'declined: the spec stays');
   const decided = (await a.use('standup')).addressed_to_you.your_refinements_decided;
   assert.deepEqual(decided.map((d) => [d.item, d.outcome, d.by, d.reason]), [['issue-11', 'adopted', 'Ken', undefined], ['issue-12', 'declined', 'Ken', 'Work must wait for its dependency.']]);
+  assert.deepEqual(decided.map((d) => d.behaviours), [['CL-01', 'CL-02'], ['BL-01']], 'which behaviours, as people decide them one at a time: the proposal changed CL-01 and dropped CL-02');
   assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept|decline/.test(t.name)), 'the agent itself never adopts');
 });
 

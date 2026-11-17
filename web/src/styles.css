@@ -495,6 +495,23 @@ button {
 .change-after {
   color: var(--text);
 }
+.change-tick {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.refinement-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  color: var(--muted);
+}
+.change-other > .changes {
+  margin: 4px 0 0;
+}
+.change-other > .changes .change {
+  padding: 2px 0 2px 20px;
+}
 .pill-ready {
   background: #1e8e3e;
 }

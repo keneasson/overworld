@@ -82,8 +82,9 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     onCreate: ({ editor: e }) => {
       opened.current = e.getMarkdown();
     },
-    // Changes before the editor has opened are its own setup, not the person's.
-    onUpdate: ({ editor: e }) => opened.current != null && live.current.onChange({ title: live.current.title, markdown: fromDocument(original, opened.current, e.getMarkdown()) }),
+    // Changes before the editor has opened are its own setup, not the person's; nor is redrawing the comment markers,
+    // which changes no text: without this, an item changed underneath (part of a refinement adopted) got its old text back as a draft.
+    onUpdate: ({ editor: e, transaction }) => opened.current != null && transaction.docChanged && live.current.onChange({ title: live.current.title, markdown: fromDocument(original, opened.current, e.getMarkdown()) }),
   });
 
   // A new item opens with its title box empty and ready, its placeholder shown faintly (EDIT-22).

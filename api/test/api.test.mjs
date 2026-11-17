@@ -502,6 +502,46 @@ test('ADOPT-05 a person declines an item of a refinement: it is dropped, the spe
   assert.deepEqual(await map(), before);
 });
 
+test('ADOPT-05 ADOPT-06 a person adopts or declines a refinement one behaviour at a time, and it stays open until nothing is left', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const more = (n) => `- PAY-${n} Given a token, when case ${n} happens, then it is handled.`;
+  const proposed = four
+    .replace('Cards need tokens.', 'Cards need tokens, so numbers never reach us.')
+    .replace('then it is a token.', `then it is a token, never a number.\n${[11, 12, 13, 14].map(more).join('\n')}`);
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: proposed });
+  const spec = async () => (await map()).find((n) => n.title.startsWith('#4 ')).body;
+  const decide = (action, body) => call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/${action}`, { by: 'Ken', ...body });
+
+  // Ticked ones only: three adopted, and the rest of the item is left as the spec had it.
+  let res = await decide('adopt', { behaviours: ['PAY-10', 'PAY-11', 'PAY-12'] });
+  assert.equal(res.status, 200);
+  let now = await spec();
+  assert.match(now, /never a number\.\n- PAY-11 .*\n- PAY-12 /, 'the ticked behaviours are merged in, in their place');
+  assert.doesNotMatch(now, /PAY-13|PAY-14|numbers never reach us/, 'nothing unticked is adopted');
+  assert.deepEqual(res.body.changeset.adopted.map((d) => [d.key, d.behaviours, d.by]), [['issue-4', ['PAY-10', 'PAY-11', 'PAY-12'], 'Ken']]);
+  assert.equal(res.body.changeset.status, 'open', 'the rest is still to decide');
+  assert.equal(res.body.changeset.items.length, 1);
+
+  // One declined, with a reason for its author: it is dropped from the proposal, and the spec never sees it.
+  res = await decide('decline', { behaviours: ['PAY-13'], reason: 'Covered by PAY-12.' });
+  assert.deepEqual(res.body.changeset.declined.map((d) => [d.behaviours, d.reason]), [[['PAY-13'], 'Covered by PAY-12.']]);
+  assert.doesNotMatch(res.body.changeset.items[0].after.markdown, /PAY-13/, 'gone from the proposal');
+  assert.match(res.body.changeset.items[0].after.markdown, /PAY-14/, 'the rest is still proposed');
+  assert.doesNotMatch(await spec(), /PAY-13/);
+  assert.equal((await decide('adopt', { behaviours: ['PAY-13'] })).status, 400, 'a declined behaviour is no longer there to adopt');
+
+  // The rest, and the other changes (its Why) as one: nothing is left, so the refinement closes.
+  res = await decide('adopt', { behaviours: ['PAY-14', 'other'] });
+  assert.equal(res.body.changeset.status, 'accepted');
+  assert.equal(res.body.changeset.items.length, 0);
+  now = await spec();
+  assert.match(now, /numbers never reach us/);
+  assert.match(now, /PAY-12 .*\n- PAY-14 /);
+  assert.equal((await decide('adopt', {})).status, 409, 'closed');
+});
+
 test('ADOPT-08 open questions in a refinement show as badges, and never keep it from adoption', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
