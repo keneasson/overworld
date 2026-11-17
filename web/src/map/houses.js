@@ -1,6 +1,7 @@
 // Houses on their lots (#46 MARK-16, MARK-17). Zoomed in far enough, an issue that is work (a leaf: the issues an agent
 // can code) is a house: a small grey building footprint on its own lot (MARK-15), not filling it, every house facing
-// the same way like the houses along a street, so a feature reads as a neighbourhood. The footprint grows with what the
+// the same way. An issue's lots stand in rows along streets (streetRows in geometry.js), so its houses line up like a
+// street's and a feature reads as a neighbourhood. The footprint grows with what the
 // issue holds. A house whose behaviours are being coded (a live claim, MCP-04) has a bulldozer on its lot, which leaves
 // when the claim ends.
 

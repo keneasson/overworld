@@ -127,6 +127,61 @@ export function splitByWeights(poly, weights) {
   return result;
 }
 
+/** The cut across `poly` (normal (a, b), cut at a·x + b·y = c) that leaves `share` of its area on the low side. */
+function cutAt(poly, a, b, share) {
+  const area = Math.abs(polygonArea(poly));
+  const ds = poly.map(([x, y]) => a * x + b * y);
+  let lo = Math.min(...ds), hi = Math.max(...ds);
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (Math.abs(polygonArea(clipHalfPlane(poly, a, b, mid))) / area < share) lo = mid;
+    else hi = mid;
+  }
+  const c = (lo + hi) / 2;
+  return [clipHalfPlane(poly, a, b, c), clipHalfPlane(poly, -a, -b, -c)];
+}
+
+/**
+ * Lots in rows along streets, like houses on a residential block (#46 MARK-16): rows run along the block's long side,
+ * as many as keep each lot a little wider than deep, and each row is cut into lots in order, sized by weight.
+ */
+export function streetRows(poly, weights) {
+  const n = weights.length;
+  const [x0, y0, x1, y1] = bounds(poly);
+  const across = x1 - x0 >= y1 - y0;
+  const long = across ? x1 - x0 : y1 - y0, short = across ? y1 - y0 : x1 - x0;
+  const rows = Math.max(1, Math.min(n, Math.round(Math.sqrt((1.3 * n * short) / long))));
+  // Fill rows in order, each about an equal share of the weight.
+  const total = weights.reduce((s, w) => s + w, 0);
+  const groups = [[]];
+  let acc = 0;
+  weights.forEach((w, i) => {
+    if (groups.at(-1).length && groups.length < rows && acc + w / 2 > (total * groups.length) / rows) groups.push([]);
+    groups.at(-1).push(i);
+    acc += w;
+  });
+  const bands = groups;
+  const out = new Array(n);
+  // Rows are cut across the short side (a: the row direction's normal), lots along the long side.
+  const [ra, rb, la, lb] = across ? [0, 1, 1, 0] : [1, 0, 0, 1];
+  let rest = poly;
+  let left = total;
+  bands.forEach((items, r) => {
+    const w = items.reduce((s, i) => s + weights[i], 0);
+    let band = rest;
+    if (r < bands.length - 1) [band, rest] = cutAt(rest, ra, rb, w / left);
+    left -= w;
+    let along = w;
+    items.forEach((i, j) => {
+      let lot = band;
+      if (j < items.length - 1) [lot, band] = cutAt(band, la, lb, weights[i] / along);
+      along -= weights[i];
+      out[i] = lot;
+    });
+  });
+  return out;
+}
+
 /**
  * A smooth, position-only warp of the plane. Applied to every polygon after
  * layout, it turns straight Voronoi edges into wandering borders and the

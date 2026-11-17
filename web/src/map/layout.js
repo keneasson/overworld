@@ -17,8 +17,9 @@ import { voronoiMapSimulation } from 'd3-voronoi-map';
 import { weightedVoronoi } from 'd3-weighted-voronoi';
 import { polygonArea, polygonCentroid, polygonContains } from 'd3';
 import polylabel from 'polylabel';
-import { bounds, circle, densify, ensureOrientation, hashString, makeWarp, mulberry32, roundedRect, scalePolygon, splitByWeights } from './geometry.js';
+import { bounds, circle, densify, ensureOrientation, hashString, makeWarp, mulberry32, roundedRect, scalePolygon, splitByWeights, streetRows } from './geometry.js';
 import { anchorsFor, resolveSite } from './places.js';
+import { isHouse } from './houses.js';
 
 export const PROJECTIONS = [
   { id: 'site', name: 'Site layout', blurb: 'Shaped like the product: screens, apps and services, with each part where you would look for it.' },
@@ -26,6 +27,8 @@ export const PROJECTIONS = [
 ];
 
 const DAMPING = 0.8;
+// Places hold their parts where you'd look for them; only an issue's children can be a street of houses.
+const NOT_BLOCKS = new Set(['project', 'area']);
 /** The geometry key of an issue's open land (MARK-18). */
 export const parkId = (n) => `${n.id}:park`;
 const weightOf = (n) => Math.pow(Math.max(n.stats.raw, 0.1), DAMPING);
@@ -58,7 +61,9 @@ function placeTree(geo, n, poly, split) {
   }
   const all = park ? [...kids, park] : kids;
   const weights = [...kids.map(weightOf), ...(park ? [Math.pow(n.stats.open, DAMPING)] : [])];
-  const polys = split(n, all, weights, poly) ?? splitByWeights(poly, weights);
+  // An issue whose children are mostly houses is a residential block: its lots stand in rows along streets (MARK-16).
+  const block = !NOT_BLOCKS.has(n.kind) && !n.tags?.includes('code') && kids.filter(isHouse).length * 2 >= kids.length;
+  const polys = (block ? streetRows(poly, weights) : split(n, all, weights, poly)) ?? splitByWeights(poly, weights);
   kids.forEach((k, i) => placeTree(geo, k, ensureOrientation(polys[i]), split));
   if (park) geo.set(park.id, describe(ensureOrientation(polys[kids.length])));
 }
