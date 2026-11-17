@@ -7,7 +7,7 @@ import { Icon } from './Icon.jsx';
 import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
 import { Composer, Thread } from '../editor/Annotate.jsx';
-import { isDismissed, refinementThreads } from '@shared/annotations.js';
+import { clausesOf, isDismissed, locate, piecesOf, quoteOf, refinementThreads } from '@shared/annotations.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
 import { issueRefExtension } from '../model/links.js';
@@ -165,7 +165,7 @@ function Change({ label, change, before, after, ready, tick = null, talk = null 
         {talk?.head}
       </div>
       {before && <del className="change-before">{before}</del>}
-      {after && <ins className="change-after">{after}</ins>}
+      {after && (talk?.proposed ?? <ins className="change-after">{after}</ins>)}
       {talk?.body}
     </li>
   );
@@ -174,14 +174,44 @@ function Change({ label, change, before, after, ready, tick = null, talk = null 
 /**
  * The conversation on one behaviour of a refinement (#13 ADOPT-03, ADOPT-14): pushback or a question for its author,
  * anchored to the refinement and the behaviour, so it stays with the behaviour through every revision. A thread waiting
- * for the author's word shows a badge.
+ * for the author's word shows a badge. `text` is the behaviour as proposed: select some of its words, or tap its Given,
+ * When or Then, to comment on just those, and the words a thread quotes are marked in it, as in the document.
  */
-function useTalk({ cs, item, on, label, threads, editing }) {
-  const [writing, setWriting] = useState(false);
+function useTalk({ cs, item, on, label, text = '', threads, editing }) {
+  const [writing, setWriting] = useState(null); // the anchor a new comment goes on
+  const [picked, setPicked] = useState(null); // words selected in the proposed text: { start, end }
   const [shut, setShut] = useState(() => new Set());
+  const words = useRef(null);
   const here = threads.get(on) ?? { threads: [], unanswered: 0 };
   const open = here.threads.filter((t) => !isDismissed(t.root));
-  const anchor = { on: 'behaviour', behaviour: on, refinement: cs.id };
+  const about = (start, end) => {
+    setPicked(null);
+    window.getSelection()?.removeAllRanges();
+    setWriting({ on: 'phrase', behaviour: on, refinement: cs.id, ...quoteOf(text, start, end) });
+  };
+  // Where a selection is in the proposed text, as offsets into it, trimmed of the spaces either side.
+  const offsetOf = (node, offset) => {
+    const r = document.createRange();
+    r.selectNodeContents(words.current);
+    r.setEnd(node, offset);
+    return r.toString().length;
+  };
+  const select = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !words.current?.contains(sel.anchorNode) || !words.current.contains(sel.focusNode)) return setPicked(null);
+    let [a, b] = [offsetOf(sel.anchorNode, sel.anchorOffset), offsetOf(sel.focusNode, sel.focusOffset)].sort((x, y) => x - y);
+    while (a < b && /\s/.test(text[a])) a++;
+    while (b > a && /\s/.test(text[b - 1])) b--;
+    setPicked(b > a ? { start: a, end: b } : null);
+  };
+  const clauses = useMemo(() => clausesOf(text), [text]);
+  const pieces = text ? piecesOf(text, clauses, open) : [];
+  const tap = (part) => {
+    if (!window.getSelection()?.isCollapsed) return; // a drag that selected words, not a tap
+    const c = clauses.find((x) => x.part === part);
+    if (c) about(c.start, c.end);
+  };
+  const show = (ts) => setShut((s) => new Set([...s].filter((id) => !ts.some((t) => t.root.id === id))));
   return {
     head: (
       <span className="change-talk">
@@ -190,11 +220,45 @@ function useTalk({ cs, item, on, label, threads, editing }) {
             <Icon name="comment" size={12} /> {here.unanswered}
           </span>
         )}
-        <button type="button" className="link-btn" onClick={() => setWriting(true)} disabled={writing}>
+        <button type="button" className="link-btn" onClick={() => setWriting({ on: 'behaviour', behaviour: on, refinement: cs.id })} disabled={Boolean(writing)}>
           Comment
         </button>
       </span>
     ),
+    proposed: text ? (
+      <>
+        <ins className="change-after talkable" ref={words} onMouseUp={select} onKeyUp={select}>
+          {pieces.map((p) => {
+            const said = text.slice(p.start, p.end);
+            if (p.threads.length)
+              return (
+                <mark key={p.start} className="noted" title="Open its comment" onClick={() => window.getSelection()?.isCollapsed && show(p.threads)}>
+                  {said}
+                </mark>
+              );
+            if (!p.clause) return said;
+            return (
+              <span
+                key={p.start}
+                className="clause"
+                role="button"
+                tabIndex={0}
+                title={`Comment on the ${p.clause}`}
+                onClick={() => tap(p.clause)}
+                onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), tap(p.clause))}
+              >
+                {said}
+              </span>
+            );
+          })}
+        </ins>
+        {picked && (
+          <button type="button" className="link-btn pick-comment" onMouseDown={(e) => e.preventDefault()} onClick={() => about(picked.start, picked.end)}>
+            <Icon name="comment" size={12} /> Comment on these words
+          </button>
+        )}
+      </>
+    ) : null,
     body: (writing || open.length > 0) && (
       <div className="change-threads">
         {open
@@ -203,9 +267,11 @@ function useTalk({ cs, item, on, label, threads, editing }) {
             <Thread
               key={t.root.id}
               heading={label}
+              quote={t.root.anchor?.quote}
+              moved={Boolean(t.root.anchor?.quote && text && !locate(text, t.root.anchor))}
               thread={t}
               you={editing.name}
-              onReply={(text) => editing.comment(item.key, t.root.anchor, text, { replyTo: t.root.id })}
+              onReply={(said) => editing.comment(item.key, t.root.anchor, said, { replyTo: t.root.id })}
               onDismiss={editing.dismiss}
               onClose={() => setShut((s) => new Set([...s, t.root.id]))}
             />
@@ -215,7 +281,15 @@ function useTalk({ cs, item, on, label, threads, editing }) {
             Show {open.filter((t) => shut.has(t.root.id)).length} hidden
           </button>
         )}
-        {writing && <Composer heading={label} what={`as ${cs.author} proposes it`} onPost={(text) => editing.comment(item.key, anchor, text)} onCancel={() => setWriting(false)} />}
+        {writing && (
+          <Composer
+            heading={label}
+            quote={writing.quote}
+            what={`as ${cs.author} proposes it`}
+            onPost={(said) => editing.comment(item.key, writing, said)}
+            onCancel={() => setWriting(null)}
+          />
+        )}
       </div>
     ),
   };
@@ -223,7 +297,7 @@ function useTalk({ cs, item, on, label, threads, editing }) {
 
 /** A behaviour row of a refinement, with its tick and its conversation. */
 function BehaviourChange({ b, cs, item, threads, editing, ready, tick }) {
-  const talk = useTalk({ cs, item, on: b.id, label: b.id, threads, editing });
+  const talk = useTalk({ cs, item, on: b.id, label: b.id, text: b.after, threads, editing });
   return <Change label={b.id || 'Behaviour'} change={b.change} before={b.before} after={b.after} ready={ready} tick={tick} talk={b.id ? talk : null} />;
 }
 

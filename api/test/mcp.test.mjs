@@ -229,6 +229,11 @@ test('ADOPT-03 ADOPT-05 ADOPT-06 ADOPT-14 a person reviews a refinement one beha
   const threads = async () => refinementThreads((await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments, (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((c) => c.id === refinement));
   assert.equal((await threads()).get('CL-05').unanswered, 1, 'it waits for the refinement\'s author: a badge on CL-05');
 
+  // A comment can be on one clause of it, too (ADOPT-03): the agent gets the words it is on.
+  const then = (await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', anchor: { on: 'phrase', behaviour: 'CL-05', refinement, quote: 'five minutes', prefix: 'then it expires in ', suffix: '.' }, text: 'Too short.', author: 'Ken' })).comment;
+  assert.deepEqual([then.anchor.refinement, then.anchor.behaviour, then.anchor.quote], [refinement, 'CL-05', 'five minutes']);
+  assert.equal((await threads()).get('CL-05').unanswered, 2);
+
   // The author hears of it at standup, as other comments addressed to it, with what it proposed and how to answer.
   const report = await a.use('standup');
   const note = report.addressed_to_you.annotations.find((n) => n.annotation === asked.id);
@@ -236,14 +241,16 @@ test('ADOPT-03 ADOPT-05 ADOPT-06 ADOPT-14 a person reviews a refinement one beha
   assert.match(note.prompt, new RegExp(`CL-05, as your refinement ${refinement} proposes it`));
   assert.match(note.prompt, /You propose:\n> CL-05 .*five minutes/);
   assert.match(note.prompt, new RegExp(`propose\\(refinement: "${refinement}"`));
+  assert.match(report.addressed_to_you.annotations.find((n) => n.annotation === then.id).prompt, new RegExp(`on these words of behaviour CL-05, as your refinement ${refinement} proposes it:\n> five minutes`));
   assert.deepEqual(report.addressed_to_you.your_refinements_decided.map((d) => [d.outcome, d.behaviours, d.reason]), [['adopted', ['CL-01', 'CL-02', 'CL-03'], undefined], ['declined', ['CL-04'], 'We log everything already.']]);
 
   // The agent answers with a revision and a reply; the thread stays with CL-05 through it.
   await a.use('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: [cl(1, 'it is held for two hours'), cl(2, 'it says so'), cl(3, 'it lasts longer'), cl(5, 'it expires when its build does')] }), annotations: [asked.id] });
   await a.use('reply', { annotation: asked.id, item: 'issue-11', text: 'It now lasts as long as the build.', refinement });
+  await a.use('reply', { annotation: then.id, item: 'issue-11', text: 'Agreed: it follows the build now.', refinement });
   const after = (await threads()).get('CL-05');
   assert.equal(after.unanswered, 0, 'answered');
-  assert.deepEqual(after.threads[0].replies.map((r) => r.text), ['It now lasts as long as the build.']);
+  assert.deepEqual(after.threads.map((t) => t.replies.map((r) => r.text)), [['It now lasts as long as the build.'], ['Agreed: it follows the build now.']]);
   assert.doesNotMatch(await spec(), /CL-05/, 'nothing adopted yet');
 
   // Adopted later: nothing is left, so the refinement closes.
