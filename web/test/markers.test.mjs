@@ -258,7 +258,7 @@ const behaviours = (prefix, count) => `${CLEAR.body}\n\n## Behaviours\n\n${Array
 const neighbourhood = ({ big = 0, parkKids = 2, busy = 0 } = {}) => [
   root,
   item('street', 'root', { kind: 'feature' }),
-  ...['a', 'b', 'c', 'd'].map((id) => item(id, 'street', id === 'b' && big ? { body: behaviours('BIG', big) } : {})),
+  ...['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((id) => item(id, 'street', id === 'b' && big ? { body: behaviours('BIG', big) } : {})),
   item('code', 'street', { kind: 'task', tags: ['code'] }),
   item('park', 'root', { kind: 'feature', body: behaviours('PARK', busy || 20) }),
   ...Array.from({ length: parkKids }, (_, i) => item(`p${i}`, 'park')),
@@ -272,14 +272,26 @@ const viewOn = (scene, id, k) => {
 const housesIn = (scene, view, live) => housesAt(lotsAt(scene, view, { lens: LENSES[0], T: thresholds(1200, 800) }).grounds, { k: view.k, live });
 const inside = (poly, pts) => pts.every((p) => polygonContains(poly, p));
 
-test('MARK-16 zoomed in, an issue that is work is a house: a footprint on its own lot, facing its neighbours, growing with what it holds', () => {
+test('MARK-16 zoomed in, an issue that is work is a house: a footprint on its own lot, in rows along a street, growing with what it holds', () => {
   const scene = buildScene(neighbourhood(), 'houses', null, 'organic');
   const near = viewOn(scene, 'street', 1200 / scene.geo.get('street').size);
   const houses = housesIn(scene, near);
   const ids = houses.map((h) => h.n.id).sort();
-  assert.deepEqual(ids.filter((id) => 'abcd'.includes(id)), ['a', 'b', 'c', 'd'], 'every task on the street is a house');
+  assert.deepEqual(ids.filter((id) => 'abcdefgh'.includes(id)), [...'abcdefgh'], 'every task on the street is a house');
   assert.ok(!ids.includes('street') && !ids.includes('code'), 'a parent is a block, not a house; code land is not work');
-  for (const h of houses.filter((x) => 'abcd'.includes(x.n.id))) {
+  // In rows along a street: the houses stand on a few lines across the block, several to a line, not scattered.
+  const street = houses.filter((x) => 'abcdefgh'.includes(x.n.id));
+  const [bx0, by0, bx1, by1] = scene.geo.get('street').bbox;
+  const wide = bx1 - bx0 >= by1 - by0;
+  const across = (h) => (wide ? h.g.label[1] : h.g.label[0]);
+  const rows = [];
+  for (const h of [...street].sort((a, b) => across(a) - across(b))) {
+    const row = rows.at(-1);
+    if (row && across(h) - across(row[0]) < 0.08 * (wide ? by1 - by0 : bx1 - bx0)) row.push(h);
+    else rows.push([h]);
+  }
+  assert.ok(rows.length >= 2 && rows.length <= 4 && rows.every((r) => r.length >= 2), `${street.length} houses in ${rows.length} rows of ${rows.map((r) => r.length).join(', ')}`);
+  for (const h of street) {
     assert.ok(inside(h.g.poly, h.corners), `${h.n.id}'s house stands on its own lot`);
     assert.ok(h.area < 0.6 * h.g.area, `${h.n.id}'s house doesn't fill its lot`);
     const [[x0, y0], , [x1, y1]] = h.corners;

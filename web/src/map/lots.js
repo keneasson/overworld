@@ -15,38 +15,43 @@ export const PARK = { light: '#c8ecc4', dark: '#2e5b3d' };
 const SHADES = [0, 0.075, -0.065, 0.14, -0.12, 0.2, -0.17];
 
 const neighbourCache = new WeakMap();
-/** Which of a parent's children touch each other: their outlines share a border, so they share its corners exactly. */
+// How far apart two outlines may be and still share a border, in world units: borders are bent after lots are cut.
+const NEAR = 0.05;
+const onOutline = ([px, py], poly) => {
+  for (let i = 0; i < poly.length; i++) {
+    const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+    const dx = bx - ax, dy = by - ay;
+    const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)));
+    if (Math.hypot(ax + t * dx - px, ay + t * dy - py) < NEAR) return true;
+  }
+  return false;
+};
+/** Do two lots share a border: at least two of one's corners on the other's outline? (Lots meeting at a point don't.) */
+function touching(a, b) {
+  const [x0, y0, x1, y1] = b.bbox;
+  if (a.bbox[0] > x1 + NEAR || a.bbox[2] < x0 - NEAR || a.bbox[1] > y1 + NEAR || a.bbox[3] < y0 - NEAR) return false;
+  let on = 0;
+  for (const p of a.poly) {
+    if (p[0] < x0 - NEAR || p[0] > x1 + NEAR || p[1] < y0 - NEAR || p[1] > y1 + NEAR) continue;
+    if (onOutline(p, b.poly) && ++on >= 2) return true;
+  }
+  return false;
+}
+/** Which of a parent's children touch each other: their outlines share a border. */
 export function neighboursOf(geo, parent) {
   let byParent = neighbourCache.get(geo);
   if (!byParent) neighbourCache.set(geo, (byParent = new Map()));
   if (byParent.has(parent.id)) return byParent.get(parent.id);
-  const owners = new Map();
-  const near = new Map(parent.children.map((c) => [c.id, new Set()]));
-  for (const c of parent.children) {
-    for (const [x, y] of geo.get(c.id).poly) {
-      const key = `${x.toFixed(3)},${y.toFixed(3)}`;
-      const at = owners.get(key);
-      if (!at) owners.set(key, new Set([c.id]));
-      else at.add(c.id);
-    }
-  }
-  const shared = new Map();
-  for (const ids of owners.values()) {
-    if (ids.size < 2) continue;
-    const list = [...ids];
-    for (let i = 0; i < list.length; i++)
-      for (let j = i + 1; j < list.length; j++) {
-        const key = list[i] < list[j] ? `${list[i]}|${list[j]}` : `${list[j]}|${list[i]}`;
-        shared.set(key, (shared.get(key) ?? 0) + 1);
+  const kids = parent.children;
+  const near = new Map(kids.map((c) => [c.id, new Set()]));
+  for (let i = 0; i < kids.length; i++)
+    for (let j = i + 1; j < kids.length; j++) {
+      const [a, b] = [geo.get(kids[i].id), geo.get(kids[j].id)];
+      if (touching(a, b) || touching(b, a)) {
+        near.get(kids[i].id).add(kids[j].id);
+        near.get(kids[j].id).add(kids[i].id);
       }
-  }
-  // Two shared corners make a shared border; one alone is lots meeting at a point.
-  for (const [key, count] of shared) {
-    if (count < 2) continue;
-    const [a, b] = key.split('|');
-    near.get(a).add(b);
-    near.get(b).add(a);
-  }
+    }
   byParent.set(parent.id, near);
   return near;
 }
