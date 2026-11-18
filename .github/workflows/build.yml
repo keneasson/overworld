@@ -1,0 +1,120 @@
+# The project's runner (#14 HANDOFF-07 to HANDOFF-09): builds a build request with the coding agent the project chose,
+# on a branch of its own, and opens a pull request that goes through the same checks and merge as anyone's. Overworld
+# starts it with a repository_dispatch when someone chooses Build; it can also be started by hand.
+#
+# It never pushes to main: the agent's step has no GitHub credentials at all, and the one push is to build/<item>-<run>.
+# It holds no production secrets and never reaches AWS. The agent (HANDOFF-08) is the one the project's own agent files
+# are for, unless repository variables say otherwise: BUILD_AGENT (claude-code or aider), BUILD_MODEL, and optionally
+# BUILD_AGENT_VERSION and BUILD_AGENT_KEY_ENV; the agent's key is the BUILD_AGENT_KEY secret. OVERWORLD_URL (variable) and OVERWORLD_AGENT_TOKEN (secret) let it claim and hand off like
+# any agent. The push and the pull request use BUILD_GITHUB_TOKEN (a fine-grained token for this repository: contents and
+# pull requests, read and write) when it is set, since a pull request opened with the workflow's own token doesn't start
+# CI. The setup is in .github/workflows/README.md.
+name: Build
+
+on:
+  repository_dispatch:
+    types: [overworld-build]
+  workflow_dispatch:
+    inputs:
+      request:
+        description: The build request's id (or leave it empty and name the item)
+        required: false
+      item:
+        description: The item, e.g. issue-14, to build its oldest waiting request
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: build-${{ github.event.client_payload.item || inputs.item || inputs.request }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      OVERWORLD_URL: ${{ vars.OVERWORLD_URL }}
+      OVERWORLD_AGENT_TOKEN: ${{ secrets.OVERWORLD_AGENT_TOKEN }}
+      BUILD_AGENT: ${{ vars.BUILD_AGENT }}
+      BUILD_MODEL: ${{ vars.BUILD_MODEL }}
+      BUILD_AGENT_VERSION: ${{ vars.BUILD_AGENT_VERSION }}
+      BUILD_AGENT_KEY_ENV: ${{ vars.BUILD_AGENT_KEY_ENV }}
+      REQUEST: ${{ github.event.client_payload.request || inputs.request }}
+      ITEM: ${{ github.event.client_payload.item || inputs.item }}
+      BRANCH: build/${{ github.event.client_payload.item || inputs.item || 'request' }}-${{ github.run_id }}
+      PROMPT_FILE: ${{ runner.temp }}/prompt.md
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Take the request
+        id: start
+        run: node scripts/build/runner.mjs start
+
+      - name: Branch
+        if: steps.start.outputs.skip == 'false'
+        id: branch
+        run: |
+          git config user.name "overworld-runner"
+          git config user.email "overworld-runner@users.noreply.github.com"
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git switch --create "$BRANCH"
+
+      - name: Build
+        if: steps.start.outputs.skip == 'false'
+        id: agent
+        timeout-minutes: 120
+        env:
+          BUILD_AGENT_KEY: ${{ secrets.BUILD_AGENT_KEY }}
+          OVERWORLD_AGENT_TOKEN: ''
+        run: node scripts/build/runner.mjs agent
+
+      - name: Decide
+        if: steps.start.outputs.skip == 'false'
+        id: decide
+        env:
+          BASE_SHA: ${{ steps.branch.outputs.base }}
+          OVERWORLD_AGENT_TOKEN: ''
+        run: node scripts/build/runner.mjs decide
+
+      - name: Push the branch
+        if: steps.decide.outputs.push == 'true'
+        id: push
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_GITHUB_TOKEN || github.token }}
+        run: |
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:refs/heads/${BRANCH}"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open the pull request
+        if: steps.decide.outputs.open == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.BUILD_GITHUB_TOKEN || github.token }}
+          BEHAVIOURS: ${{ steps.start.outputs.behaviours }}
+          USED: ${{ steps.agent.outputs.used }}
+        run: |
+          url=$(gh pr create --base main --head "$BRANCH" --title "Build ${ITEM}: ${BEHAVIOURS}" \
+            --body "Built by the runner with ${USED}, from the build request on ${ITEM}, for ${BEHAVIOURS}. Run: ${RUN_URL}")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Finish
+        if: always() && steps.start.outputs.skip == 'false'
+        env:
+          BEHAVIOURS: ${{ steps.start.outputs.behaviours }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          WHY: ${{ steps.agent.outputs.why || steps.decide.outputs.why }}
+          USED: ${{ steps.agent.outputs.used }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
+        run: node scripts/build/runner.mjs finish

@@ -11,6 +11,7 @@ to be seen running before it merges.
 | `preview.yml` | a pull request labelled `preview`, from this repository | its own stack `projectmap-pr-<N>` with an empty table, one comment with the URL, torn down on close or unlabel (SHIP-04 to SHIP-07). Sync with GitHub is off in a preview (SHIP-11). |
 | `sweep.yml` | daily at 07:17 UTC, or by hand | tears down previews past their rules, and deletes deployment records nobody needs (SHIP-07, SHIP-08) |
 | `cla.yml` | pull requests | the CLA check |
+| `build.yml` | a build request from Overworld (`repository_dispatch: overworld-build`), or by hand | the project's runner: builds the request with the configured coding agent on `build/<item>-<run>`, and opens a pull request (#14 HANDOFF-07 to HANDOFF-09) |
 
 The rules (the limit of 3 previews, the 7 days, which version to roll back to) are in
 `scripts/ci/rules.mjs` and tested in `scripts/test/ci.test.mjs`. `scripts/ci/run.mjs` gathers the
@@ -110,3 +111,51 @@ aws s3api put-bucket-lifecycle-configuration --bucket "$b" --lifecycle-configura
   previous value.
 - Once CI deploys production, prefer it to `npm run deploy`. A local deploy still works, but it
   can race CI's deploy.
+
+## The runner (#14)
+
+Choosing **Build** in Overworld records a build request and sends this repository an `overworld-build`
+`repository_dispatch`. `build.yml` then takes the request like any agent: it claims the behaviours
+(so the map shows the bulldozer), runs the coding agent on the request's prompt on a branch of its
+own, runs `npm test`, and opens a pull request that goes through CI and review like anyone's. If it
+can't finish, it releases the claim with a note saying why (and asks the agent's question on the item),
+so the card says what happened. A pull request keeps the claim: it is released once the work is merged
+and deployed, by hand for now. If an agent session takes the request first, the runner finds it gone and
+stops without doing anything.
+
+It never pushes to main: the agent's step has no GitHub credentials, and the only push is to
+`build/…`. It never sees production secrets and never reaches AWS.
+
+**Which agent (HANDOFF-08)** is the project's, not Overworld's. The runner uses the agent the repository's own agent
+files are for: `CLAUDE.md` (or `.claude/settings.json`) is Claude Code's; `.aider.conf.yml` or `CONVENTIONS.md` is
+aider's, and `.aider.conf.yml` can name the model. `AGENTS.md` is read by every agent, so it chooses none. With no
+agent files, it is Claude Code. Repository variables override all of that:
+
+| Variable | What | Example |
+|---|---|---|
+| `BUILD_AGENT` | `claude-code` (the default) or `aider` | `aider` |
+| `BUILD_MODEL` | the model, as the agent names it | `claude-sonnet-5-5`, `gpt-5`, `gemini/gemini-2.5-pro`, `ollama_chat/qwen3-coder` |
+| `BUILD_AGENT_VERSION` | optional: pin the agent's version | |
+| `BUILD_AGENT_KEY_ENV` | optional: the environment variable the key goes in, when the runner can't tell from the model | `OPENAI_API_KEY` |
+| `OVERWORLD_URL` | where Overworld runs | |
+
+Secrets (the maintainer adds these by hand; Overworld never holds them):
+
+| Secret | What |
+|---|---|
+| `BUILD_AGENT_KEY` | the agent's key for its model's provider (Anthropic, OpenAI, Google, OpenRouter…); none for a local model |
+| `OVERWORLD_AGENT_TOKEN` | an agent token made in Overworld (Connect an agent) for the runner, so its claims say it was the runner; revoke it there to stop it |
+| `BUILD_GITHUB_TOKEN` | a fine-grained token for this repository only, with Contents and Pull requests read and write. Without it the runner uses the workflow's own token, and its pull requests don't start CI |
+
+Also, once:
+
+- In the repository's Actions settings, allow GitHub Actions to create pull requests (needed only without `BUILD_GITHUB_TOKEN`).
+- Give the Overworld GitHub App **Contents: write**, which `repository_dispatch` needs. Without it, Build still records the
+  request and an open agent session takes it, and the card says the runner couldn't be started.
+
+If the chosen agent can't be used (it won't install, or won't start), the runner falls back to one that can work with
+the same key: aider stands in for Claude Code on the same Anthropic model, and Claude Code for aider when aider's model is
+Anthropic's. The pull request says which agent built it and why, and so does the note on the item when a run stops.
+
+Claude Code runs as `claude --print` with edits allowed and its tools limited to the repository's files and shell. Aider runs with
+`--yes-always --auto-test --test-cmd "npm test"`, and with any provider aider supports, including a local model.

@@ -196,6 +196,30 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     return out.sort((a, b) => a.at.localeCompare(b.at));
   }
 
+  /**
+   * What builders said when they stopped (#14 HANDOFF-09), newest per item: for a request that was taken and whose
+   * behaviours nobody holds now, the newest handoff note on them since it was taken: a runner that can't finish leaves one
+   * saying why, and so does any agent that stops, or a claim that ran out. A week on, it is history.
+   */
+  async function buildNotes(projectId, { live } = {}) {
+    live ??= (await liveClaims(projectId)).live;
+    const recent = iso(clock() - 7 * 24 * 3_600_000);
+    const taken = (await model.builds.list(projectId)).filter((r) => r.taken?.length);
+    const out = [];
+    for (const item of new Set(taken.map((r) => r.itemKey))) {
+      const notes = await model.handoffs.list(projectId, item);
+      let newest = null;
+      for (const r of taken.filter((x) => x.itemKey === item)) {
+        const ids = r.taken.map((t) => t.behaviour);
+        if (ids.some((id) => live.has(id))) continue;
+        const note = notes.filter((n) => n.at >= r.taken[0].at && n.at >= recent && n.behaviours?.some((b) => ids.includes(b))).at(-1);
+        if (note && (!newest || note.at > newest.at)) newest = { request: r.id, itemKey: item, behaviours: ids, by: `${note.agentName} (${note.agentId})`, at: note.at, note: note.note, ...(note.reason === 'expired' ? { expired: true } : {}) };
+      }
+      if (newest) out.push(newest);
+    }
+    return out;
+  }
+
   /** The first waiting request that can be claimed now, as claim() wants it, or null. */
   function requestedWork(data, requests) {
     for (const r of requests) {
@@ -514,7 +538,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     return report;
   }
 
-  return { callsPerMinute, standup, addressed, buildRequests, requestBuild, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
+  return { callsPerMinute, standup, addressed, buildRequests, buildNotes, requestBuild, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
 }
 
 /** An annotation addressed to an agent, as its tools show it: who said what, where, and the prompt to act on it. */

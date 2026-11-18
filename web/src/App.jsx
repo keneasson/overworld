@@ -59,7 +59,7 @@ function useMedia(query) {
 // A newer deploy is noticed when the app comes back to the foreground, and every few minutes (SHIP-12): on a phone
 // the map takes every touch, so pull-to-refresh can't, and an app opened from the home screen has no reload button.
 const VERSION_CHECK_MS = 5 * 60_000;
-const NO_BUILDS = { requests: [], buildable: {} };
+const NO_BUILDS = { requests: [], buildable: {}, notes: [] };
 function useNewVersion() {
   const [newer, setNewer] = useState(false);
   useEffect(() => {
@@ -190,7 +190,7 @@ export function App() {
     (pid) =>
       api
         .builds(pid)
-        .then((d) => latest.current.projectId === pid && setBuilds({ requests: d.requests ?? [], buildable: d.buildable ?? {} }))
+        .then((d) => latest.current.projectId === pid && setBuilds({ requests: d.requests ?? [], buildable: d.buildable ?? {}, notes: d.notes ?? [] }))
         .catch(() => {}),
     [],
   );

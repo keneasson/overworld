@@ -11,6 +11,8 @@ import { TransientError } from '../errors.mjs';
 import { labelsForNew, patchFor, priorityAsRead, priorityOf, sameVersion, stateAsRead, stateOf, versionOnGitHub } from './state.mjs';
 
 const PLACEMENT_TAGS = new Set(['placed-by-words', 'unplaced']);
+/** The repository_dispatch event a build request sends, which .github/workflows/build.yml listens for. */
+export const BUILD_EVENT = 'overworld-build';
 export const githubKey = (repo) => `github:${repo.toLowerCase()}`;
 const hidden = (guard) => `<!-- ${guard} -->`;
 
@@ -53,6 +55,10 @@ export function githubStore({ repo, strict = true, app = null, fetchImpl = fetch
     async create(version, { guard, epic }) {
       const { number } = await client().createIssue(repo, { title: version.title, body: `${version.markdown}\n\n${hidden(guard)}`, labels: labelsForNew(version, { epic }) });
       return { ref: String(number) };
+    },
+    /** Start the project's runner for a build request (#14 HANDOFF-07): its own workflow builds it, in its own Actions. */
+    async startBuild({ request, item, behaviours }) {
+      await client().dispatch(repo, BUILD_EVENT, { request, item, behaviours });
     },
     async findCreated(guard, since) {
       const found = await client().findCreated(repo, hidden(guard), since);

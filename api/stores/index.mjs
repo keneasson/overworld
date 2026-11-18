@@ -23,6 +23,7 @@
 //   placed(node, ref)  -> node       a node made in Overworld, now that it is this item
 //   onMap(node, item)  -> node       the node showing the store's version, keeping its place on the map
 //   mapAgain({ token })-> { nodes, project }   the whole project read again, and fields for the project
+//   startBuild({ request, item, behaviours })   optional: start the project's runner for a build request (#14 HANDOFF-07)
 //
 // Reads and writes throw TransientError (try later) or PermanentError (a person must look): see errors.mjs.
 //
