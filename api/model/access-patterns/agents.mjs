@@ -78,6 +78,19 @@ export function handoffs(table) {
   };
 }
 
+export function builds(table) {
+  return {
+    /** A project's build requests, waiting or taken (#14 HANDOFF-05). Query begins_with(SK, BUILD#). */
+    async list(projectId) {
+      return (await table.query(keys.buildsOf(projectId))).map(strip);
+    },
+    /** PutItem. */
+    async put(projectId, request) {
+      await table.put({ ...keys.build(projectId, request), entity: 'build', ...request });
+    },
+  };
+}
+
 export function facts(table) {
   return {
     /** What the project has remembered, oldest first. Query begins_with(SK, FACT#). */

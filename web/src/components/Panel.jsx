@@ -429,7 +429,53 @@ function Refinement({ cs, item, node, editing, comments }) {
  * properties change in place (EDIT-11), and comments sit on what they are about. The panel only ever holds this
  * one item (EDIT-13); its edits wait in the project's changeset when another is picked.
  */
-export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+const ago = (iso) => {
+  const min = Math.round((Date.now() - Date.parse(iso)) / 60_000);
+  return min < 1 ? 'just now' : min < 60 ? `${min} min ago` : min < 48 * 60 ? `${Math.round(min / 60)} h ago` : `${Math.round(min / 1440)} days ago`;
+};
+
+/**
+ * Build (#14 HANDOFF-05): offered for the behaviours that are new and unclaimed, all of them or the one whose house opened
+ * the card; once asked for, the card says they wait for a builder, and says so plainly after an hour (HANDOFF-06). The
+ * server decides what can be built, and only a person can ask.
+ */
+function BuildBar({ node, atBehaviour, builds, onBuild }) {
+  const [busy, setBusy] = useState(false);
+  const key = itemKeyOf(node);
+  const offer = builds?.buildable?.[key] ?? [];
+  const asked = (builds?.requests ?? []).filter((r) => r.itemKey === key);
+  if (!onBuild || (!offer.length && !asked.length)) return null;
+  const go = async (behaviours) => {
+    setBusy(true);
+    await onBuild(node, behaviours);
+    setBusy(false);
+  };
+  const one = atBehaviour && offer.includes(atBehaviour) && offer.length > 1;
+  return (
+    <section className="build-bar" aria-label="Build">
+      {offer.length > 0 && (
+        <div className="build-actions">
+          {one && (
+            <button type="button" className="primary" disabled={busy} onClick={() => go([atBehaviour])} title={`Ask for a builder for ${atBehaviour}`}>
+              <Icon name="build" size={16} /> Build {atBehaviour}
+            </button>
+          )}
+          <button type="button" className={one ? '' : 'primary'} disabled={busy} onClick={() => go(null)} title={`Ask for a builder for ${offer.join(', ')}`}>
+            <Icon name="build" size={16} /> Build {offer.length === 1 ? offer[0] : `all ${offer.length}`}
+          </button>
+        </div>
+      )}
+      {asked.map((r) => (
+        <p key={r.id} className={`build-waiting${r.stale ? ' stale' : ''}`} role="status">
+          Waiting for a builder: {r.waiting.join(', ')}. Asked by {r.by}, {ago(r.at)}.
+          {r.stale && ' Nobody has picked it up in over an hour: an agent session takes it at its standup, or with next_work.'}
+        </p>
+      ))}
+    </section>
+  );
+}
+
+export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const docRef = useRef(null);
   // Opened from a behaviour's house on the map (#46 MARK-16): show that behaviour, once the document has rendered it.
@@ -523,6 +569,8 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         )}
         <SyncBadge node={node} />
       </div>
+
+      <BuildBar node={node} atBehaviour={atBehaviour} builds={builds} onBuild={onBuild} />
 
       <div className="actions quiet">
         <button onClick={() => onFly(node.id)}>

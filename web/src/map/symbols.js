@@ -3,7 +3,7 @@
 // symbol by our own name ('bug', 'pull', …) and gets an SVG path for a 24×24 box, which the canvas
 // draws with Path2D and the legend draws as an <svg>.
 
-import { BookOpen, Bot, Bug, CircleHelp, Cloud, CodeXml, FilePen, Flag, Flame, GitPullRequest, Landmark, Map as MapIcon, MessageCircle, Puzzle, ScrollText, SquareCheck } from 'lucide';
+import { BookOpen, Bot, Bug, CircleHelp, Cloud, CodeXml, FilePen, Flag, Flame, GitPullRequest, Hourglass, Landmark, Map as MapIcon, MessageCircle, Puzzle, ScrollText, SquareCheck } from 'lucide';
 
 // Lucide has no bulldozer, so it is drawn here in Lucide's style (24×24, 2px round strokes): tracks, body and cab, the
 // arm and the blade.
@@ -30,6 +30,7 @@ const SOURCES = {
   // Badges: who and what is on an item.
   pull: GitPullRequest,
   agent: Bot,
+  waiting: Hourglass,
   comment: MessageCircle,
   question: CircleHelp,
   refine: FilePen,

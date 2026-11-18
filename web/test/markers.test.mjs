@@ -11,7 +11,7 @@ import { pathOf } from '../src/model/tree.js';
 import { rectsOverlap } from '../src/map/geometry.js';
 import { placeNames } from '../src/map/names.js';
 import { lotsAt } from '../src/map/lots.js';
-import { HOUSE, claimsByNode, houseId, housesAt, isHouse, openedBy } from '../src/map/houses.js';
+import { HOUSE, claimsByNode, houseId, housesAt, isHouse, openedBy, waitingByNode } from '../src/map/houses.js';
 import { LENSES } from '../src/map/lenses.js';
 
 const root = { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' };
@@ -421,6 +421,22 @@ test('MARK-17 the house of the behaviour being coded has a bulldozer on its lot,
   assert.ok(!polygonContains(four.corners, four.bulldozer), 'beside the house, not on it');
   const later = claimsByNode(claims, scene.tree, Date.parse('2026-11-16T15:00:00Z'));
   assert.equal(housesIn(scene, view, { agents: later }).filter((h) => h.bulldozer).length, 0, 'gone when the claim ends');
+});
+
+test('HANDOFF-05 behaviours asked to be built show as waiting for a builder, on their houses and the item, until one claims them', () => {
+  const scene = buildScene(street(), 'street', null, 'organic');
+  const comments = scene.tree.byId.get('comments');
+  const waiting = waitingByNode([{ itemKey: itemKeyOf(comments), waiting: ['NOTE-04', 'NOTE-11'] }], scene.tree);
+  assert.equal(waiting.get('comments'), 2, 'the item says two wait');
+  assert.ok(markersOf(comments, { waiting }).some((m) => m.type === 'waiting' && m.count === 2), 'a marker the legend explains');
+  const view = onStreet(scene, 'comments');
+  const houses = housesIn(scene, view, { waiting });
+  assert.deepEqual(houses.filter((h) => h.waiting).map((h) => h.n.behaviour), ['NOTE-04', 'NOTE-11'], 'an hourglass on each house asked for');
+  const now = Date.parse('2026-11-16T12:00:00Z');
+  const agents = claimsByNode([{ behaviour: 'NOTE-04', item: itemKeyOf(comments), owner: 'ag1', until: '2026-11-16T14:00:00Z' }], scene.tree, now);
+  const claimed = housesIn(scene, view, { waiting, agents });
+  assert.deepEqual(claimed.filter((h) => h.waiting).map((h) => h.n.behaviour), ['NOTE-11'], 'the claimed one has its bulldozer instead');
+  assert.deepEqual(claimed.filter((h) => h.bulldozer).map((h) => h.n.behaviour), ['NOTE-04']);
 });
 
 test("MARK-18 a block's size is its issue's scope: with few behaviours it is mostly park, and houses fill the green as behaviours are added", () => {

@@ -7,7 +7,7 @@
 import { APP_NAME } from '../shared/brand.js';
 import { ROOT_ID, ValidationError } from '../shared/schema.js';
 import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
-import { Refused, noteOf as addressedOf } from './agents.mjs';
+import { Refused, buildOf, noteOf as addressedOf } from './agents.mjs';
 import { awaitsApplying } from './answers.mjs';
 import { isOpen, isQuestion, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
 import { notePrompt } from './notes.mjs';
@@ -21,7 +21,7 @@ const DISMISSING = "Don't dismiss a comment whose conversation is still unresolv
 
 const HOW_TO_WORK = [
   'Start each session with standup(), passing your local git state: it says what is waiting for you and where to begin. There is nothing to do at the end of a session.',
-  'Find work with next_work(), and claim() it before you start: a claim keeps other agents off it, and runs out after two hours unless you claim it again.',
+  'Find work with next_work(), and claim() it before you start: a claim keeps other agents off it, and runs out after two hours unless you claim it again. A build request is a person asking for work to be built: take it before anything else, by claiming its behaviours, and build it from its prompt.',
   'context(issue) has everything about one issue in one read.',
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
   'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
@@ -168,15 +168,18 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     next_work: {
-      description: 'Behaviours ready to build that nobody has claimed, grouped by issue and in priority order. Only leaf issues are work: a parent is built through its children. Work waiting on an unfinished dependency is left out; context(issue) says what blocks it. Issues that need a split first are listed by key; context(issue) says why. Answered questions waiting to be written into the spec come first, each with its prompt.',
+      description: 'Behaviours ready to build that nobody has claimed, grouped by issue and in priority order. Only leaf issues are work: a parent is built through its children. Work waiting on an unfinished dependency is left out; context(issue) says what blocks it. Issues that need a split first are listed by key; context(issue) says why. Answered questions waiting to be written into the spec come first, each with its prompt; then build requests, behaviours a person asked to be built, each with its prompt: claim them to take it.',
       input: { limit: { type: 'number', description: 'How many issues, at most (default 5).' } },
       async run({ pid }, args) {
         const { project, nodes } = await mapOf(pid);
-        const { work, blocked, needsSplit, toVerify } = nextWork(nodes, (await agents.liveClaims(pid)).live, { tested: project?.tested });
+        const { live } = await agents.liveClaims(pid);
+        const { work, blocked, needsSplit, toVerify } = nextWork(nodes, live, { tested: project?.tested });
+        // What people asked to be built comes first (#14 HANDOFF-10): claiming it takes the request.
+        const builds = (await agents.buildRequests(pid, { nodes, live })).map(buildOf);
         const limit = Math.min(50, Math.max(1, Number(args.limit) || 5));
         // An answer its asker hasn't come back for is anyone's to apply (ANSWER-03).
         const answers = (await agents.answersToApply(pid, { nodes })).filter((a) => a.forAnyone).slice(0, limit).map(answerOf);
-        return { ...(answers.length ? { answers_to_apply: answers } : {}), work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}), ...(needsSplit.length ? { need_a_split: needsSplit.map((x) => x.item) } : {}), ...(toVerify.length ? { to_verify: toVerify.map((x) => x.item) } : {}) };
+        return { ...(answers.length ? { answers_to_apply: answers } : {}), ...(builds.length ? { build_requests: builds.slice(0, limit) } : {}), work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}), ...(needsSplit.length ? { need_a_split: needsSplit.map((x) => x.item) } : {}), ...(toVerify.length ? { to_verify: toVerify.map((x) => x.item) } : {}) };
       },
     },
 
@@ -234,7 +237,7 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     claim: {
-      description: 'Claim behaviours before you build them: they become being coded, in one atomic step, and anyone else is refused and told who holds them. With no behaviours, claims the top of next_work(). Claim again to hold them longer.',
+      description: 'Claim behaviours before you build them: they become being coded, in one atomic step, and anyone else is refused and told who holds them. With no behaviours, claims the oldest build request, or else the top of next_work(). Claiming what a build request asked for takes it. Claim again to hold them longer.',
       input: { behaviours: ids('Behaviour IDs, e.g. ["MCP-04"]. Leave out to take the next work.'), minutes: { type: 'number', description: 'How long to hold them (default 120, at most 480).' }, request_key: requestKey },
       changes: true,
       run: ({ pid, agent }, args) => agents.claim(pid, agent, { behaviours: list(args.behaviours), minutes: args.minutes }),

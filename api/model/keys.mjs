@@ -19,6 +19,7 @@
 //   Claim     PROJECT#<id>    CLAIM#<behaviourId>  who is coding a behaviour, until when (MCP-04)
 //   Handoff   PROJECT#<id>    HANDOFF#<itemKey>#<at>#<id>  where work on an item stands, when a claim ends (MCP-09)
 //   Fact      PROJECT#<id>    FACT#<at>#<id>     a standing decision or correction, remembered (MCP-10)
+//   Build     PROJECT#<id>    BUILD#<itemKey>#<id>  a person's request to build behaviours, until a builder claims them (#14 HANDOFF-05)
 //   Action    PROJECT#<id>    ACTION#<at>#<id>   ACTIONS#<id>#<agentId> <at>   what an agent changed (MCP-14)
 //   Request   PROJECT#<id>    KEY#<agentId>#<requestKey>  a change's result, kept a day for repeats (MCP-12)
 //   Limit     PROJECT#<id>    LIMIT#<agentId>#<minute>    an agent's calls this minute (MCP-13)
@@ -31,7 +32,7 @@
 // must sort before NODE#, or every map open would read it. Changesets and comments are keyed by the item
 // they concern (an issue number, or a node id for items made here). GSI1 is sparse: projects carry its keys,
 // so it lists projects, most recently updated first; and so do nodes that are unsaved, saving, in conflict
-// or failed, so a save or a refresh finds them without reading the map. Agents' records (AGENT#, CLAIM#, HANDOFF#,
+// or failed, so a save or a refresh finds them without reading the map. Agents' records (AGENT#, BUILD#, CLAIM#, HANDOFF#,
 // FACT#, ACTION#, KEY#, LIMIT#) sort before NODE# too, and actions carry GSI1 keys so one agent's work lists alone.
 // Requests and limits carry `expiresAt`, the table's TTL, so they clean themselves up. A token sits outside the
 // partition, so a call finds its agent in one read; deleting a project deletes its agents' tokens first.
@@ -73,6 +74,8 @@ export const keys = {
   claimsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: CLAIM_PREFIX }),
   handoff: (projectId, { itemKey, at, id }) => ({ PK: projectPartition(projectId), SK: `HANDOFF#${itemKey}#${at}#${id}` }),
   handoffsOf: (projectId, itemKey) => ({ pk: projectPartition(projectId), skBeginsWith: `HANDOFF#${itemKey}#` }),
+  build: (projectId, { itemKey, id }) => ({ PK: projectPartition(projectId), SK: `BUILD#${itemKey}#${id}` }),
+  buildsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: 'BUILD#' }),
   fact: (projectId, { at, id }) => ({ PK: projectPartition(projectId), SK: `${FACT_PREFIX}${at}#${id}` }),
   factsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: FACT_PREFIX }),
   action: (projectId, { at, id }) => ({ PK: projectPartition(projectId), SK: `ACTION#${at}#${id}` }),

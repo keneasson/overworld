@@ -7,10 +7,11 @@ import { STATUS_FILLS, statusColor, statusKey } from './lenses.js';
 
 // Badges in the order they sit beside a symbol.
 // Comments (#15) are one badge: how many are not dismissed, marked when any are unread for whoever is looking (NOTE-04).
-export const BADGES = ['pull', 'agent', 'refine', 'comment', 'question'];
+export const BADGES = ['pull', 'agent', 'waiting', 'refine', 'comment', 'question'];
 export const BADGE_LABEL = {
   pull: 'Open pull request',
   agent: 'Agent working on it',
+  waiting: 'Waiting for a builder',
   comment: 'Comments',
   question: 'Open questions',
   refine: 'Refinement waiting for adoption',
@@ -35,7 +36,7 @@ export function openQuestionCount(n) {
 
 /**
  * The badges an item carries, in order, each with its count; the comments badge says whether any are unread.
- * @param {object} live   what the map knows beyond the nodes, by node id: { agents, refinements: Map<id, n>,
+ * @param {object} live   what the map knows beyond the nodes, by node id: { agents, waiting (behaviours asked to be built, #14), refinements: Map<id, n>,
  *                        notes: Map<id, { count, unread }> } (comments not dismissed, NOTE-03 NOTE-04)
  */
 export function badgesOf(n, live = {}) {
@@ -44,6 +45,7 @@ export function badgesOf(n, live = {}) {
     // Pull requests that close an item still matter while the item is open; a done item's are history.
     pull: n.status === 'done' || n.status === 'rejected' ? 0 : (n.pulls?.length ?? 0),
     agent: live.agents?.get(n.id) ?? 0,
+    waiting: live.waiting?.get(n.id) ?? 0,
     comment: notes.count ?? 0,
     refine: live.refinements?.get(n.id) ?? 0,
     question: openQuestionCount(n),
@@ -54,7 +56,7 @@ export function badgesOf(n, live = {}) {
 // ---------- markers: what a place holds (#46) ----------
 
 // In the order they sit beside a symbol: what needs someone first.
-export const MARKERS = ['fire', 'fog', 'question', 'refine', 'pull', 'agent', 'comment'];
+export const MARKERS = ['fire', 'fog', 'question', 'refine', 'pull', 'agent', 'waiting', 'comment'];
 export const MARKER_LABEL = { fire: 'Open bug', fog: 'Fog: behaviour nobody has defined yet', ...BADGE_LABEL };
 const CODE_FIRE_LABEL = 'Code with an open bug';
 const PRIORITY = { P0: 0, P1: 1, P2: 2, P3: 3 };
