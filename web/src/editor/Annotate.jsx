@@ -8,14 +8,21 @@ import { Icon } from '../components/Icon.jsx';
 import { commentHtml } from './comment-text.js';
 import { useLinks } from '../components/links-context.js';
 
-const TextBox = lazy(() => import('./TextBox.jsx'));
+// A copy of the app on an older version may find the formatted box gone after a deploy: the plain box does the same job,
+// and the app offers Update (#71 SHIP-13).
+const TextBox = lazy(() =>
+  import('./TextBox.jsx').catch(() => {
+    window.dispatchEvent(new Event('projectmap:stale'));
+    return { default: PlainBox };
+  }),
+);
 
 const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const posts = (e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey);
 
-/** A box to write in, formatted like the document; a plain one does the same job while the editor loads. */
-function Box({ value, onChange, onSubmit, label, placeholder, autoFocus, className }) {
-  const plain = (
+/** A plain box to write in: while the formatted one loads, or instead of it. */
+function PlainBox({ value, onChange, onSubmit, label, placeholder, autoFocus }) {
+  return (
     <textarea
       autoFocus={autoFocus}
       aria-label={label}
@@ -27,6 +34,11 @@ function Box({ value, onChange, onSubmit, label, placeholder, autoFocus, classNa
       maxLength={4000}
     />
   );
+}
+
+/** A box to write in, formatted like the document; a plain one does the same job while the editor loads. */
+function Box({ value, onChange, onSubmit, label, placeholder, autoFocus, className }) {
+  const plain = <PlainBox value={value} onChange={onChange} onSubmit={onSubmit} label={label} placeholder={placeholder} autoFocus={autoFocus} />;
   return (
     <Suspense fallback={plain}>
       <TextBox value={value} onChange={onChange} onSubmit={onSubmit} label={label} placeholder={placeholder} autoFocus={autoFocus} className={className} />

@@ -803,6 +803,31 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       return { claims: [...(await agents.liveClaims(pid)).live.values()] };
     }],
 
+    // What went wrong in someone's browser (#71 SHIP-14): the app sends each error it catches, so it can be read here.
+    [
+      'POST',
+      /^\/api\/errors$/,
+      async ({ body }) => {
+        const clip = (v, max) => (v == null ? undefined : String(v).slice(0, max));
+        const report = {
+          id: newId(),
+          at: new Date(clock()).toISOString(),
+          message: clip(body?.message, 1000) || 'Unknown error',
+          stack: clip(body?.stack, 8000),
+          componentStack: clip(body?.componentStack, 8000),
+          where: clip(body?.where, 80),
+          url: clip(body?.url, 500),
+          userAgent: clip(body?.userAgent, 300),
+          build: clip(body?.build, 200),
+        };
+        log.error?.(`Browser error (${report.where ?? 'app'}): ${report.message}`);
+        await model.errors.put(report);
+        return { id: report.id };
+      },
+      { status: 201 },
+    ],
+    ['GET', /^\/api\/errors$/, async () => ({ errors: await model.errors.list(clock()) })],
+
     // A production deploy finished (#14 HANDOFF-11): the Production workflow says which merged pull requests it carried, and
     // whether it succeeded. Their claims end only when it did.
     [

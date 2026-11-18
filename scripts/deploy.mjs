@@ -12,11 +12,12 @@
 //   [SYNC_APP_ID=… SYNC_INSTALLATION_ID=… SYNC_APP_SLUG=…]   production only: previews never sync with GitHub
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, cpSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { build } from 'esbuild';
 import { APP_NAME } from '../shared/brand.js';
 import { readDeployConfig, readGitHubApp, writeDeployConfig } from './local-config.mjs';
+import { previousAssets } from './previous-assets.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
 const local = readDeployConfig();
@@ -68,6 +69,21 @@ await build({
   logLevel: 'warning',
 });
 cpSync(`${root}web/dist`, `${root}.build/lambda/public`, { recursive: true });
+
+// The live version's assets stay available, so an app still open on it can load what it hasn't needed yet (#71 SHIP-13).
+const live = spawnSync('aws', ['cloudformation', 'describe-stacks', '--stack-name', stack, '--region', region, '--query', "Stacks[0].Outputs[?OutputKey=='Url'].OutputValue", '--output', 'text', ...profileArgs], { encoding: 'utf8' });
+const liveUrl = live.status === 0 ? live.stdout.trim() : '';
+if (/^https?:\/\//.test(liveUrl)) {
+  const kept = await previousAssets(liveUrl);
+  let added = 0;
+  for (const [name, body] of kept) {
+    const path = `${root}.build/lambda/public/assets/${name}`;
+    if (existsSync(path)) continue;
+    writeFileSync(path, body);
+    added++;
+  }
+  console.log(`→ Kept ${added} asset${added === 1 ? '' : 's'} of the live version, for apps still open on it`);
+}
 
 // The GitHub App that sync (#3) writes as. Passed only to a template that declares them; a parameter
 // left out keeps its previous value, so a local deploy doesn't turn sync off.
