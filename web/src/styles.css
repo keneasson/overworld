@@ -2602,7 +2602,8 @@ button.danger.armed {
   align-items: center;
   gap: 6px;
 }
-.build-waiting {
+.build-waiting,
+.build-note {
   margin: 0;
   padding: 8px 10px;
   border-radius: 8px;
@@ -2610,6 +2611,10 @@ button.danger.armed {
   background: var(--surface-2);
   font-size: 13px;
 }
-.build-waiting.stale {
+.build-note {
+  border-left-color: var(--accent);
+}
+.build-waiting.stale,
+.build-note.stale {
   border-left-color: var(--danger);
 }

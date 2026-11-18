@@ -803,14 +803,14 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     ['GET', /^\/api\/projects\/([\w-]+)\/builds$/, async ({ params: [pid] }) => {
       const { project, nodes } = await loadProject(pid);
       const { live } = await agents.liveClaims(pid);
-      const requests = await agents.buildRequests(pid, { nodes, live });
+      const [requests, notes] = await Promise.all([agents.buildRequests(pid, { nodes, live }), agents.buildNotes(pid, { live })]);
       const asked = new Set(requests.flatMap((r) => r.waiting));
       const buildable = {};
       for (const w of nextWork(nodes, live, { tested: project?.tested }).work) {
         const open = w.behaviours.map((b) => b.id).filter((id) => !asked.has(id));
         if (open.length) buildable[w.item] = open;
       }
-      return { requests: requests.map(({ prompt, ...r }) => r), buildable };
+      return { requests: requests.map(({ prompt, ...r }) => r), buildable, notes };
     }],
 
     // Only people choose Build: an agent's call through MCP is refused. Anyone with the project's access key may, since that
@@ -823,8 +823,21 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (!KEY.test(key)) throw new ValidationError('item: expected an item key');
         const behaviours = body?.behaviours == null ? [] : Array.isArray(body.behaviours) ? body.behaviours.map(String) : null;
         if (!behaviours) throw new ValidationError('behaviours: expected a list of behaviour IDs');
-        await loadProjectHead(pid);
-        const { request, already } = await agents.requestBuild(pid, { item: key, behaviours, by: author(body?.by) });
+        const project = await loadProjectHead(pid);
+        let { request, already } = await agents.requestBuild(pid, { item: key, behaviours, by: author(body?.by) });
+        // A new request starts the project's runner, its own GitHub Actions (HANDOFF-07). If it can't be started, the request
+        // still waits for an open session (HANDOFF-10), and the card says why the runner didn't start.
+        const store = !already && stores.forProject(project);
+        if (store?.startBuild) {
+          const at = new Date(clock()).toISOString();
+          const runner = await store.startBuild({ request: request.id, item: key, behaviours: request.behaviours }).then(
+            () => ({ state: 'started', at }),
+            (err) => ({ state: 'not_started', at, reason: err.message }),
+          );
+          const { waiting, stale, ...stored } = request;
+          await model.builds.put(pid, { ...stored, runner });
+          request = { ...request, runner };
+        }
         const { prompt, ...shown } = request;
         return { request: shown, ...(already ? { already: true } : {}) };
       },

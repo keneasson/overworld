@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, #68), annotations addressed to agents (NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15) and leaf-only work (STATE-09, STATE-10, #32) and build requests (HANDOFF-01, HANDOFF-05, HANDOFF-06, HANDOFF-10, #14), tested the way an agent uses it: JSON-RPC over HTTP.
+// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, #68), annotations addressed to agents (NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15) and leaf-only work (STATE-09, STATE-10, #32) and build requests and the runner they start (HANDOFF-01, HANDOFF-05 to HANDOFF-07, HANDOFF-09, HANDOFF-10, #14), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -28,7 +28,7 @@ const PROJECT = {
 };
 
 /** @param {object} [o] @param {number} [o.racing] hold the first this-many claim writes until they have all arrived, so they truly race */
-async function setup({ callsPerMinute, racing = 0 } = {}) {
+async function setup({ callsPerMinute, racing = 0, stores } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'overworld-mcp-'));
   const file = join(dir, 'table.json');
   const table = fileTable(file);
@@ -43,7 +43,7 @@ async function setup({ callsPerMinute, racing = 0 } = {}) {
   });
   const clock = { now: Date.parse('2030-01-07T10:00:00Z') };
   const shop = fakeShop();
-  const api = createApi({ model, accessKey: 'k', fetchImpl: shop.fetch, log: { error() {} }, clock: () => clock.now, agentCallsPerMinute: callsPerMinute });
+  const api = createApi({ model, accessKey: 'k', fetchImpl: shop.fetch, log: { error() {} }, clock: () => clock.now, agentCallsPerMinute: callsPerMinute, ...(stores ? { stores } : {}) });
   const rest = async (method, path, b) => (await api({ method, path, body: b, headers: { 'x-projectmap-key': 'k' } })).body;
   const pid = (await rest('POST', '/api/import/json', PROJECT)).project.id;
   const post = (token, msg) => api({ method: 'POST', path: '/api/mcp', body: msg, headers: token ? { authorization: `Bearer ${token}` } : {} });
@@ -635,7 +635,7 @@ test('HANDOFF-05 HANDOFF-01 a person chooses Build on an issue or on one behavio
   const { api, rest, pid, agent, clock } = await setup();
   const build = (b) => api({ method: 'POST', path: `/api/projects/${pid}/builds`, body: b, headers: { 'x-projectmap-key': 'k' } });
   const before = await rest('GET', `/api/projects/${pid}/builds`);
-  assert.deepEqual(before, { requests: [], buildable: { 'issue-11': ['CL-01', 'CL-02'], 'issue-10': ['ZOOM-01', 'ZOOM-02'] } }, 'only new, unclaimed, unblocked behaviours can be built');
+  assert.deepEqual(before, { requests: [], notes: [], buildable: { 'issue-11': ['CL-01', 'CL-02'], 'issue-10': ['ZOOM-01', 'ZOOM-02'] } }, 'only new, unclaimed, unblocked behaviours can be built');
 
   const whole = await build({ item: 'issue-11', by: 'Ken' });
   assert.equal(whole.status, 201);
@@ -690,4 +690,30 @@ test('HANDOFF-06 HANDOFF-10 an open session takes a build request by claiming it
   clock.now += 61 * 60_000;
   assert.equal((await rest('GET', `/api/projects/${pid}/builds`)).requests[0].stale, true, 'waiting over an hour says so');
   assert.equal((await a.use('next_work')).build_requests[0].waiting_over_an_hour, true);
+});
+
+test('HANDOFF-07 HANDOFF-09 Build starts the project\'s runner, or says why it could not; a builder that stops says why on the card and the work can be built again', async () => {
+  const started = [];
+  let refuse = null;
+  const stores = { forProject: () => ({ startBuild: async (r) => (refuse ? Promise.reject(new Error(refuse)) : started.push(r)) }) };
+  const { rest, pid, agent, clock } = await setup({ stores });
+  const ask = await rest('POST', `/api/projects/${pid}/builds`, { item: 'issue-11', by: 'Ken' });
+  assert.deepEqual(started, [{ request: ask.request.id, item: 'issue-11', behaviours: ['CL-01', 'CL-02'] }], 'the runner is started for the new request');
+  assert.equal(ask.request.runner.state, 'started');
+  await rest('POST', `/api/projects/${pid}/builds`, { item: 'issue-11', by: 'Ken' });
+  assert.equal(started.length, 1, 'asking again starts nothing more');
+  refuse = 'GitHub 403 on POST /repos/octo/app/dispatches';
+  clock.now += 60_000;
+  const second = await rest('POST', `/api/projects/${pid}/builds`, { item: 'issue-10', behaviours: ['ZOOM-01'], by: 'Ken' });
+  assert.equal(second.request.runner.state, 'not_started');
+  const waiting = (await rest('GET', `/api/projects/${pid}/builds`)).requests.find((r) => r.itemKey === 'issue-10');
+  assert.match(waiting.runner.reason, /403/, 'the card can say why the runner did not start; the request still waits for a session');
+
+  const runner = await agent('Runner');
+  await runner.use('claim', { behaviours: ['CL-01', 'CL-02'] });
+  clock.now += 60_000;
+  await runner.use('handoff', { behaviours: ['CL-01', 'CL-02'], note: 'The runner stopped on CL-01, CL-02: The tests fail on what the agent built, so no pull request was opened.' });
+  const after = await rest('GET', `/api/projects/${pid}/builds`);
+  assert.deepEqual(after.notes.map((n) => [n.itemKey, n.behaviours, n.by.startsWith('Runner'), /tests fail/.test(n.note)]), [['issue-11', ['CL-01', 'CL-02'], true, true]], 'the card shows why');
+  assert.deepEqual(after.buildable['issue-11'], ['CL-01', 'CL-02'], 'nothing is left claimed and idle: it can be built again');
 });

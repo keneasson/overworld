@@ -68,6 +68,8 @@ export function githubApp({ appId, installationId, slug, privateKey, fetchImpl =
     getIssue: (repo, number) => call('GET', `/repos/${repo}/issues/${number}`),
     /** Only the fields given: title, body, state, state_reason, labels. */
     updateIssue: (repo, number, patch) => call('PATCH', `/repos/${repo}/issues/${number}`, patch),
+    /** A repository_dispatch event: starts the workflows that listen for it (#14 HANDOFF-07). Needs the App's Contents: write. */
+    dispatch: (repo, eventType, payload) => call('POST', `/repos/${repo}/dispatches`, { event_type: eventType, client_payload: payload }),
     createIssue: (repo, { title, body, labels }) => call('POST', `/repos/${repo}/issues`, { title, body, labels }),
     /** The issue this App created, since `since`, whose body carries `marker`: the record of a create that crashed before it was written down. */
     async findCreated(repo, marker, since) {

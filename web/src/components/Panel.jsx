@@ -436,15 +436,17 @@ const ago = (iso) => {
 
 /**
  * Build (#14 HANDOFF-05): offered for the behaviours that are new and unclaimed, all of them or the one whose house opened
- * the card; once asked for, the card says they wait for a builder, and says so plainly after an hour (HANDOFF-06). The
- * server decides what can be built, and only a person can ask.
+ * the card; once asked for, the card says they wait for a builder, and says so plainly after an hour (HANDOFF-06), and
+ * whether the project's runner was started (HANDOFF-07). A builder that stopped says why, or where its pull request is
+ * (HANDOFF-09). The server decides what can be built, and only a person can ask.
  */
 function BuildBar({ node, atBehaviour, builds, onBuild }) {
   const [busy, setBusy] = useState(false);
   const key = itemKeyOf(node);
   const offer = builds?.buildable?.[key] ?? [];
   const asked = (builds?.requests ?? []).filter((r) => r.itemKey === key);
-  if (!onBuild || (!offer.length && !asked.length)) return null;
+  const said = (builds?.notes ?? []).filter((n) => n.itemKey === key);
+  if (!onBuild || (!offer.length && !asked.length && !said.length)) return null;
   const go = async (behaviours) => {
     setBusy(true);
     await onBuild(node, behaviours);
@@ -468,7 +470,14 @@ function BuildBar({ node, atBehaviour, builds, onBuild }) {
       {asked.map((r) => (
         <p key={r.id} className={`build-waiting${r.stale ? ' stale' : ''}`} role="status">
           Waiting for a builder: {r.waiting.join(', ')}. Asked by {r.by}, {ago(r.at)}.
+          {r.runner?.state === 'started' && ' The runner was started.'}
+          {r.runner?.state === 'not_started' && ` The runner couldn’t be started (${r.runner.reason}); an agent session can still take it.`}
           {r.stale && ' Nobody has picked it up in over an hour: an agent session takes it at its standup, or with next_work.'}
+        </p>
+      ))}
+      {said.map((n) => (
+        <p key={n.request} className={`build-note${n.expired ? ' stale' : ''}`}>
+          <strong>{n.by}</strong>, {ago(n.at)}: {n.note}
         </p>
       ))}
     </section>
