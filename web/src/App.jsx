@@ -18,6 +18,7 @@ import { isNewer } from './model/version.js';
 import { backOf, followLink, linkTarget, repoOf } from './model/links.js';
 import { LinkContext } from './components/links-context.js';
 import { claimsByNode, openedBy, waitingByNode } from './map/houses.js';
+import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -84,6 +85,12 @@ function useNewVersion() {
       document.removeEventListener('visibilitychange', check);
       window.removeEventListener('focus', check);
     };
+  }, []);
+  // A part of the app the deploy removed was asked for (#71 SHIP-13): there is certainly a newer version.
+  useEffect(() => {
+    const stale = () => setNewer(true);
+    window.addEventListener('projectmap:stale', stale);
+    return () => window.removeEventListener('projectmap:stale', stale);
   }, []);
   return newer;
 }
@@ -413,7 +420,8 @@ export function App() {
     if (!commenting) setPlacePick(null);
   }, [commenting]);
   // A comment on a house is a comment on its issue.
-  const onCommentPick = useCallback((id, x, y) => setPlacePick({ id: openedBy(id).id, x, y }), []);
+  // Anything else picked (a park, a lot the map made up) is on the issue whose land it is, or on nothing.
+  const onCommentPick = useCallback((id, x, y) => typeof id === 'string' && setPlacePick({ id: openedBy(id).id, x, y }), []);
 
   const replaceNodes = (fn) => setData((d) => d && { ...d, nodes: fn(d.nodes) });
   const newVersion = useNewVersion();
@@ -454,6 +462,17 @@ export function App() {
     },
     [projectId, editing.name, loadBuilds, toast],
   );
+  const update = useCallback(async () => {
+    await editing.flush();
+    location.reload();
+  }, [editing]);
+  // When the panel, the editor or a comment box fails to draw (#71 SHIP-14): back to the map closes what failed, and the
+  // drafts, kept up here, stay. Update saves them and loads the new version (SHIP-12, SHIP-13).
+  const backToMap = useCallback(() => {
+    setCommenting(false);
+    setPlacePick(null);
+    closePanel();
+  }, [closePanel]);
 
   // Items with someone else's refinement waiting are marked on the map (ADOPT-02), so they can be found.
   const live = useMemo(() => {
@@ -718,6 +737,7 @@ export function App() {
           )}
           <LinkContext.Provider value={links}>
             <div className="panel-scroll">
+              <ErrorBoundary key={selected?.id ?? panelMode} where="panel" onBack={backToMap} onUpdate={update}>
               {panelMode === 'details' && (
                 <Details
                   key={selected.id}
@@ -752,6 +772,7 @@ export function App() {
                 />
               )}
               {panelMode === 'results' && <Results lens={lens} tree={tree} focusId={focusId} onPick={pick} onClose={() => setResultsOpen(false)} />}
+              </ErrorBoundary>
             </div>
           </LinkContext.Provider>
           {!mobile && (
@@ -798,6 +819,7 @@ export function App() {
         </div>
       )}
       {placed && (
+        <ErrorBoundary where="comment" onBack={backToMap} onUpdate={update}>
         <div className="thread-pop map-note" style={mobile ? undefined : { left: Math.min(placePick.x + 12, window.innerWidth - 380), top: Math.min(placePick.y + 12, window.innerHeight - 340) }}>
           <Composer
             key={placed.id}
@@ -807,6 +829,7 @@ export function App() {
             onCancel={() => setPlacePick(null)}
           />
         </div>
+        </ErrorBoundary>
       )}
       {hint && tree && (
         <Hint

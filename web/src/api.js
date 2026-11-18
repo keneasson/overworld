@@ -67,6 +67,7 @@ export const api = {
   restoreComment: (pid, c) => request('POST', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}/restore`, {}),
   openNotes: (pid) => request('GET', `/api/projects/${pid}/notes`),
   answerPrompt: (pid, c, body) => request('POST', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}/prompt`, body),
+  reportError: (report) => request('POST', '/api/errors', report),
   claims: (pid) => request('GET', `/api/projects/${pid}/claims`),
   builds: (pid) => request('GET', `/api/projects/${pid}/builds`),
   requestBuild: (pid, body) => request('POST', `/api/projects/${pid}/builds`, body),

@@ -23,6 +23,7 @@ model.
 | Sync lease | `PROJECT#<id>` | `LEASE#sync` | | |
 | Write budget | `PROJECT#<id>` | `LEASE#budget` | | |
 | Reconciliation report | `PROJECT#<id>` | `AUDIT#<at>` | | |
+| Browser error | `ERRORS` | `ERROR#<at>#<id>` | | |
 | Store link | `STORE#<store key>` | `PROJECT#<id>` | | |
 | Agent | `PROJECT#<id>` | `AGENT#<agentId>` | | |
 | When an agent last called | `PROJECT#<id>` | `AGENT#<agentId>#SEEN` | | |
@@ -104,6 +105,7 @@ agents' tokens first. The token itself is never stored.
 | Claim behaviours, all or none | `claims.take(projectId, claims, { owner, now })` | TransactWriteItems, each put conditional on nobody else holding it |
 | Note a claim's pull request and deploy (#14 HANDOFF-11) | `claims.put(projectId, claim)` | PutItem |
 | Release a claim (a handoff, or an expiry) | `claims.release(projectId, behaviour, { owner, until })` | Conditional DeleteItem |
+| Keep an error a browser caught; read the last 30 days' (#71 SHIP-14) | `errors.put(report)`, `errors.list()` | PutItem with TTL; Query `PK = ERRORS`, `SK BETWEEN ERROR#<30 days ago> AND ERROR#~`, descending |
 | A project's build requests; record or update one (#14) | `builds.list(projectId)`, `builds.put(projectId, request)` | Query `begins_with(SK, BUILD#)`; PutItem |
 | One item's handoff notes | `handoffs.list(projectId, itemKey)`, `handoffs.put` | Query `begins_with(SK, HANDOFF#<itemKey>#)`; PutItem |
 | What a project remembers | `facts.list(projectId)`, `facts.put`, `facts.delete` | Query `begins_with(SK, FACT#)`; PutItem; DeleteItem |

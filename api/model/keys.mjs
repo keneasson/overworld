@@ -12,6 +12,7 @@
 //   Lease     PROJECT#<id>    LEASE#sync         who is syncing this project, until when
 //   Budget    PROJECT#<id>    LEASE#budget       the project's recent writes to its store (SYNC-10)
 //   Report    PROJECT#<id>    AUDIT#<at>         what a reconciliation with the store fixed
+//   Error     ERRORS          ERROR#<at>#<id>    an error a browser caught and sent, kept 30 days (#71 SHIP-14)
 //   Store link STORE#<store key>  PROJECT#<id>  which projects live in a store, e.g. github:owner/name (for its events)
 //   Agent     PROJECT#<id>    AGENT#<agentId>    an agent that may use the project through MCP (#4)
 //   Seen      PROJECT#<id>    AGENT#<agentId>#SEEN  when the agent last called, at most every few minutes (CONN-07)
@@ -84,6 +85,8 @@ export const keys = {
   actionsOf: (projectId, agentId) => ({ index: 'GSI1', pk: `ACTIONS#${projectId}#${agentId}` }),
   request: (projectId, agentId, requestKey) => ({ PK: projectPartition(projectId), SK: `KEY#${agentId}#${requestKey}` }),
   limit: (projectId, agentId, minute) => ({ PK: projectPartition(projectId), SK: `LIMIT#${agentId}#${minute}` }),
+  clientError: ({ at, id }) => ({ PK: 'ERRORS', SK: `ERROR#${at}#${id}` }),
+  clientErrorsSince: (at) => ({ pk: 'ERRORS', skFrom: `ERROR#${at}`, skTo: 'ERROR#~' }),
   inbox: (projectId, id) => ({ PK: projectPartition(projectId), SK: `INBOX#${id}` }),
   inboxOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: 'INBOX#' }),
   commentsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `${COMMENT_PREFIX}${itemKey ? `${itemKey}#` : ''}` }),

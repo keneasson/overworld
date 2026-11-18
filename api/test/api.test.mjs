@@ -570,3 +570,16 @@ test('NEW-06 a new item dropped before adoption, or in a discarded refinement, i
   assert.ok(!(await map()).some((n) => n.id === kept.id), 'and a refresh does not bring it back');
   assert.equal(shop.issues.length, count);
 });
+
+test('SHIP-14 an error a browser caught is kept, with its stack, to be read from anywhere', async () => {
+  const { call } = await setup();
+  assert.equal((await call('POST', '/api/errors', { message: 'boom' }, null)).status, 401, 'only with the access key');
+  const sent = await call('POST', '/api/errors', { message: "Cannot read properties of undefined (reading 'poly')", stack: 'TypeError: …\n    at hitTest', componentStack: 'at Details', where: 'panel', url: 'https://x/#n=issue-53', userAgent: 'Safari', build: '/assets/index-abc.js', extra: 'dropped' });
+  assert.equal(sent.status, 201);
+  await call('POST', '/api/errors', { message: 'x'.repeat(5000), stack: 'y'.repeat(20000) });
+  const { errors } = (await call('GET', '/api/errors')).body;
+  assert.equal(errors.length, 2);
+  assert.equal(errors[0].message.length, 1000, 'newest first, and clipped');
+  assert.equal(errors[0].stack.length, 8000);
+  assert.deepEqual([errors[1].where, errors[1].userAgent, errors[1].stack.includes('hitTest'), 'extra' in errors[1]], ['panel', 'Safari', true, false]);
+});

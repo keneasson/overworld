@@ -2621,3 +2621,34 @@ button.danger.armed {
 .build-claim.stale {
   border-left-color: var(--danger);
 }
+
+/* When part of the app fails to draw (#71 SHIP-14): what went wrong, in place of that part, and the way back. */
+.crash {
+  margin: 16px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.crash.full {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: min(440px, calc(100vw - 32px));
+  height: fit-content;
+  box-shadow: var(--shadow);
+}
+.crash h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+.crash p {
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+.crash .button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

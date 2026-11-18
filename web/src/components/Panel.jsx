@@ -460,12 +460,14 @@ function BuildBar({ node, atBehaviour, builds, claims = [], onBuild }) {
   const offer = builds?.buildable?.[key] ?? [];
   const asked = (builds?.requests ?? []).filter((r) => r.itemKey === key);
   const said = (builds?.notes ?? []).filter((n) => n.itemKey === key);
-  const held = Object.values(
-    Object.groupBy(
-      claims.filter((c) => c.item === key && Date.parse(c.until) > Date.now()),
-      (c) => `${c.owner}|${c.pr?.number ?? ''}|${c.pr?.state ?? ''}|${c.pr?.deploy?.state ?? ''}`,
-    ),
-  ).map((cs) => ({ agent: `${cs[0].agentName} (${cs[0].owner})`, ids: cs.map((c) => c.behaviour), pr: cs[0].pr }));
+  // Grouped by hand, not with Object.groupBy: Safari before 17.4 has none, and the card must open everywhere.
+  const groups = new Map();
+  for (const c of claims) {
+    if (c.item !== key || !(Date.parse(c.until) > Date.now())) continue;
+    const g = `${c.owner}|${c.pr?.number ?? ''}|${c.pr?.state ?? ''}|${c.pr?.deploy?.state ?? ''}`;
+    groups.set(g, [...(groups.get(g) ?? []), c]);
+  }
+  const held = [...groups.values()].map((cs) => ({ agent: `${cs[0].agentName} (${cs[0].owner})`, ids: cs.map((c) => c.behaviour), pr: cs[0].pr }));
   if (!onBuild || (!offer.length && !asked.length && !said.length && !held.length)) return null;
   const go = async (behaviours) => {
     setBusy(true);

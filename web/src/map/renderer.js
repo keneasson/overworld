@@ -1010,8 +1010,9 @@ export function hitTest(scene, view, info, sx, sy) {
   if (land.some((ring) => polygonContains(ring, p))) {
     byLand = tree.root;
     const kidsOf = scene.kidsOf ?? ((n) => n.children);
-    while (kidsOf(byLand).length && geo.get(byLand.id).size * k >= T.sub * 1.02) {
-      const next = kidsOf(byLand).find((c) => polygonContains(geo.get(c.id).poly, p));
+    while (kidsOf(byLand).length && (geo.get(byLand.id)?.size ?? 0) * k >= T.sub * 1.02) {
+      // A lot the layout drew no land for (a park, a lot still being laid out) is never under the pointer.
+      const next = kidsOf(byLand).find((c) => geo.get(c.id)?.poly && polygonContains(geo.get(c.id).poly, p));
       if (!next) break;
       byLand = next;
     }
