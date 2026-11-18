@@ -15,6 +15,7 @@ import { annotationOf, answers, cleanAnchor, isDismissed, mentionsOf, notesByIte
 import { addresseesOf } from './notes.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
+import { nextWork } from './work.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 
 class HttpError extends Error {
@@ -798,6 +799,38 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       return { claims: [...(await agents.liveClaims(pid)).live.values()] };
     }],
 
+    // Build requests (#14 HANDOFF-05): what waits for a builder, and what the card may offer to build.
+    ['GET', /^\/api\/projects\/([\w-]+)\/builds$/, async ({ params: [pid] }) => {
+      const { project, nodes } = await loadProject(pid);
+      const { live } = await agents.liveClaims(pid);
+      const requests = await agents.buildRequests(pid, { nodes, live });
+      const asked = new Set(requests.flatMap((r) => r.waiting));
+      const buildable = {};
+      for (const w of nextWork(nodes, live, { tested: project?.tested }).work) {
+        const open = w.behaviours.map((b) => b.id).filter((id) => !asked.has(id));
+        if (open.length) buildable[w.item] = open;
+      }
+      return { requests: requests.map(({ prompt, ...r }) => r), buildable };
+    }],
+
+    // Only people choose Build: an agent's call through MCP is refused. Anyone with the project's access key may, since that
+    // is who can change it today; checking the person's own write access to the repository comes with #52 (Sign in with GitHub).
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/builds$/,
+      async ({ params: [pid], body }) => {
+        const key = String(body?.item ?? '');
+        if (!KEY.test(key)) throw new ValidationError('item: expected an item key');
+        const behaviours = body?.behaviours == null ? [] : Array.isArray(body.behaviours) ? body.behaviours.map(String) : null;
+        if (!behaviours) throw new ValidationError('behaviours: expected a list of behaviour IDs');
+        await loadProjectHead(pid);
+        const { request, already } = await agents.requestBuild(pid, { item: key, behaviours, by: author(body?.by) });
+        const { prompt, ...shown } = request;
+        return { request: shown, ...(already ? { already: true } : {}) };
+      },
+      { status: 201, people: true },
+    ],
+
     ['GET', /^\/api\/projects\/([\w-]+)\/facts$/, async ({ params: [pid] }) => ({ facts: await model.facts.list(pid) })],
 
     [
@@ -838,6 +871,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const match = path.match(re);
         if (!match || m !== method) continue;
         if (!opts.public && !trusted) authorize(headers);
+        if (opts.people && trusted) throw new HttpError(403, 'Only a person can do this');
         const result = await fn({ params: match.slice(1), body, headers, rawBody });
         return { status: opts.status ?? 200, body: result };
       }

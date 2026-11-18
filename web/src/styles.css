@@ -2585,3 +2585,31 @@ button.danger.armed {
   border-radius: 6px;
   transition: background 0.6s ease;
 }
+
+/* Build (#14 HANDOFF-05): what can be built, and what waits for a builder. */
+.build-bar {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+.build-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.build-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.build-waiting {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid #fbbc04;
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.build-waiting.stale {
+  border-left-color: var(--danger);
+}

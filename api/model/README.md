@@ -29,6 +29,7 @@ model.
 | Agent token | `TOKEN#<sha256 of the token>` | `TOKEN` | | |
 | Claim | `PROJECT#<id>` | `CLAIM#<behaviourId>` | | |
 | Handoff note | `PROJECT#<id>` | `HANDOFF#<itemKey>#<at>#<id>` | | |
+| Build request | `PROJECT#<id>` | `BUILD#<itemKey>#<id>` | | |
 | Remembered fact | `PROJECT#<id>` | `FACT#<at>#<id>` | | |
 | Agent action | `PROJECT#<id>` | `ACTION#<at>#<id>` | `ACTIONS#<id>#<agentId>` | `<at>` |
 | Request key | `PROJECT#<id>` | `KEY#<agentId>#<requestKey>` | | |
@@ -102,6 +103,7 @@ agents' tokens first. The token itself is never stored.
 | A project's claims | `claims.list(projectId)` | Query `begins_with(SK, CLAIM#)` |
 | Claim behaviours, all or none | `claims.take(projectId, claims, { owner, now })` | TransactWriteItems, each put conditional on nobody else holding it |
 | Release a claim (a handoff, or an expiry) | `claims.release(projectId, behaviour, { owner, until })` | Conditional DeleteItem |
+| A project's build requests; record or update one (#14) | `builds.list(projectId)`, `builds.put(projectId, request)` | Query `begins_with(SK, BUILD#)`; PutItem |
 | One item's handoff notes | `handoffs.list(projectId, itemKey)`, `handoffs.put` | Query `begins_with(SK, HANDOFF#<itemKey>#)`; PutItem |
 | What a project remembers | `facts.list(projectId)`, `facts.put`, `facts.delete` | Query `begins_with(SK, FACT#)`; PutItem; DeleteItem |
 | Record a change by an agent; one agent's changes | `actions.put(projectId, action)`, `actions.list(projectId, agentId)` | PutItem; Query GSI1 `ACTIONS#<id>#<agentId>`, descending |

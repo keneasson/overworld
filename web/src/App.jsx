@@ -17,7 +17,7 @@ import { Icon } from './components/Icon.jsx';
 import { isNewer } from './model/version.js';
 import { backOf, followLink, linkTarget, repoOf } from './model/links.js';
 import { LinkContext } from './components/links-context.js';
-import { claimsByNode, openedBy } from './map/houses.js';
+import { claimsByNode, openedBy, waitingByNode } from './map/houses.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -59,6 +59,7 @@ function useMedia(query) {
 // A newer deploy is noticed when the app comes back to the foreground, and every few minutes (SHIP-12): on a phone
 // the map takes every touch, so pull-to-refresh can't, and an app opened from the home screen has no reload button.
 const VERSION_CHECK_MS = 5 * 60_000;
+const NO_BUILDS = { requests: [], buildable: {} };
 function useNewVersion() {
   const [newer, setNewer] = useState(false);
   useEffect(() => {
@@ -182,20 +183,33 @@ export function App() {
   }, [projectId]);
   // Live claims (MCP-04): a house being coded has a bulldozer on its lot (#46 MARK-17), and the item an agent badge. Agents
   // claim through MCP while the map is open, so look again now and then; a claim that ends takes its bulldozer with it.
+  // Build requests (#14 HANDOFF-05) come with them: what waits for a builder, and what the card can offer to build.
   const [claims, setClaims] = useState([]);
+  const [builds, setBuilds] = useState(NO_BUILDS);
+  const loadBuilds = useCallback(
+    (pid) =>
+      api
+        .builds(pid)
+        .then((d) => latest.current.projectId === pid && setBuilds({ requests: d.requests ?? [], buildable: d.buildable ?? {} }))
+        .catch(() => {}),
+    [],
+  );
   useEffect(() => {
     setClaims([]);
+    setBuilds(NO_BUILDS);
     if (!projectId) return undefined;
     const pid = projectId;
-    const load = () =>
+    const load = () => {
       api
         .claims(pid)
         .then((d) => latest.current.projectId === pid && setClaims(d.claims ?? []))
         .catch(() => {});
+      loadBuilds(pid);
+    };
     load();
     const t = setInterval(() => document.visibilityState === 'visible' && load(), 30000);
     return () => clearInterval(t);
-  }, [projectId]);
+  }, [projectId, loadBuilds]);
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
     if (!claims.length) return undefined;
@@ -427,6 +441,19 @@ export function App() {
       return d.nodes;
     },
   });
+  const build = useCallback(
+    async (node, behaviours) => {
+      const pid = projectId;
+      try {
+        const { request, already } = await api.requestBuild(pid, { item: itemKeyOf(node), ...(behaviours ? { behaviours } : {}), by: editing.name || undefined });
+        toast(already ? 'Already waiting for a builder' : `Build asked for: ${request.behaviours.join(', ')}`);
+      } catch (err) {
+        toast(err.message);
+      }
+      await loadBuilds(pid);
+    },
+    [projectId, editing.name, loadBuilds, toast],
+  );
 
   // Items with someone else's refinement waiting are marked on the map (ADOPT-02), so they can be found.
   const live = useMemo(() => {
@@ -453,8 +480,9 @@ export function App() {
         if (n) refinements.set(n.id, (refinements.get(n.id) ?? 0) + 1);
       }
     const agents = tree ? claimsByNode(claims, tree, clock) : new Map();
-    return { refinements, notes, agents };
-  }, [editing.others, editing.name, editing.hasRead, tree, comments, openNotes, claims, clock]);
+    const waiting = tree ? waitingByNode(builds.requests, tree) : new Map();
+    return { refinements, notes, agents, waiting };
+  }, [editing.others, editing.name, editing.hasRead, tree, comments, openNotes, claims, builds, clock]);
   // Agents propose through MCP while the map is open: look again when an item opens, and now and then.
   const { reloadRefinements } = editing;
   useEffect(() => {
@@ -699,6 +727,8 @@ export function App() {
                   lens={lens}
                   comments={comments}
                   editing={editing}
+                  builds={builds}
+                  onBuild={build}
                   commenting={commenting}
                   commentControl={inSheet ? commentControl : null}
                   back={trail && { label: trail.id && tree.byId.get(trail.id) ? `Back to ${tree.byId.get(trail.id).title}` : 'Back', go: () => history.back() }}

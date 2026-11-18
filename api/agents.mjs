@@ -8,6 +8,7 @@ import { nextWork, behavioursOf, blockersOf, childrenOf, isWork, keyOf, splitOf 
 import { awaitsApplying, isQuestion, promptOf } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { notePrompt } from './notes.mjs';
+import { buildPrompt } from './prompts.mjs';
 import { isDismissed } from '../shared/annotations.js';
 
 /** A question settled for its asker: its answer applied, or the thread dismissed. */
@@ -21,6 +22,8 @@ const SEEN_EVERY_MS = 5 * 60 * 1000;
 const REGROUP_AFTER_HOURS = 8;
 const REGROUP_AFTER_CHANGES = 10;
 const SHOWN = 8;
+// A build request nobody has picked up in this long says so on the card (#14 HANDOFF-06).
+const BUILD_STALE_MS = 60 * 60_000;
 
 export const tokenHash = (token) => createHash('sha256').update(String(token)).digest('hex');
 
@@ -123,9 +126,13 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       const othersHold = new Map([...live].filter(([, c]) => c.owner !== agent.id));
       let wanted;
       if (!behaviours.length) {
-        const top = nextWork(data.nodes, live, { tested: data.project?.tested }).work[0];
-        if (!top) return { claimed: [], message: 'Nothing is ready and unclaimed.' };
-        wanted = top.behaviours.map((b) => ({ id: b.id, node: data.nodes.find((n) => keyOf(n) === top.item) }));
+        // What a person asked to be built comes first (HANDOFF-10), oldest first; then the top of next_work().
+        wanted = requestedWork(data, await buildRequests(projectId, { nodes: data.nodes, live }));
+        if (!wanted) {
+          const top = nextWork(data.nodes, live, { tested: data.project?.tested }).work[0];
+          if (!top) return { claimed: [], message: 'Nothing is ready and unclaimed.' };
+          wanted = top.behaviours.map((b) => ({ id: b.id, node: data.nodes.find((n) => keyOf(n) === top.item) }));
+        }
       } else {
         wanted = placeBehaviours(data.nodes, behaviours.map(String), data.project?.tested);
         const held = holders(behaviours, othersHold);
@@ -135,7 +142,8 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       const until = iso(now + span * 60_000);
       const list = wanted.map(({ id, node }) => ({ behaviour: id, item: keyOf(node), title: node.title, agentName: agent.name, until, claimedAt: live.get(id)?.claimedAt ?? iso(now) }));
       if (await model.claims.take(projectId, list, { owner: agent.id, now: iso(now) })) {
-        return { claimed: list.map((c) => c.behaviour), items: [...new Set(list.map((c) => c.item))], until };
+        const took = await takeBuilds(projectId, agent, list.map((c) => c.behaviour), iso(now));
+        return { claimed: list.map((c) => c.behaviour), items: [...new Set(list.map((c) => c.item))], until, ...(took.length ? { build_requests_taken: took } : {}) };
       }
       // Someone took one first. Named behaviours say who; "the next work" looks again.
       if (behaviours.length) {
@@ -165,6 +173,91 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       out.push({ id, node });
     }
     return out;
+  }
+
+  /**
+   * Build requests still waiting for a builder (#14 HANDOFF-05), oldest first: each with the behaviours nobody has claimed
+   * yet, and whether it has waited over an hour (HANDOFF-06). One whose item is no longer work, or whose behaviours are
+   * all claimed or gone, isn't waiting.
+   */
+  async function buildRequests(projectId, { nodes, live } = {}) {
+    nodes ??= (await model.projects.getWithNodes(projectId)).nodes;
+    live ??= (await liveClaims(projectId)).live;
+    const byKey = new Map(nodes.map((n) => [keyOf(n), n]));
+    const out = [];
+    for (const r of await model.builds.list(projectId)) {
+      const node = r.state === 'waiting' && byKey.get(r.itemKey);
+      if (!node || !isWork(node)) continue;
+      const have = new Set(behavioursOf(node).map((b) => b.id));
+      const taken = new Set((r.taken ?? []).map((t) => t.behaviour));
+      const waiting = r.behaviours.filter((id) => have.has(id) && !taken.has(id) && !live.has(id));
+      if (waiting.length) out.push({ ...r, title: node.title, waiting, stale: clock() - Date.parse(r.at) > BUILD_STALE_MS });
+    }
+    return out.sort((a, b) => a.at.localeCompare(b.at));
+  }
+
+  /** The first waiting request that can be claimed now, as claim() wants it, or null. */
+  function requestedWork(data, requests) {
+    for (const r of requests) {
+      try {
+        return placeBehaviours(data.nodes, r.waiting, data.project?.tested);
+      } catch (err) {
+        if (!(err instanceof Refused)) throw err;
+      }
+    }
+    return null;
+  }
+
+  /** A claim takes the requests for what it claimed (HANDOFF-06): a request is taken once all of it is. */
+  async function takeBuilds(projectId, agent, claimed, at) {
+    const mine = new Set(claimed);
+    const took = [];
+    for (const r of await model.builds.list(projectId)) {
+      if (r.state !== 'waiting') continue;
+      const done = new Set((r.taken ?? []).map((t) => t.behaviour));
+      const now = r.behaviours.filter((id) => mine.has(id) && !done.has(id));
+      if (!now.length) continue;
+      const taken = [...(r.taken ?? []), ...now.map((behaviour) => ({ behaviour, by: `${agent.name} (${agent.id})`, at }))];
+      await model.builds.put(projectId, { ...r, taken, ...(taken.length >= r.behaviours.length ? { state: 'taken' } : {}) });
+      took.push(r.id);
+    }
+    return took;
+  }
+
+  /**
+   * A person asks for behaviours to be built (#14 HANDOFF-05): the named ones, or every one of the item that is new and
+   * unclaimed. Each must be work an agent could claim. It is recorded with the prompt it goes out with (HANDOFF-01), and
+   * waits for a builder; asking again for what already waits returns that request.
+   */
+  async function requestBuild(projectId, { item, behaviours = [], by }) {
+    const data = await model.projects.getWithNodes(projectId);
+    const node = data.nodes.find((n) => keyOf(n) === item);
+    if (!node) throw new ValidationError(`${item} isn't on the map`);
+    const { live } = await liveClaims(projectId);
+    const tested = new Set(data.project?.tested ?? []);
+    const own = behavioursOf(node).filter((b) => !b.fog);
+    const ids = behaviours.length ? behaviours.map(String) : own.filter((b) => !live.has(b.id) && !tested.has(b.id)).map((b) => b.id);
+    if (!ids.length) throw new Refused(`${node.title} has no behaviours that are new and unclaimed, so there is nothing to build`);
+    const stray = ids.filter((id) => !behavioursOf(node).some((b) => b.id === id));
+    if (stray.length) throw new Refused(`${stray.join(', ')} ${stray.length === 1 ? "isn't a behaviour" : "aren't behaviours"} of ${node.title}`);
+    placeBehaviours(data.nodes, ids, data.project?.tested);
+    const held = holders(ids, live);
+    if (held.length) throw new Refused(`Already being coded: ${held.map((h) => `${h.behaviour} by ${h.agent}`).join('; ')}`, { held_by: held });
+    const open = await buildRequests(projectId, { nodes: data.nodes, live });
+    const fresh = ids.filter((id) => !open.some((r) => r.waiting.includes(id)));
+    if (!fresh.length) return { request: open.find((r) => ids.some((id) => r.waiting.includes(id))), already: true };
+    const request = {
+      id: newId(),
+      itemKey: item,
+      title: node.title,
+      behaviours: fresh,
+      by: said(by ?? '', 80, 'by'),
+      at: iso(),
+      state: 'waiting',
+      prompt: buildPrompt({ nodes: data.nodes, node, behaviours: own.filter((b) => fresh.includes(b.id)) }),
+    };
+    await model.builds.put(projectId, request);
+    return { request: { ...request, waiting: fresh, stale: false } };
   }
 
   /** Release claims with a note on where the work stands; the next agent reads it in context() and prime() (MCP-09). */
@@ -363,6 +456,8 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const mode = !last ? 'onboarding' : awayHours > REGROUP_AFTER_HOURS || changes >= REGROUP_AFTER_CHANGES ? 'regroup' : 'up_to_date';
 
     const { work, needsSplit, toVerify } = nextWork(data.nodes, live, { tested: data.project?.tested });
+    // What people asked to be built and nobody has taken (HANDOFF-10): an open session can take it before a runner does.
+    const builds = (await buildRequests(projectId, { nodes: data.nodes, live })).map(buildOf);
     const git = gitOf(local);
     const refinements = changesets.filter((cs) => cs.status === 'open' && cs.author === me).map((cs) => ({ refinement: cs.id, place: data.nodes.find((n) => n.id === cs.scopeId)?.title ?? cs.scopeId, items: cs.items.length }));
     // People's yes or no to this agent's refinements since the last standup (ADOPT-05): declined ones say why.
@@ -381,6 +476,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         ...(fresh.filter((c) => watched.has(c.itemKey)).length ? { new_comments: fresh.filter((c) => watched.has(c.itemKey)).slice(-SHOWN).map((c) => ({ item: c.itemKey, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })) } : {}),
       },
       you_hold: holding,
+      ...(builds.length ? { build_requests: builds.slice(0, 3), ...(builds.length > 3 ? { more_build_requests: builds.length - 3 } : {}) } : {}),
       ready_next: work.slice(0, 3).map((w) => ({ item: w.item, title: w.title, priority: w.priority || undefined, behaviours: w.behaviours.map((b) => b.id) })),
       ...(needsSplit.length ? { needs_split: needsSplit.slice(0, SHOWN).map(({ item, title, reason, looks_built }) => ({ item, title, reason, looks_built })), ...(needsSplit.length > SHOWN ? { more_need_split: needsSplit.length - SHOWN } : {}) } : {}),
       ...(toVerify.length ? { to_verify: toVerify.slice(0, SHOWN) } : {}),
@@ -412,17 +508,29 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         remembered: (await model.facts.list(projectId)).map((f) => ({ fact: f.text, by: f.by?.name, at: f.at.slice(0, 10) })),
       };
     }
-    report.first_step = firstStep({ mode, git, ranOut, notes, answered: answered.map(({ c, prompt }) => ({ title: title(c.itemKey), prompt })), holding, work, needsSplit, toVerify, refinements, title });
+    report.first_step = firstStep({ mode, git, ranOut, notes, answered: answered.map(({ c, prompt }) => ({ title: title(c.itemKey), prompt })), holding, builds, work, needsSplit, toVerify, refinements, title });
 
     await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !settled(c)).map((c) => c.id) } });
     return report;
   }
 
-  return { callsPerMinute, standup, addressed, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
+  return { callsPerMinute, standup, addressed, buildRequests, requestBuild, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
 }
 
 /** An annotation addressed to an agent, as its tools show it: who said what, where, and the prompt to act on it. */
 export const noteOf = ({ note, prompt }) => ({ annotation: note.id, item: note.itemKey, from: note.author, said: note.text, prompt });
+
+/** A build request as agents' tools show it: what to build, who asked, since when, and the prompt to build it with (HANDOFF-10). */
+export const buildOf = (r) => ({
+  request: r.id,
+  item: r.itemKey,
+  title: r.title,
+  behaviours: r.waiting,
+  requested_by: r.by,
+  at: r.at,
+  ...(r.stale ? { waiting_over_an_hour: true } : {}),
+  prompt: r.prompt,
+});
 
 /** How the local copy and GitHub differ, from what the agent saw: null when it sent nothing. */
 function gitOf(local) {
@@ -444,7 +552,7 @@ function gitOf(local) {
 }
 
 /** One suggestion: unfinished local work first, then catching up, then answers to apply or read, then held work, then the next work. */
-function firstStep({ mode, git, ranOut, notes = [], answered, holding, work, needsSplit = [], toVerify = [], refinements, title }) {
+function firstStep({ mode, git, ranOut, notes = [], answered, holding, builds = [], work, needsSplit = [], toVerify = [], refinements, title }) {
   const apply = answered.filter((a) => a.prompt);
   const local = git && (git.uncommitted?.length || git.unpushed?.length || git.ahead);
   if (local && ranOut.length && !holding.length) return `You have local work on ${git.branch ?? 'this branch'} and your claim on ${ranOut.map((c) => c.behaviour).join(', ')} ran out: claim it again, or hand it off, before you carry on.`;
@@ -455,6 +563,7 @@ function firstStep({ mode, git, ranOut, notes = [], answered, holding, work, nee
   if (answered.length) return `Read the answer${answered.length === 1 ? '' : 's'} on ${[...new Set(answered.map((a) => a.title))].join(', ')}.`;
   if (holding.length) return `Carry on with ${holding[0].title} (${holding[0].behaviours.join(', ')}); your claim holds until ${holding[0].until}.`;
   if (refinements.length) return `Finish your refinement over ${refinements[0].place}.`;
+  if (builds.length) return `${builds[0].requested_by} asked for ${builds[0].title} to be built: claim(behaviours: [${builds[0].behaviours.map((id) => `"${id}"`).join(', ')}]), then follow its prompt in build_requests.`;
   if (work.length) return `Claim the next work: ${work[0].title} (${work[0].behaviours.map((b) => b.id).join(', ')}).`;
   if (toVerify.length) return `Nothing is ready to build. ${toVerify[0].title} has a test for every behaviour: verify it does what it says, and record what you saw on the issue; a person's yes closes it (STATE-12).`;
   if (needsSplit.length) return `Nothing is ready that can be built in one go. ${needsSplit[0].title} needs a split first: refine() it into child issues.`;

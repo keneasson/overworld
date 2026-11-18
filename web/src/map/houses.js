@@ -101,8 +101,26 @@ export function claimsByNode(claims, tree, now = Date.now()) {
 }
 
 /**
+ * Build requests waiting for a builder (#14 HANDOFF-05), as how many behaviours wait, by node id for each item and by
+ * house id for each behaviour, so the house shows it until a builder claims it and the bulldozer takes its place.
+ */
+export function waitingByNode(requests, tree) {
+  const byKey = new Map(tree.list.map((n) => [itemKeyOf(n), n]));
+  const out = new Map();
+  const add = (id, k = 1) => out.set(id, (out.get(id) ?? 0) + k);
+  for (const r of requests ?? []) {
+    const n = byKey.get(r.itemKey);
+    if (!n) continue;
+    add(n.id, r.waiting.length);
+    for (const b of r.waiting) if (n.behaviourRows?.some((x) => x.id === b)) add(houseId(n, b));
+  }
+  return out;
+}
+
+/**
  * The houses drawn at this view, from the lots on screen (`lotsAt(...).grounds`): each with its footprint's corners in
- * world coordinates, how strongly it shows, and where its bulldozer stands while it is being coded (`live.agents`).
+ * world coordinates, how strongly it shows, and where its bulldozer stands while it is being coded (`live.agents`), or
+ * its hourglass while it waits for a builder (`live.waiting`).
  */
 export function housesAt(grounds, { k, live = {} }) {
   const out = [];
@@ -130,8 +148,10 @@ export function housesAt(grounds, { k, live = {} }) {
     }
     const coded = (live.agents?.get(n.id) ?? 0) > 0;
     // The bulldozer works on the lot beside the house, in the corner nearest the street.
-    const bulldozer = coded ? [cx + hw + (g.labelR - hw) * 0.45, cy + hh + (g.labelR - hh) * 0.25] : null;
-    out.push({ n, g, alpha: show, corners, area: 4 * hw * hh, bulldozer, size: Math.max(16, Math.min(28, g.labelR * k * 0.3)) });
+    const spot = [cx + hw + (g.labelR - hw) * 0.45, cy + hh + (g.labelR - hh) * 0.25];
+    const bulldozer = coded ? spot : null;
+    const waiting = !coded && (live.waiting?.get(n.id) ?? 0) > 0 ? spot : null;
+    out.push({ n, g, alpha: show, corners, area: 4 * hw * hh, bulldozer, waiting, size: Math.max(16, Math.min(28, g.labelR * k * 0.3)) });
   }
   return out;
 }

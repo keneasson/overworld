@@ -266,6 +266,20 @@ function drawBulldozer(ctx, [bx, by], size, alpha) {
   ctx.globalAlpha = 1;
 }
 
+/** An hourglass on the lot of a house asked to be built and waiting for a builder (#14 HANDOFF-05): quiet, since nothing is happening yet. */
+function drawWaiting(ctx, [bx, by], size, alpha, dark) {
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(bx, by, size * 0.55, 0, Math.PI * 2);
+  ctx.fillStyle = dark ? '#3c4043' : '#ffffff';
+  ctx.fill();
+  ctx.lineWidth = size * 0.07;
+  ctx.strokeStyle = '#fbbc04';
+  ctx.stroke();
+  drawSymbol(ctx, 'waiting', bx, by, size * 0.62, dark ? '#fde293' : '#5f4b00');
+  ctx.globalAlpha = 1;
+}
+
 // ---------- fog ----------
 // Uncharted work is under cloud: soft, seamless cloud tiles in two layers that drift at different speeds,
 // so the fog reads as weather moving over the land. Drawn over fills and borders, under every label and pin.
@@ -730,6 +744,7 @@ export function drawMap(ctx, scene, view, opts) {
   if (fogged.length) drawFog(ctx, fogged, k, time, theme.dark);
   // Bulldozers stand above the fog: work going on is news, however little is known about the land (MARK-17).
   for (const h of houses) if (h.bulldozer) drawBulldozer(ctx, h.bulldozer, h.size / k, h.alpha);
+  for (const h of houses) if (h.waiting) drawWaiting(ctx, h.waiting, h.size / k, h.alpha, theme.dark);
 
   const hovered = hoverId && (scene.nodeOf?.(hoverId) ?? tree.byId.get(hoverId));
   if (hovered && !thumbnail) {

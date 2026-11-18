@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, #68), annotations addressed to agents (NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15) and leaf-only work (STATE-09, STATE-10, #32), tested the way an agent uses it: JSON-RPC over HTTP.
+// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, #68), annotations addressed to agents (NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15) and leaf-only work (STATE-09, STATE-10, #32) and build requests (HANDOFF-01, HANDOFF-05, HANDOFF-06, HANDOFF-10, #14), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -629,4 +629,65 @@ test('STATE-10 STATE-12 an issue partly built needs a split; one tested througho
   assert.deepEqual(s.to_verify.find((x) => x.item === 'issue-31').behaviours, ['AB-01']);
   assert.deepEqual(next.to_verify, ['issue-31']);
   assert.deepEqual((await a.use('context', { issue: '30' })).needs_split.still_to_build, ['HB-02']);
+});
+
+test('HANDOFF-05 HANDOFF-01 a person chooses Build on an issue or on one behaviour: the request carries the prompt and waits for a builder; an agent cannot make one', async () => {
+  const { api, rest, pid, agent, clock } = await setup();
+  const build = (b) => api({ method: 'POST', path: `/api/projects/${pid}/builds`, body: b, headers: { 'x-projectmap-key': 'k' } });
+  const before = await rest('GET', `/api/projects/${pid}/builds`);
+  assert.deepEqual(before, { requests: [], buildable: { 'issue-11': ['CL-01', 'CL-02'], 'issue-10': ['ZOOM-01', 'ZOOM-02'] } }, 'only new, unclaimed, unblocked behaviours can be built');
+
+  const whole = await build({ item: 'issue-11', by: 'Ken' });
+  assert.equal(whole.status, 201);
+  assert.deepEqual(whole.body.request.behaviours, ['CL-01', 'CL-02']);
+  clock.now += 60_000;
+  const house = (await build({ item: 'issue-10', behaviours: ['ZOOM-02'], by: 'Ken' })).body.request;
+  assert.deepEqual(house.behaviours, ['ZOOM-02'], "Build on one behaviour's house asks for that one");
+  const again = await build({ item: 'issue-11', by: 'Ken' });
+  assert.equal(again.body.request.id, whole.body.request.id, 'asking again for what already waits changes nothing');
+  assert.ok(again.body.already);
+
+  const now = await rest('GET', `/api/projects/${pid}/builds`);
+  assert.deepEqual(now.requests.map((r) => [r.itemKey, r.waiting, r.by, r.stale]), [['issue-11', ['CL-01', 'CL-02'], 'Ken', false], ['issue-10', ['ZOOM-02'], 'Ken', false]], 'waiting for a builder');
+  assert.deepEqual(now.buildable, { 'issue-10': ['ZOOM-01'] });
+
+  for (const [b, why] of [[{ item: 'issue-12' }, /waits on/], [{ item: 'issue-13' }, /not ready/], [{ item: 'issue-10', behaviours: ['ZOOM-03'] }, /isn't worked out yet/], [{ item: 'issue-10', behaviours: ['CL-01'] }, /isn't a behaviour of/]]) {
+    const r = await build(b);
+    assert.equal(r.status, 409, JSON.stringify(b));
+    assert.match(r.body.error, why);
+  }
+  const byAgent = await api({ method: 'POST', path: `/api/projects/${pid}/builds`, body: { item: 'issue-10' }, trusted: true });
+  assert.equal(byAgent.status, 403, 'only a person chooses Build');
+
+  const { build_requests: [first] } = await (await agent('Builder')).use('next_work');
+  assert.equal(first.item, 'issue-11');
+  for (const part of ['CL-01 Given work, when claimed, then it is held.', 'CL-02 Given a claim', 'It works.', 'Out of scope', 'Its parent: Web', '#10 Zoom (issue-10)', 'claim(behaviours: ["CL-01", "CL-02"])', 'never push to main']) assert.ok(first.prompt.includes(part), `the prompt has ${part}`);
+});
+
+test('HANDOFF-06 HANDOFF-10 an open session takes a build request by claiming it, before other work, so nobody else builds it; one nobody takes within an hour says so', async () => {
+  const { api, rest, pid, agent, clock } = await setup();
+  const build = (b) => rest('POST', `/api/projects/${pid}/builds`, { by: 'Ken', ...b });
+  await build({ item: 'issue-10', behaviours: ['ZOOM-01'] });
+  const a = await agent('Builder');
+  const b = await agent('Reviewer');
+
+  const up = await a.use('standup');
+  assert.deepEqual(up.build_requests.map((r) => [r.item, r.behaviours, r.requested_by]), [['issue-10', ['ZOOM-01'], 'Ken']]);
+  assert.match(up.first_step, /Ken asked for #10 Zoom to be built: claim\(behaviours: \["ZOOM-01"\]\)/);
+  const took = await a.use('claim', {});
+  assert.deepEqual(took.claimed, ['ZOOM-01'], 'the request comes before the higher-priority work next_work would offer');
+  assert.equal(took.build_requests_taken.length, 1);
+  assert.deepEqual((await rest('GET', `/api/projects/${pid}/builds`)).requests, [], 'no longer waiting');
+  assert.deepEqual((await rest('GET', `/api/projects/${pid}/claims`)).claims.map((c) => [c.behaviour, c.owner]), [['ZOOM-01', a.id]], 'so the bulldozer appears');
+  assert.match((await b.refused('claim', { behaviours: ['ZOOM-01'] })).error, /Already claimed: ZOOM-01/);
+  assert.equal((await api({ method: 'POST', path: `/api/projects/${pid}/builds`, body: { item: 'issue-10', behaviours: ['ZOOM-01'] }, headers: { 'x-projectmap-key': 'k' } })).status, 409, 'what is being coded cannot be asked for again');
+
+  // Claiming part of a request takes that part; the rest still waits.
+  await build({ item: 'issue-11' });
+  await b.use('claim', { behaviours: ['CL-01'] });
+  assert.deepEqual((await rest('GET', `/api/projects/${pid}/builds`)).requests.map((r) => r.waiting), [['CL-02']]);
+
+  clock.now += 61 * 60_000;
+  assert.equal((await rest('GET', `/api/projects/${pid}/builds`)).requests[0].stale, true, 'waiting over an hour says so');
+  assert.equal((await a.use('next_work')).build_requests[0].waiting_over_an_hour, true);
 });
