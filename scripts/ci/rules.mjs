@@ -84,3 +84,16 @@ export function lastGood(deployments, failedSha) {
     .filter((d) => d.state === 'success' && d.sha !== failedSha)
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))[0]?.sha ?? null;
 }
+
+/**
+ * The pull requests a deploy carries (#14 HANDOFF-11), from the subjects of the commits since the last deploy that
+ * succeeded: GitHub's merge commits ("Merge pull request #12 from …") and squash merges ("Title (#12)").
+ */
+export function pullsIn(subjects) {
+  const out = new Set();
+  for (const s of subjects) {
+    const n = s.match(/^Merge pull request #(\d+)\b/)?.[1] ?? s.match(/\(#(\d+)\)\s*$/)?.[1];
+    if (n) out.add(Number(n));
+  }
+  return [...out].sort((a, b) => a - b);
+}

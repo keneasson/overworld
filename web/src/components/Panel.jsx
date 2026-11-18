@@ -440,13 +440,33 @@ const ago = (iso) => {
  * whether the project's runner was started (HANDOFF-07). A builder that stopped says why, or where its pull request is
  * (HANDOFF-09). The server decides what can be built, and only a person can ask.
  */
-function BuildBar({ node, atBehaviour, builds, onBuild }) {
+/**
+ * Where each claim on the item has got to (#14 HANDOFF-11): being built, in a pull request, merged and waiting for the
+ * deploy, or back with its builder because the pull request closed unmerged or the deploy failed. A claim ends when the
+ * deploy that carries it succeeds, and the agent badge with it (HANDOFF-04).
+ */
+function claimWords({ agent, ids, pr }) {
+  const who = `${agent}: ${ids.join(', ')}`;
+  if (!pr) return { text: `${who}, being built.` };
+  if (pr.state === 'open') return { text: `${who}, in pull request #${pr.number}. Held until it is deployed.` };
+  if (pr.deploy?.state === 'failed') return { text: `${who}: pull request #${pr.number} is merged, but the deploy of ${pr.deploy.sha.slice(0, 7)} failed, ${ago(pr.deploy.at)}. The claim stays with its builder.`, warn: true };
+  if (pr.state === 'merged') return { text: `${who}: pull request #${pr.number} is merged, waiting for the deploy to production.` };
+  return { text: `${who}: pull request #${pr.number} was closed without merging, ${ago(pr.at)}. The claim stays with its builder for now.`, warn: true };
+}
+
+function BuildBar({ node, atBehaviour, builds, claims = [], onBuild }) {
   const [busy, setBusy] = useState(false);
   const key = itemKeyOf(node);
   const offer = builds?.buildable?.[key] ?? [];
   const asked = (builds?.requests ?? []).filter((r) => r.itemKey === key);
   const said = (builds?.notes ?? []).filter((n) => n.itemKey === key);
-  if (!onBuild || (!offer.length && !asked.length && !said.length)) return null;
+  const held = Object.values(
+    Object.groupBy(
+      claims.filter((c) => c.item === key && Date.parse(c.until) > Date.now()),
+      (c) => `${c.owner}|${c.pr?.number ?? ''}|${c.pr?.state ?? ''}|${c.pr?.deploy?.state ?? ''}`,
+    ),
+  ).map((cs) => ({ agent: `${cs[0].agentName} (${cs[0].owner})`, ids: cs.map((c) => c.behaviour), pr: cs[0].pr }));
+  if (!onBuild || (!offer.length && !asked.length && !said.length && !held.length)) return null;
   const go = async (behaviours) => {
     setBusy(true);
     await onBuild(node, behaviours);
@@ -475,6 +495,14 @@ function BuildBar({ node, atBehaviour, builds, onBuild }) {
           {r.stale && ' Nobody has picked it up in over an hour: an agent session takes it at its standup, or with next_work.'}
         </p>
       ))}
+      {held.map((h) => {
+        const { text, warn } = claimWords(h);
+        return (
+          <p key={`${h.agent}${h.pr?.number}`} className={`build-claim${warn ? ' stale' : ''}`}>
+            {text}
+          </p>
+        );
+      })}
       {said.map((n) => (
         <p key={n.request} className={`build-note${n.expired ? ' stale' : ''}`}>
           <strong>{n.by}</strong>, {ago(n.at)}: {n.note}
@@ -484,7 +512,7 @@ function BuildBar({ node, atBehaviour, builds, onBuild }) {
   );
 }
 
-export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const docRef = useRef(null);
   // Opened from a behaviour's house on the map (#46 MARK-16): show that behaviour, once the document has rendered it.
@@ -579,7 +607,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         <SyncBadge node={node} />
       </div>
 
-      <BuildBar node={node} atBehaviour={atBehaviour} builds={builds} onBuild={onBuild} />
+      <BuildBar node={node} atBehaviour={atBehaviour} builds={builds} claims={claims} onBuild={onBuild} />
 
       <div className="actions quiet">
         <button onClick={() => onFly(node.id)}>

@@ -9,6 +9,8 @@ import { modelFor } from '../model/index.mjs';
 import { fileTable } from '../model/table.mjs';
 import { fakeShop } from './fake-github.mjs';
 import { refinementThreads } from '../../shared/annotations.js';
+import { createHmac } from 'node:crypto';
+import { githubKey } from '../stores/github/index.mjs';
 
 const issue = (n, title, extra = {}) => ({ id: `i${n}`, url: `https://github.com/octo/app/issues/${n}`, title: `#${n} ${title}`, kind: 'story', status: 'ready', order: n, parentId: 'web', ...extra });
 const body = ({ why = 'Because.', behaviours, questions = 'None' }) => `Part of #1\n\n## Why\n\n${why}\n\n## Behaviours\n\n${behaviours.map((b) => `- ${b}`).join('\n')}\n\n## Acceptance\n\nIt works.\n\n## Out of scope\n\nNothing.\n\n## Open questions\n\n${questions}\n`;
@@ -28,7 +30,7 @@ const PROJECT = {
 };
 
 /** @param {object} [o] @param {number} [o.racing] hold the first this-many claim writes until they have all arrived, so they truly race */
-async function setup({ callsPerMinute, racing = 0, stores } = {}) {
+async function setup({ callsPerMinute, racing = 0, stores, webhooks = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'overworld-mcp-'));
   const file = join(dir, 'table.json');
   const table = fileTable(file);
@@ -43,7 +45,7 @@ async function setup({ callsPerMinute, racing = 0, stores } = {}) {
   });
   const clock = { now: Date.parse('2030-01-07T10:00:00Z') };
   const shop = fakeShop();
-  const api = createApi({ model, accessKey: 'k', fetchImpl: shop.fetch, log: { error() {} }, clock: () => clock.now, agentCallsPerMinute: callsPerMinute, ...(stores ? { stores } : {}) });
+  const api = createApi({ model, accessKey: 'k', fetchImpl: shop.fetch, log: { error() {} }, clock: () => clock.now, agentCallsPerMinute: callsPerMinute, ...(stores ? { stores } : {}), ...(webhooks ? { sync: { onEvents: async () => ({ handled: true }) }, webhookSecret: async () => 'hook' } : {}) });
   const rest = async (method, path, b) => (await api({ method, path, body: b, headers: { 'x-projectmap-key': 'k' } })).body;
   const pid = (await rest('POST', '/api/import/json', PROJECT)).project.id;
   const post = (token, msg) => api({ method: 'POST', path: '/api/mcp', body: msg, headers: token ? { authorization: `Bearer ${token}` } : {} });
@@ -62,7 +64,12 @@ async function setup({ callsPerMinute, racing = 0, stores } = {}) {
   }
   // A comment a person dismissed into the conversation log (NOTE-05).
   const clear = async (itemKey, id) => rest('POST', `/api/projects/${pid}/comments/${itemKey}/${id}/dismiss`, { by: 'Ken' });
-  return { api, rest, pid, agent, post, clock, file, shop, clear };
+  /** A GitHub webhook, signed as GitHub signs it. */
+  const deliver = (event, payload) => {
+    const raw = JSON.stringify(payload);
+    return api({ method: 'POST', path: '/api/github/webhook', body: payload, rawBody: raw, headers: { 'x-github-event': event, 'x-hub-signature-256': `sha256=${createHmac('sha256', 'hook').update(raw).digest('hex')}` } });
+  };
+  return { api, rest, pid, agent, post, clock, file, shop, clear, model, deliver };
 }
 
 test('MCP-07 an agent signs in with its own token, acts only in its project, and its token can be revoked alone', async () => {
@@ -716,4 +723,39 @@ test('HANDOFF-07 HANDOFF-09 Build starts the project\'s runner, or says why it c
   const after = await rest('GET', `/api/projects/${pid}/builds`);
   assert.deepEqual(after.notes.map((n) => [n.itemKey, n.behaviours, n.by.startsWith('Runner'), /tests fail/.test(n.note)]), [['issue-11', ['CL-01', 'CL-02'], true, true]], 'the card shows why');
   assert.deepEqual(after.buildable['issue-11'], ['CL-01', 'CL-02'], 'nothing is left claimed and idle: it can be built again');
+});
+
+test('HANDOFF-11 HANDOFF-04 a claim whose pull request opened holds through review and merge, ends only when the deploy carrying it succeeds, and a closed pull request or a failed deploy leaves it with its builder, saying so', async () => {
+  const { rest, pid, agent, clock, model, deliver } = await setup({ webhooks: true });
+  await model.links.link(githubKey('octo/app'), pid);
+  const a = await agent('Builder');
+  const b = await agent('Reviewer');
+  const claims = async () => (await rest('GET', `/api/projects/${pid}/claims`)).claims.map((c) => [c.behaviour, c.owner === a.id, c.pr?.number, c.pr?.state, c.pr?.deploy?.state]);
+  await a.use('claim', { behaviours: ['CL-01', 'CL-02'] });
+  assert.equal((await a.use('claim', { behaviours: ['CL-01', 'CL-02'], pull_request: 12 })).pull_request, 12);
+  await a.use('claim', { behaviours: ['ZOOM-01'], pull_request: 13 });
+
+  clock.now += 24 * 3_600_000;
+  assert.deepEqual(await claims(), [['CL-01', true, 12, 'open', undefined], ['CL-02', true, 12, 'open', undefined], ['ZOOM-01', true, 13, 'open', undefined]], 'held through review, long past any claim\'s length, so the agent badge stays');
+  assert.match((await b.refused('claim', { behaviours: ['CL-01'] })).error, /Already claimed: CL-01/);
+  await a.use('claim', { behaviours: ['CL-01', 'CL-02'] });
+  assert.deepEqual((await claims())[0], ['CL-01', true, 12, 'open', undefined], 'claiming again keeps its pull request');
+
+  const pull = (number, merged) => deliver('pull_request', { action: 'closed', pull_request: { number, merged, state: 'closed' }, repository: { full_name: 'octo/app' } });
+  assert.equal((await pull(13, false)).status, 200);
+  assert.deepEqual((await claims())[2], ['ZOOM-01', true, 13, 'closed', undefined], 'closed without merging: still the builder\'s, and the card says so');
+  await pull(12, true);
+  assert.deepEqual((await claims()).slice(0, 2).map((c) => c[3]), ['merged', 'merged'], 'merged: still held, waiting for the deploy');
+
+  const deploy = (outcome, pulls) => rest('POST', '/api/deploys', { repo: 'octo/app', sha: 'abc1234def', outcome, pulls });
+  await deploy('failure', [12]);
+  assert.deepEqual((await claims()).slice(0, 2).map((c) => c[4]), ['failed', 'failed'], 'a failed deploy leaves the claims, and says so');
+  await deploy('success', [11]);
+  assert.equal((await claims()).length, 3, 'a deploy that does not carry it changes nothing');
+  const done = await deploy('success', [11, 12]);
+  assert.deepEqual(done.projects[0].released, ['CL-01', 'CL-02']);
+  assert.deepEqual((await claims()).map((c) => c[0]), ['ZOOM-01'], 'deployed: the claims end, and the bulldozer and badge with them');
+  const notes = (await b.use('context', { issue: 'issue-11' })).handoff_notes;
+  assert.match(notes.at(-1).note, /Deployed to production in abc1234, with #12: done/);
+  assert.match((await rest('POST', '/api/deploys', { repo: 'octo/app', outcome: 'maybe' })).error, /success or failure/);
 });

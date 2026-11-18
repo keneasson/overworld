@@ -47,6 +47,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # to tell which pull requests this deploy carries (HANDOFF-11)
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -76,3 +78,8 @@ jobs:
           npm run deploy
           node scripts/smoke.mjs "${{ steps.deploy.outputs.url }}"
           echo "::error::The smoke test failed on ${{ github.sha }}; production is back on ${{ steps.previous.outputs.sha }}."
+
+      # #14 HANDOFF-11: the claims of what this deploy carries end only when it succeeded; a failed one leaves them held.
+      - name: Tell Overworld
+        if: always() && steps.deploy.outputs.url != ''
+        run: node scripts/ci/run.mjs deployed "${{ steps.deploy.outputs.url }}" "${{ steps.smoke.outcome == 'success' && 'success' || 'failure' }}"

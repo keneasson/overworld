@@ -6,12 +6,14 @@
 //   node scripts/ci/run.mjs sweep                      tears down previews past their rules, trims deployment records
 //   node scripts/ci/run.mjs last-good <failed-sha>     prints the commit to roll production back to
 //   node scripts/ci/run.mjs comment <pr> <file>        writes the pull request's one preview comment
+//   node scripts/ci/run.mjs deployed <url> <outcome>   tells Overworld at <url> which pull requests this deploy carried,
+//                                                      so their claims end when it succeeded (#14 HANDOFF-11)
 //
 // Needs GITHUB_REPOSITORY, GH_TOKEN and AWS credentials for AWS_REGION.
 
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
-import { canDropTable, lastGood, oldProductionRecords, planPreview, planSweep, previewNumber, PREVIEW_PREFIX, staleDeployments } from './rules.mjs';
+import { canDropTable, lastGood, oldProductionRecords, pullsIn, planPreview, planSweep, previewNumber, PREVIEW_PREFIX, staleDeployments } from './rules.mjs';
 
 const repo = process.env.GITHUB_REPOSITORY;
 const region = process.env.AWS_REGION;
@@ -101,6 +103,26 @@ const commands = {
     });
     const sha = lastGood(deployments, failedSha);
     output({ sha: sha ?? '' });
+  },
+
+  async deployed(url, outcome) {
+    const sha = process.env.GITHUB_SHA;
+    const deployments = ghAll(`repos/${repo}/deployments?environment=production&per_page=30`).map((d) => {
+      const [status] = gh(`repos/${repo}/deployments/${d.id}/statuses?per_page=1`);
+      return { sha: d.sha, createdAt: d.created_at, state: status?.state };
+    });
+    // Everything merged since the last deploy that succeeded rides on this one.
+    const since = lastGood(deployments, sha);
+    const subjects = (sh('git', ['log', '--format=%s', since ? `${since}..${sha}` : `-1`, ...(since ? [] : [sha])], { allowFail: true }) ?? '').split('\n').filter(Boolean);
+    const pulls = pullsIn(subjects);
+    const res = await fetch(new URL('/api/deploys', url), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-projectmap-key': process.env.PROJECTMAP_ACCESS_KEY ?? '' },
+      body: JSON.stringify({ repo, sha, outcome, pulls }),
+    }).catch((err) => ({ ok: false, status: err.message }));
+    // A deploy never fails for this: the claims wait, and say so, until the next one gets through.
+    if (!res.ok) console.log(`::warning::Couldn't tell Overworld about this deploy (${res.status}); the claims on ${pulls.map((n) => `#${n}`).join(', ') || 'it'} still hold.`);
+    else console.log(`Told Overworld: ${outcome}, carrying ${pulls.map((n) => `#${n}`).join(', ') || 'no pull requests'}.`);
   },
 
   comment(number, file) {

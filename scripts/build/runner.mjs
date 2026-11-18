@@ -5,7 +5,8 @@
 //   node scripts/build/runner.mjs start     take the request: claim its behaviours (MCP-04), write the prompt; skip if it's taken
 //   node scripts/build/runner.mjs agent     install and run the project's agent on the prompt, or one that can stand in
 //   node scripts/build/runner.mjs decide    after the agent: open a pull request, or stop, and why
-//   node scripts/build/runner.mjs finish    a pull request keeps the claim; a run that stopped releases it with why (MCP-09),
+//   node scripts/build/runner.mjs finish    a pull request is named on the claim, which then holds until it is deployed
+//                                            (HANDOFF-11); a run that stopped releases it with why (MCP-09),
 //                                            and ask()s what the agent couldn't settle
 //
 // Which agent (HANDOFF-08): the one the project's own agent files are for (CLAUDE.md is Claude Code's, .aider.conf.yml
@@ -21,8 +22,7 @@ import { pathToFileURL } from 'node:url';
 
 /** Where an unfinished build says why: the agent writes it, the runner turns it into an ask() and never commits it. */
 export const BLOCKED_FILE = 'BLOCKED.md';
-// The longest claim there is: it outlasts the job, and holds through review, merge and the deploy to production, since a
-// claim is released only once the work is live. Releasing it then isn't automatic yet.
+// The longest claim there is, so it outlasts the job. Once the pull request is named on it, it holds until the deploy.
 const CLAIM_MINUTES = 480;
 
 /**
@@ -158,19 +158,19 @@ export function decide({ commits, testsPass, blocked }) {
 }
 
 /**
- * When the run ends. A pull request keeps the claim: the work is still being built until it is merged and deployed, and the
- * pull request shows on the item. A run that stopped releases it with a note saying why and where the unfinished work is
+ * When the run ends. A pull request is named on the claim, which then holds through review and merge until the deploy that
+ * carries it succeeds (HANDOFF-11): the work isn't done until people can use it. A run that stopped releases it with a note saying why and where the unfinished work is
  * (HANDOFF-09, MCP-09), so nothing is left claimed and idle; what the agent couldn't settle also goes on the item as a
  * question (MCP-05), for a person to answer there.
  */
 export async function finish({ mcp, item, behaviours, pr, why, branch, pushed, blocked, runUrl, used }) {
-  if (pr) return { kept: behaviours, pr };
   const key = (what) => `${what}-${branch}`.replace(/[^\w.:-]/g, '-').slice(0, 100); // a retried step does it once (MCP-12)
   const sure = async (name, args) => {
     const r = await mcp(name, args);
     if (r?.refused) throw new Error(`Overworld refused ${name}: ${r.refused}`);
     return r;
   };
+  if (pr) return sure('claim', { behaviours, pull_request: Number(String(pr).match(/(\d+)\/?$/)?.[1]), request_key: key('pull') });
   if (blocked?.trim()) await sure('ask', { place: item, question: `The runner couldn't finish ${behaviours.join(', ')}: ${blocked.trim()}`, request_key: key('ask') });
   const note = `The runner stopped on ${behaviours.join(', ')}${used ? `, built with ${used}` : ''}: ${why}${pushed ? ` The unfinished work is on the branch ${branch}.` : ''}${runUrl ? ` Its run: ${runUrl}` : ''}`;
   return sure('handoff', { behaviours, note, request_key: key('handoff') });
