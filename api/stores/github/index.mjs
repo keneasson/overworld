@@ -91,5 +91,9 @@ export function eventsFromWebhook(event, payload) {
   if (event === 'pull_request' && ['opened', 'reopened', 'edited'].includes(payload.action) && payload.pull_request?.state === 'open') {
     return { key: githubKey(repo), events: [...closedByOpenPrs([payload.pull_request])].map((n) => ({ type: 'started', ref: String(n) })) };
   }
+  // A pull request merged or closed: the claims it carries hold on, or go back to their builder (#14 HANDOFF-11).
+  if (event === 'pull_request' && payload.action === 'closed' && payload.pull_request?.number) {
+    return { key: githubKey(repo), events: [{ type: 'pull_closed', number: payload.pull_request.number, merged: Boolean(payload.pull_request.merged) }] };
+  }
   return null;
 }

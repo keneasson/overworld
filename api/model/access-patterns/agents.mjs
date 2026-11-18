@@ -60,6 +60,8 @@ export function claims(table) {
     },
     /** Hold every behaviour for `owner`, or none of them. TransactWriteItems, each put conditional. */
     take: (projectId, list, { owner, now }) => table.claimAll(list.map((c) => item(projectId, c)), { owner, now }),
+    /** PutItem: what a claim says about its pull request and its deploy (#14 HANDOFF-11), keeping who holds it. */
+    put: (projectId, claim) => table.put(item(projectId, claim)),
     /** Let one go, if it is still this owner's (and, for an expired one, still the hold that ran out). Conditional DeleteItem. */
     release: (projectId, behaviour, { owner, until }) => table.release(keys.claim(projectId, behaviour), { owner, until }),
   };

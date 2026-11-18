@@ -102,6 +102,7 @@ agents' tokens first. The token itself is never stored.
 | Revoke a token, or every token of a project | `agents.revokeToken(hash)`, `agents.revokeAll(projectId)` | DeleteItem; Query `AGENT#`, then batched deletes |
 | A project's claims | `claims.list(projectId)` | Query `begins_with(SK, CLAIM#)` |
 | Claim behaviours, all or none | `claims.take(projectId, claims, { owner, now })` | TransactWriteItems, each put conditional on nobody else holding it |
+| Note a claim's pull request and deploy (#14 HANDOFF-11) | `claims.put(projectId, claim)` | PutItem |
 | Release a claim (a handoff, or an expiry) | `claims.release(projectId, behaviour, { owner, until })` | Conditional DeleteItem |
 | A project's build requests; record or update one (#14) | `builds.list(projectId)`, `builds.put(projectId, request)` | Query `begins_with(SK, BUILD#)`; PutItem |
 | One item's handoff notes | `handoffs.list(projectId, itemKey)`, `handoffs.put` | Query `begins_with(SK, HANDOFF#<itemKey>#)`; PutItem |

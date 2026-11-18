@@ -23,7 +23,7 @@ const HOW_TO_WORK = [
   'Start each session with standup(), passing your local git state: it says what is waiting for you and where to begin. There is nothing to do at the end of a session.',
   'Find work with next_work(), and claim() it before you start: a claim keeps other agents off it, and runs out after two hours unless you claim it again. A build request is a person asking for work to be built: take it before anything else, by claiming its behaviours, and build it from its prompt.',
   'context(issue) has everything about one issue in one read.',
-  'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat.',
+  'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat. But when your pull request opens, don\'t hand off: claim(behaviours, pull_request: its number), and the claim holds through review and merge and is released for you once the production deploy that carries it succeeds. Done is when people can use it.',
   'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
   'People address you in comments with @Claude. Any tool\'s result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed.',
@@ -238,9 +238,14 @@ export function createMcp({ model, agents, call, log = console }) {
 
     claim: {
       description: 'Claim behaviours before you build them: they become being coded, in one atomic step, and anyone else is refused and told who holds them. With no behaviours, claims the oldest build request, or else the top of next_work(). Claiming what a build request asked for takes it. Claim again to hold them longer.',
-      input: { behaviours: ids('Behaviour IDs, e.g. ["MCP-04"]. Leave out to take the next work.'), minutes: { type: 'number', description: 'How long to hold them (default 120, at most 480).' }, request_key: requestKey },
+      input: {
+        behaviours: ids('Behaviour IDs, e.g. ["MCP-04"]. Leave out to take the next work.'),
+        minutes: { type: 'number', description: 'How long to hold them (default 120, at most 480).' },
+        pull_request: { type: 'number', description: 'The pull request that carries them, once it has opened: the claim then holds until the production deploy that carries it succeeds, and is released for you.' },
+        request_key: requestKey,
+      },
       changes: true,
-      run: ({ pid, agent }, args) => agents.claim(pid, agent, { behaviours: list(args.behaviours), minutes: args.minutes }),
+      run: ({ pid, agent }, args) => agents.claim(pid, agent, { behaviours: list(args.behaviours), minutes: args.minutes, pullRequest: args.pull_request }),
     },
 
     handoff: {

@@ -16,7 +16,7 @@ function overworld({ waiting = [], refuse = null } = {}) {
     calls.push([name, args]);
     if (args.request_key != null && !/^[\w.:-]{1,100}$/.test(args.request_key)) return { refused: 'request_key: letters, digits and . _ : - only, at most 100' };
     if (name === 'next_work') return { work: [], build_requests: waiting };
-    if (name === 'claim') return refuse ? { refused: refuse } : { claimed: args.behaviours };
+    if (name === 'claim') return refuse ? { refused: refuse } : { claimed: args.behaviours, ...(args.pull_request ? { pull_request: args.pull_request } : {}) };
     return {};
   };
   return { mcp, calls };
@@ -73,7 +73,7 @@ test('HANDOFF-08 the agent and model come from the project\'s agent files or its
   assert.deepEqual(vars, ['BUILD_AGENT', 'BUILD_AGENT_KEY_ENV', 'BUILD_AGENT_VERSION', 'BUILD_MODEL', 'OVERWORLD_URL'], 'the settings are repository variables, not code');
 });
 
-test('HANDOFF-09 a runner that cannot finish says why on the item, asks what it could not settle, and releases its claim; one that opened a pull request keeps it', async () => {
+test('HANDOFF-09 HANDOFF-11 a runner that cannot finish says why on the item, asks what it could not settle, and releases its claim; one that opened a pull request names it on the claim, which holds until it is deployed', async () => {
   assert.deepEqual(decide({ commits: 2, testsPass: true, blocked: '' }), { open: true });
   assert.match(decide({ commits: 2, testsPass: false, blocked: '' }).why, /tests fail/);
   assert.match(decide({ commits: 0, testsPass: false, blocked: '' }).why, /without changing anything/);
@@ -91,8 +91,8 @@ test('HANDOFF-09 a runner that cannot finish says why on the item, asks what it 
   assert.match(asked.calls[0][1].question, /Who may build\?/);
 
   const opened = overworld();
-  assert.deepEqual(await finish({ mcp: opened.mcp, item: 'issue-14', behaviours: ['HANDOFF-05'], pr: 'https://github.com/o/r/pull/7', branch: 'b' }), { kept: ['HANDOFF-05'], pr: 'https://github.com/o/r/pull/7' });
-  assert.deepEqual(opened.calls, [], 'held until it is merged and deployed');
+  await finish({ mcp: opened.mcp, item: 'issue-14', behaviours: ['HANDOFF-05'], pr: 'https://github.com/o/r/pull/7', branch: 'build/issue-14-1' });
+  assert.deepEqual(opened.calls.map(([n, a]) => [n, a.behaviours, a.pull_request]), [['claim', ['HANDOFF-05'], 7]], 'the claim names its pull request, and is not released');
   const finishing = stepsOf(workflow).find((s) => s.includes('runner.mjs finish'));
   assert.match(finishing, /if: always\(\)/, 'it finishes however the run ended, so a crash never leaves the claim idle');
 });

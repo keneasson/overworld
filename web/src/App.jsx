@@ -728,6 +728,7 @@ export function App() {
                   comments={comments}
                   editing={editing}
                   builds={builds}
+                  claims={claims}
                   onBuild={build}
                   commenting={commenting}
                   commentControl={inSheet ? commentControl : null}

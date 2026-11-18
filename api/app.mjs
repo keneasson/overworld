@@ -9,7 +9,7 @@ import { importGitHub } from './github.mjs';
 import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './edits.mjs';
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
-import { eventsFromWebhook, signedByGitHub } from './stores/github/index.mjs';
+import { eventsFromWebhook, githubKey, signedByGitHub } from './stores/github/index.mjs';
 import { answerPrompt, settleAnswers } from './answers.mjs';
 import { annotationOf, answers, cleanAnchor, isDismissed, mentionsOf, notesByItem, whereOf } from '../shared/annotations.js';
 import { addresseesOf } from './notes.mjs';
@@ -693,7 +693,11 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (!sync || !webhookSecret) throw new HttpError(404, 'Webhooks are not set up here');
         if (!signedByGitHub(rawBody, headers['x-hub-signature-256'], await webhookSecret())) throw new HttpError(401, 'Bad signature');
         const delivery = eventsFromWebhook(String(headers['x-github-event'] ?? ''), body);
-        return delivery ? sync.onEvents(delivery.key, delivery.events) : { handled: false };
+        if (!delivery) return { handled: false };
+        // What a pull request's closing means for the claims it carries is agents' business, not the map's (HANDOFF-11).
+        const pulls = delivery.events.filter((e) => e.type === 'pull_closed');
+        for (const pid of pulls.length ? await model.links.projectsOf(delivery.key) : []) for (const e of pulls) await agents.pullClosed(pid, e);
+        return sync.onEvents(delivery.key, delivery.events.filter((e) => e.type !== 'pull_closed'));
       },
       { public: true },
     ],
@@ -798,6 +802,22 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       await loadProjectHead(pid);
       return { claims: [...(await agents.liveClaims(pid)).live.values()] };
     }],
+
+    // A production deploy finished (#14 HANDOFF-11): the Production workflow says which merged pull requests it carried, and
+    // whether it succeeded. Their claims end only when it did.
+    [
+      'POST',
+      /^\/api\/deploys$/,
+      async ({ body }) => {
+        const repo = String(body?.repo ?? '');
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new ValidationError('repo: expected owner/name');
+        if (!['success', 'failure'].includes(body?.outcome)) throw new ValidationError('outcome: success or failure');
+        const pulls = Array.isArray(body?.pulls) ? body.pulls.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 200) : [];
+        const sha = String(body?.sha ?? '').slice(0, 40);
+        const projects = await model.links.projectsOf(githubKey(repo));
+        return { projects: await Promise.all(projects.map(async (pid) => ({ project: pid, ...(await agents.deployed(pid, { sha, outcome: body.outcome, pulls })) }))) };
+      },
+    ],
 
     // Build requests (#14 HANDOFF-05): what waits for a builder, and what the card may offer to build.
     ['GET', /^\/api\/projects\/([\w-]+)\/builds$/, async ({ params: [pid] }) => {

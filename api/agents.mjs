@@ -16,6 +16,9 @@ const settled = (c) => isDismissed(c) || Boolean(c.answer?.appliedAt);
 
 const CALLS_PER_MINUTE = 120;
 const CLAIM_MINUTES = { default: 120, max: 480 };
+// A claim whose pull request has opened holds until the deploy that carries it succeeds (#14 HANDOFF-11). It still has an
+// end, so a claim nobody deploys is noticed in the end, but one far enough off that review, merge and deploy fit inside it.
+const PULL_HOLD_MS = 30 * 24 * 3_600_000;
 const TOKEN_PREFIX = 'owk_';
 const SEEN_EVERY_MS = 5 * 60 * 1000;
 // A standup regroups (CONN-05) after this long away, or after this many changes by others since the last one.
@@ -118,8 +121,11 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
    * Claim behaviours for a while, all or none (MCP-04). With none named, the top of next_work() is claimed in the same step.
    * A behaviour the agent already holds is held for longer.
    */
-  async function claim(projectId, agent, { behaviours = [], minutes } = {}) {
+  async function claim(projectId, agent, { behaviours = [], minutes, pullRequest } = {}) {
     const span = Math.min(CLAIM_MINUTES.max, Math.max(1, Number(minutes) || CLAIM_MINUTES.default));
+    const pull = pullRequest == null || pullRequest === '' ? null : Number(String(pullRequest).replace(/^#/, ''));
+    if (pull !== null && !(Number.isInteger(pull) && pull > 0)) throw new ValidationError('pull_request: expected a pull request number');
+    if (pull !== null && !behaviours.length) throw new ValidationError('pull_request: name the behaviours it carries');
     for (let attempt = 0; attempt < 3; attempt++) {
       const data = await model.projects.getWithNodes(projectId);
       const { live } = await liveClaims(projectId);
@@ -140,10 +146,16 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       }
       const now = clock();
       const until = iso(now + span * 60_000);
-      const list = wanted.map(({ id, node }) => ({ behaviour: id, item: keyOf(node), title: node.title, agentName: agent.name, until, claimedAt: live.get(id)?.claimedAt ?? iso(now) }));
+      // Naming the pull request holds the claim until its deploy (HANDOFF-11); claiming again later keeps what it said.
+      const list = wanted.map(({ id, node }) => {
+        const was = live.get(id)?.owner === agent.id ? live.get(id) : null;
+        const pr = pull !== null ? { number: pull, state: 'open', at: iso(now) } : was?.pr;
+        const held = pr && pr.state !== 'closed' ? [until, was?.until ?? '', pull !== null ? iso(now + PULL_HOLD_MS) : ''].sort().at(-1) : until;
+        return { behaviour: id, item: keyOf(node), title: node.title, agentName: agent.name, until: held, claimedAt: was?.claimedAt ?? iso(now), ...(pr ? { pr } : {}) };
+      });
       if (await model.claims.take(projectId, list, { owner: agent.id, now: iso(now) })) {
         const took = await takeBuilds(projectId, agent, list.map((c) => c.behaviour), iso(now));
-        return { claimed: list.map((c) => c.behaviour), items: [...new Set(list.map((c) => c.item))], until, ...(took.length ? { build_requests_taken: took } : {}) };
+        return { claimed: list.map((c) => c.behaviour), items: [...new Set(list.map((c) => c.item))], until: list.map((c) => c.until).sort()[0], ...(pull !== null ? { pull_request: pull, holds_until: 'the deploy that carries it succeeds' } : {}), ...(took.length ? { build_requests_taken: took } : {}) };
       }
       // Someone took one first. Named behaviours say who; "the next work" looks again.
       if (behaviours.length) {
@@ -282,6 +294,48 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     };
     await model.builds.put(projectId, request);
     return { request: { ...request, waiting: fresh, stale: false } };
+  }
+
+  /**
+   * A pull request closed (#14 HANDOFF-11). Merged, its claims hold on until the deploy that carries it. Closed without
+   * merging, they stay with their builder, for a claim's length, to build again or hand off; the card says what happened.
+   */
+  async function pullClosed(projectId, { number, merged }) {
+    const { live } = await liveClaims(projectId);
+    const at = iso();
+    const mine = [...live.values()].filter((c) => c.pr?.number === number);
+    for (const c of mine) {
+      const pr = { ...c.pr, state: merged ? 'merged' : 'closed', at };
+      await model.claims.put(projectId, { ...c, pr, ...(merged ? {} : { until: iso(clock() + CLAIM_MINUTES.default * 60_000) }) });
+    }
+    return mine.map((c) => c.behaviour);
+  }
+
+  /**
+   * A production deploy finished (#14 HANDOFF-11), carrying these merged pull requests. When it succeeded, the work is
+   * where people can use it: each claim it carries is released, with a note saying so. When it failed, the claims stay
+   * with their builders and say the deploy failed.
+   */
+  async function deployed(projectId, { sha, outcome, pulls }) {
+    const { live } = await liveClaims(projectId);
+    const at = iso();
+    const carried = [...live.values()].filter((c) => c.pr && pulls.includes(c.pr.number));
+    const released = [];
+    for (const c of carried) {
+      if (outcome !== 'success') {
+        await model.claims.put(projectId, { ...c, pr: { ...c.pr, state: 'merged', deploy: { state: 'failed', sha, at } } });
+        continue;
+      }
+      if (!(await model.claims.release(projectId, c.behaviour, { owner: c.owner }))) continue;
+      released.push(c);
+    }
+    for (const [item, cs] of Object.entries(Object.groupBy(released, (c) => c.item))) {
+      for (const [owner, own] of Object.entries(Object.groupBy(cs, (c) => c.owner))) {
+        const pulls = [...new Set(own.map((c) => `#${c.pr.number}`))].join(', ');
+        await model.handoffs.put(projectId, { itemKey: item, at, id: newId(), agentId: owner, agentName: own[0].agentName, behaviours: own.map((c) => c.behaviour), reason: 'deployed', note: `Deployed to production in ${String(sha).slice(0, 7)}, with ${pulls}: done.` });
+      }
+    }
+    return { released: released.map((c) => c.behaviour), ...(outcome !== 'success' ? { held: carried.map((c) => c.behaviour) } : {}) };
   }
 
   /** Release claims with a note on where the work stands; the next agent reads it in context() and prime() (MCP-09). */
@@ -538,7 +592,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     return report;
   }
 
-  return { callsPerMinute, standup, addressed, buildRequests, buildNotes, requestBuild, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
+  return { callsPerMinute, standup, addressed, buildRequests, buildNotes, requestBuild, pullClosed, deployed, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
 }
 
 /** An annotation addressed to an agent, as its tools show it: who said what, where, and the prompt to act on it. */

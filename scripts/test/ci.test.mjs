@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
-import { canDropTable, lastGood, MAX_PREVIEWS, oldProductionRecords, planPreview, planSweep, previewStack, PRODUCTION_STACK, staleDeployments } from '../ci/rules.mjs';
+import { canDropTable, lastGood, MAX_PREVIEWS, oldProductionRecords, pullsIn, planPreview, planSweep, previewStack, PRODUCTION_STACK, staleDeployments } from '../ci/rules.mjs';
 
 const root = new URL('../../', import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), 'utf8');
@@ -138,4 +138,14 @@ test('SHIP-11 a preview never syncs with GitHub', () => {
   const production = workflows.find((w) => w.file === 'production.yml').text;
   assert.doesNotMatch(preview, /SYNC_|GitHubApp|GITHUB_APP/, "a preview isn't given the GitHub App, so sync stays off");
   for (const name of ['SYNC_APP_ID', 'SYNC_INSTALLATION_ID', 'SYNC_APP_SLUG']) assert.match(production, new RegExp(`${name}: \\$\\{\\{ vars\\.${name} \\}\\}`), `production passes ${name}`);
+});
+
+test('HANDOFF-11 every production deploy tells Overworld which pull requests it carried, and whether it succeeded', () => {
+  assert.deepEqual(pullsIn(['Merge pull request #101 from keneasson/build-runner', 'Build this: the runner', 'Fix the badge (#97)', 'Merge pull request #99 from x/y', 'Mention #5 in passing']), [97, 99, 101]);
+  const production = workflows.find((w) => w.file === 'production.yml').text;
+  const tell = production.split(/\n\s+- /).find((s) => s.includes('run.mjs deployed'));
+  assert.ok(tell, 'a step tells Overworld');
+  assert.match(tell, /if: always\(\) && steps\.deploy\.outputs\.url != ''/, 'after a failed smoke test too, so a failed deploy is known');
+  assert.match(tell, /steps\.smoke\.outcome == 'success' && 'success' \|\| 'failure'/);
+  assert.match(production, /fetch-depth: 0/, 'with the history to see what it carried');
 });
