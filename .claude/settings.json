@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"Overworld: start this session with the Overworld standup (the standup tool on the overworld MCP server, with your local git state; in Claude Code /mcp__overworld__standup) and act on its first step. Check in again about every 15 minutes. See CLAUDE.md, Working with Overworld.\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}

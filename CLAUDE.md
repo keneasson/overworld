@@ -1,8 +1,22 @@
 # Overworld
 
-A project shown as a map. The code is the land, issues are the work on it, and behaviour specs
-are its laws. Zoom out to see the whole product and zoom in to see one task. `README.md`
+A project shown as a map. Behaviours are the land, code is built on them, and issues are the work
+of shaping it (#104, #105). Zoom out to see the whole product and zoom in to see one task. `README.md`
 explains the product. This file covers how to work on it.
+
+## Working with Overworld
+
+Overworld is where this project's work is coordinated, for people and agents alike. It can't push to a
+running session yet (#34), so agents check in:
+
+- **Start every session with the standup**: the `standup` tool on the `overworld` MCP server with your
+  local git state (in Claude Code, `/mcp__overworld__standup`). Act on its first step.
+- **Check in again** with the standup about every 15 minutes while working, and after each pull request merges.
+- **Claim behaviours before building them**, so the map shows the bulldozer. A claim holds until the
+  Production deploy that carries its pull request succeeds (#14 HANDOFF-11), not when the PR opens.
+- **Raise blockers in Overworld** with `ask` or `handoff` on the item, never only in chat.
+- **Name things the way Overworld shows them**: "#71 The app updates itself after a deploy" and behaviour
+  IDs such as SHIP-13. Never refinement or changeset hashes.
 
 ## Commands
 
