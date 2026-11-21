@@ -96,6 +96,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     try {
       const res = await api.decideChangesetItem(projectId, cs.id, key, action, { by: name, reason, ...(behaviours ? { behaviours } : {}) });
       setOthers((os) => os.map((o) => (o.id === res.changeset.id ? res.changeset : o)).filter((o) => o.status === 'open'));
+      if (res.deleted?.length) onRemoved(res.deleted); // a declined new item is dropped from the map (NEW-06)
       if (res.nodes.length) {
         onAccepted(res.nodes);
         setGeneration((g) => g + 1);

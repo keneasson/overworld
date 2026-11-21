@@ -161,6 +161,46 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     return removeNodes(pid, nodes, doomed);
   }
 
+  /**
+   * A person's yes or no to a new item of someone else's refinement, as a whole: its title and its behaviours (ADOPT-05).
+   * Adopting does what accepting a person's own new item does: it joins the spec and waits for a save, which creates it
+   * in the store (NEW-04). Declining drops it, and what is inside it, so it never reaches the store (NEW-06).
+   */
+  async function decideNew(pid, cs, entry, action, body) {
+    const now = new Date(clock()).toISOString(); // the agents' clock: its standup reports what was decided since
+    const { project, nodes } = await loadProject(pid);
+    const node = findItem(nodes, entry.key);
+    if (!node) throw new HttpError(404, 'No such item on the map');
+    const behavioursOf = (n) => compareItems({ title: '', markdown: '' }, editableOf(n)).behaviours.map((b) => b.id).filter(Boolean);
+    const decided = (n) => ({ key: itemKeyOf(n), nodeTitle: n.title, new: true, behaviours: behavioursOf(n), by: author(body?.by), at: now });
+    let changed = [];
+    let deleted = [];
+    if (action === 'adopt') {
+      // A new item inside a new item is part of it: the spec takes the parent first.
+      const parent = nodes.find((n) => n.id === node.parentId);
+      if (parent?.refinement) throw new HttpError(409, `Adopt “${parent.title}” first: this item is inside it, and it is new too`);
+      if (!editableOf(node).title.trim()) throw new ValidationError('a new item needs a title');
+      const store = stores.forProject(project);
+      const { refinement, ...adopted } = node;
+      changed = [{ ...adopted, status: openQuestions(editableOf(node).markdown) ? 'needs_decision' : node.status, updatedAt: now, ...(store ? { sync: 'unsaved' } : {}) }];
+      await model.nodes.put(pid, changed);
+      await touchProject(project, nodes.map((n) => (n.id === node.id ? changed[0] : n)));
+      cs.items = cs.items.filter((it) => it.key !== entry.key);
+      cs.adopted = [...(cs.adopted ?? []), decided(node)];
+    } else {
+      const reason = text(body?.reason ?? '', 2000, 'reason').trim();
+      const inside = new Set(subtreeIds(nodes, node.id));
+      const gone = nodes.filter((n) => inside.has(n.id) && n.refinement === cs.id);
+      ({ deleted } = await dropNew(pid, nodes, [node.id]));
+      cs = await model.changesets.get(pid, cs.id); // dropping took them out of it
+      cs.declined = [...(cs.declined ?? []), ...gone.map((n) => ({ ...decided(n), reason }))];
+    }
+    cs.updatedAt = now;
+    if (!cs.items.length) Object.assign(cs, cs.adopted?.length ? { status: 'accepted', acceptedAt: now } : { status: 'declined' });
+    await model.changesets.put(pid, cs);
+    return { changeset: cs, nodes: changed, deleted };
+  }
+
   /** Delete nodes, the links to them, and any refinement's mention of them. */
   async function removeNodes(pid, nodes, doomed) {
     await model.nodes.delete(pid, [...doomed]);
@@ -419,7 +459,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const cs = await loadChangeset(pid, cid, { open: true });
         const entry = cs.items.find((it) => it.key === key);
         if (!entry) throw new HttpError(404, 'That item is not in this refinement');
-        if (entry.new) throw new HttpError(409, 'A new item is adopted with the whole refinement');
+        if (entry.new) return decideNew(pid, cs, entry, action, body);
         const now = new Date(clock()).toISOString(); // the agents' clock: its standup reports what was decided since
         const by = author(body?.by);
         const { project, nodes } = await loadProject(pid);
