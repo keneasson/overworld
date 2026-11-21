@@ -7,7 +7,7 @@ import { Icon } from './Icon.jsx';
 import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
 import { Composer, Thread } from '../editor/Annotate.jsx';
-import { clausesOf, isDismissed, locate, piecesOf, quoteOf, refinementThreads } from '@shared/annotations.js';
+import { clausesOf, isDismissed, locate, piecesOf, quoteOf, refinementThreads, threadsOf } from '@shared/annotations.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
 import { issueRefExtension } from '../model/links.js';
@@ -94,12 +94,17 @@ const pct = (v) => `${Math.round(v * 100)}%`;
 // The document editor is big: it loads the first time an item with text opens.
 const IssueForm = lazy(() => import('../editor/IssueForm.jsx').then((m) => ({ default: m.IssueForm })));
 
-/** What the open changeset holds, and the three things to do with it, in one quiet line below the text (EDIT-21). */
-function EditBar({ editing }) {
+/**
+ * What the open changeset holds, and the three things to do with it, in one quiet line below the text (EDIT-21). Review
+ * opens what it holds across issues, and its comments: #15's, on the area its edits are in (#62 SYNC-01).
+ */
+function EditBar({ editing, box = null, comments = [], onPick }) {
   const { edited, unsaved, saving, busy, onItsWay, changeset, name, setName, accept, discard, saveToGithub } = editing;
   const [naming, setNaming] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   if (!edited.length && !unsaved.length && !saving && !onItsWay) return null;
   const status = saving ? 'Saving…' : edited.length ? `${edited.length} edited` : `${unsaved.length} not on GitHub yet`;
+  const talk = box ? threadsOf(comments.filter((c) => c.itemKey === itemKeyOf(box.area) && c.anchor?.on === 'changeset')).filter((t) => !isDismissed(t.root)) : [];
   return (
     <div className="edit-bar" aria-live="polite">
       <span className="edit-status" title={edited.length ? 'Kept in this changeset until you accept or discard it' : 'Accepted, waiting to be saved'}>
@@ -123,6 +128,11 @@ function EditBar({ editing }) {
         )}
       </span>
       <span className="edit-actions">
+        {box && (
+          <button type="button" className="link-btn" onClick={() => setReviewing((r) => !r)} aria-expanded={reviewing}>
+            {talk.length > 0 && <Icon name="comment" size={12} />} Review{talk.length > 0 ? ` · ${talk.length}` : ''}
+          </button>
+        )}
         <button type="button" className="link-btn" onClick={discard} disabled={busy || (!changeset && !edited.length)}>
           Discard
         </button>
@@ -136,8 +146,62 @@ function EditBar({ editing }) {
           </button>
         )}
       </span>
+      {box && reviewing && <ChangesetReview box={box} threads={talk} editing={editing} onPick={onPick} />}
     </div>
   );
+}
+
+/** The changeset as one (#62 SYNC-01): each issue it holds and what it changes, and the comments on it as a whole. */
+function ChangesetReview({ box, threads, editing, onPick }) {
+  const [writing, setWriting] = useState(false);
+  const [shut, setShut] = useState(() => new Set());
+  const at = itemKeyOf(box.area);
+  const heading = `The changeset in ${titleWithNumber(box.area)}`;
+  return (
+    <div className="changeset-review">
+      <ul className="changeset-items">
+        {box.items.map((it) => (
+          <li key={it.key}>
+            <button type="button" className="link-btn" onClick={() => onPick(it.node.id)}>
+              {titleWithNumber(it.node)}
+            </button>
+            <span className="row-sub">{changesetWords(it)}</span>
+          </li>
+        ))}
+      </ul>
+      {threads
+        .filter((t) => !shut.has(t.root.id))
+        .map((t) => (
+          <Thread
+            key={t.root.id}
+            heading={heading}
+            thread={t}
+            you={editing.name}
+            onReply={(said) => editing.comment(at, t.root.anchor, said, { replyTo: t.root.id })}
+            onDismiss={editing.dismiss}
+            onClose={() => setShut((s) => new Set([...s, t.root.id]))}
+          />
+        ))}
+      {writing ? (
+        <Composer heading={heading} what="as a whole" onPost={(said) => editing.comment(at, { on: 'changeset' }, said)} onCancel={() => setWriting(false)} />
+      ) : (
+        <button type="button" className="link-btn" onClick={() => setWriting(true)}>
+          <Icon name="comment" size={12} /> Comment on the changeset
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** What one item of the changeset is, in a few words: new, or which behaviours it changes, and whether it is accepted. */
+function changesetWords(it) {
+  const parts = it.new ? ['new'] : [];
+  if (it.added.length) parts.push(`new ${it.added.join(', ')}`);
+  if (it.changed.length) parts.push(`changed ${it.changed.join(', ')}`);
+  if (it.removed.length) parts.push(`removed ${it.removed.join(', ')}`);
+  if (!it.edited) parts.push('not on GitHub yet');
+  else if (!parts.length) parts.push('edited');
+  return parts.join(' · ');
 }
 
 const CHANGE_LABEL = { added: 'Added', changed: 'Changed', removed: 'Removed' };
@@ -601,7 +665,7 @@ function SplitBar({ node, editing, onPick }) {
   );
 }
 
-export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], review = null, onNextReview = null, onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], review = null, box = null, onNextReview = null, onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const docRef = useRef(null);
   const rootRef = useRef(null);
@@ -765,7 +829,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
               value={editing.drafts.get(key) ?? editableOf(node)}
               issueNumber={issue?.number}
               areaTexts={texts}
-              comments={comments.filter((c) => c.itemKey === key && !(c.anchor?.refinement && reviewing.has(c.anchor.refinement)))}
+              comments={comments.filter((c) => c.itemKey === key && c.anchor?.on !== 'changeset' && !(c.anchor?.refinement && reviewing.has(c.anchor.refinement)))}
               commenting={commenting}
               placeholderTitle={Boolean(node.refinement) && !theirs ? `New ${node.kind}` : null}
               conflict={editing.conflicts.has(key)}
@@ -784,7 +848,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
           readOnly
         )}
       </div>
-      <EditBar editing={editing} />
+      <EditBar editing={editing} box={box} comments={comments} onPick={onPick} />
 
       <section>
         <h3>Properties</h3>

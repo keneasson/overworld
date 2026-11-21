@@ -337,6 +337,14 @@ test('NOTE-01 a comment sits on what it is about, and is just a comment: no kind
   assert.equal((await map()).find((n) => n.title.startsWith('#4 ')).body, before, 'commenting leaves the issue alone');
 });
 
+test('SYNC-01 a comment on a changeset as a whole is an ordinary anchored comment, on the area its edits are in', async () => {
+  const { call, pid } = await shopProject();
+  const said = await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'changeset', section: 'Why' }, text: 'These three go together', author: 'Ken' });
+  assert.equal(said.status, 201, JSON.stringify(said.body));
+  const { comments } = (await call('GET', `/api/projects/${pid}/comments/issue-4`)).body;
+  assert.deepEqual(comments.map((c) => [c.anchor, c.text]), [[{ on: 'changeset' }, 'These three go together']], 'not a thread of its own kind: just a comment');
+});
+
 test('NOTE-09 comments made before annotations are comments in the same place, and none is lost', async () => {
   const { call, model, pid } = await shopProject();
   const old = [
