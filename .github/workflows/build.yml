@@ -45,7 +45,6 @@ jobs:
       REQUEST: ${{ github.event.client_payload.request || inputs.request }}
       ITEM: ${{ github.event.client_payload.item || inputs.item }}
       BRANCH: build/${{ github.event.client_payload.item || inputs.item || 'request' }}-${{ github.run_id }}
-      PROMPT_FILE: ${{ runner.temp }}/prompt.md
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +59,9 @@ jobs:
 
       - name: Take the request
         id: start
+        # Set per step: the runner context isn't available in a job's env, and GitHub rejects the whole file if it's used there.
+        env:
+          PROMPT_FILE: ${{ runner.temp }}/prompt.md
         run: node scripts/build/runner.mjs start
 
       - name: Branch
@@ -78,6 +80,7 @@ jobs:
         env:
           BUILD_AGENT_KEY: ${{ secrets.BUILD_AGENT_KEY }}
           OVERWORLD_AGENT_TOKEN: ''
+          PROMPT_FILE: ${{ runner.temp }}/prompt.md
         run: node scripts/build/runner.mjs agent
 
       - name: Decide

@@ -96,6 +96,29 @@ gh label create preview -R keneasson/overworld --color 1d76db --description "Dep
 gh api -X PUT repos/keneasson/overworld/actions/permissions/artifact-and-log-retention -F days=30
 ```
 
+**6. GitHub: the runner's secrets and variable (#14).** `build.yml` can't take a build request without these.
+What each one is for is under [The runner](#the-runner-14). Get the three values first:
+
+- `BUILD_AGENT_KEY`: an Anthropic API key, from https://console.anthropic.com/settings/keys (Create Key). Name it for the runner, so it can be revoked alone.
+- `OVERWORLD_AGENT_TOKEN`: in Overworld (https://overworld.kene.info), open this project, open the menu, and under Agents choose
+  **Connect an agent**. Name it `Build runner` and choose **Create its token**. Copy only the token from the snippet it shows; it's shown once.
+- `BUILD_GITHUB_TOKEN`: at https://github.com/settings/personal-access-tokens/new, a fine-grained token with Resource owner `keneasson`,
+  Repository access **Only select repositories**: `keneasson/overworld`, and Repository permissions **Contents: Read and write** and
+  **Pull requests: Read and write** (Metadata: Read is added for you). Add **Workflows: Read and write** only if the runner should be
+  able to push changes to `.github/workflows/`. Note its expiry date: the runner's pushes fail once it expires.
+
+Then each `gh secret set` asks for its value, so it isn't echoed or kept in your shell history:
+
+```sh
+gh secret set BUILD_AGENT_KEY       -R keneasson/overworld
+gh secret set OVERWORLD_AGENT_TOKEN -R keneasson/overworld
+gh secret set BUILD_GITHUB_TOKEN    -R keneasson/overworld
+gh variable set OVERWORLD_URL       -R keneasson/overworld --body https://overworld.kene.info
+gh secret list -R keneasson/overworld && gh variable list -R keneasson/overworld   # check: all four are listed
+```
+
+The other `BUILD_*` variables are optional; leave them unset to use Claude Code on its default model.
+
 **Optional: expire SAM's own bucket.** Local `npm run deploy` still uploads to SAM's managed bucket,
 which keeps every bundle forever. A lifecycle rule clears it:
 
