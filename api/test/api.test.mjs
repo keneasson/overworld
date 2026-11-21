@@ -11,10 +11,10 @@ import { behaviourPrefix, editableOf, isWellFormed, itemKeyOf, nextBehaviourId, 
 import { fakeShop } from './fake-github.mjs';
 import { isUnread, threadsOf } from '../../shared/annotations.js';
 
-async function setup(accessKey = 'secret-key') {
+async function setup(accessKey = 'secret-key', clock = Date.now) {
   const dir = await mkdtemp(join(tmpdir(), 'projectmap-'));
   const model = await createModel({ DATA_FILE: join(dir, 'db.json') });
-  const api = createApi({ model, accessKey, log: { error() {} } });
+  const api = createApi({ model, accessKey, log: { error() {} }, clock });
   const call = (method, path, body, key = accessKey) => api({ method, path, body, headers: key ? { 'x-projectmap-key': key } : {} });
   return { call };
 }
@@ -588,7 +588,8 @@ test('NEW-06 a new item dropped before adoption, or in a discarded refinement, i
 });
 
 test('SHIP-14 an error a browser caught is kept, with its stack, to be read from anywhere', async () => {
-  const { call } = await setup();
+  let now = Date.now();
+  const { call } = await setup('secret-key', () => (now += 1000)); // a second apart: two errors in one millisecond have no order
   assert.equal((await call('POST', '/api/errors', { message: 'boom' }, null)).status, 401, 'only with the access key');
   const sent = await call('POST', '/api/errors', { message: "Cannot read properties of undefined (reading 'poly')", stack: 'TypeError: …\n    at hitTest', componentStack: 'at Details', where: 'panel', url: 'https://x/#n=issue-53', userAgent: 'Safari', build: '/assets/index-abc.js', extra: 'dropped' });
   assert.equal(sent.status, 201);
