@@ -100,15 +100,15 @@ export function SearchBar({ tree, projectTitle, onPick, onMenu }) {
   );
 }
 
-export function Chips({ tree, lensId, setLens, showLinks, setShowLinks, lenses = LENSES, review = null }) {
+export function Chips({ tree, lensId, setLens, showLinks, setShowLinks, lenses = LENSES }) {
   return (
     <div className="chips" role="toolbar" aria-label="Map lenses">
-      {review && <ReviewButton {...review} />}
       {lenses.filter((l) => l.id !== 'map').map((l) => {
         const count = l.count?.(tree);
         const on = l.id === lensId;
+        const waiting = l.waiting && count > 0; // Review's count stands out while anything waits (REVIEW-01)
         return (
-          <button key={l.id} className={`chip${on ? ' on' : ''}`} aria-pressed={on} onClick={() => setLens(on ? 'map' : l.id)}>
+          <button key={l.id} className={`chip${on ? ' on' : ''}${waiting ? ' waiting' : ''}`} aria-pressed={on} onClick={() => setLens(on ? 'map' : l.id)} title={l.title?.(count)}>
             <span aria-hidden="true">{l.icon}</span> {l.chip}
             {count != null && <span className="chip-count">{count}</span>}
           </button>
@@ -118,20 +118,6 @@ export function Chips({ tree, lensId, setLens, showLinks, setShowLinks, lenses =
         <Icon name="route" size={16} /> Routes
       </button>
     </div>
-  );
-}
-
-/**
- * The Review button (#62 REVIEW-01): how many issues have proposed changes waiting, wherever they are in the project.
- * It opens the list of everything waiting on someone (REVIEW-02).
- */
-export function ReviewButton({ count, on, onOpen }) {
-  const words = count ? `${count} issue${count === 1 ? ' has' : 's have'} changes waiting for review` : 'Nothing waiting for review';
-  return (
-    <button type="button" className={`chip review-chip${on ? ' on' : ''}${count ? ' waiting' : ''}`} aria-pressed={on} onClick={onOpen} title={words} aria-label={`Review: ${words}`}>
-      <Icon name="edit" size={16} /> Review
-      <span className="chip-count">{count}</span>
-    </button>
   );
 }
 

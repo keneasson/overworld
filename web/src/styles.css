@@ -249,8 +249,8 @@ button {
   background: var(--accent);
   color: var(--surface);
 }
-/* The Review button (#62 REVIEW-01): its count stands out while anything is waiting. */
-.review-chip.waiting .chip-count {
+/* The Review lens (#62 REVIEW-01): its count stands out while anything is waiting. */
+.chip.waiting .chip-count {
   background: var(--review);
   color: var(--surface);
 }

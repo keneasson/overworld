@@ -1,5 +1,5 @@
 // Lenses are map types: the same geography, a different question answered.
-// Political (what is where), Needs approval, Progress (terrain), Bugs (incidents),
+// Political (what is where), Review, Progress (terrain), Bugs (incidents),
 // Fog (poorly defined), New features (night lights), Owners.
 
 import { hsl, interpolateRgbBasis } from 'd3';
@@ -124,12 +124,12 @@ function childSummary(n) {
   return plural(n.children.length, word, word === 'story' ? 'stories' : `${word}s`) + (count < n.children.length ? ' & more' : '');
 }
 
-// Needs approval (#62 REVIEW-05): how long the oldest change waiting in a place has waited. Nothing waiting is plain land;
+// Review (#62 REVIEW-01, REVIEW-05): how long the oldest change waiting in a place has waited. Nothing waiting is plain land;
 // the longer it has waited, the stronger, relative to the rest of the project.
 const waiting = interpolateRgbBasis(['#fdecc8', '#f9b96b', '#ea7a3f', '#b93d12']);
 const NOTHING_WAITING = '#eceee6';
 
-/** The Needs approval lens over a review list (web/src/model/review.js), longest waiting first. */
+/** The Review lens over a review list (web/src/model/review.js), longest waiting first. */
 export function needsApproval(review = []) {
   const byNode = new Map(review.map((e) => [e.node.id, e]));
   const oldest = new WeakMap();
@@ -152,9 +152,11 @@ export function needsApproval(review = []) {
   const strength = (since) => (last > first ? 0.25 + (0.75 * (last - since)) / (last - first) : 1);
   return {
     id: 'approval',
-    name: 'Needs approval',
-    chip: 'Needs approval',
+    name: 'Review',
+    chip: 'Review',
     icon: '✅',
+    waiting: true,
+    title: (count) => (count ? `${count} issue${count === 1 ? ' is' : 's are'} waiting for review` : 'Nothing waiting for review'),
     blurb: 'What is waiting on you: proposed changes to adopt or decline, and questions to answer. The longer it has waited, the stronger the colour.',
     theme: LIGHT,
     fill: (n) => {
@@ -349,7 +351,7 @@ export const LENSES = [
 ];
 
 export const LENS_BY_ID = Object.fromEntries(LENSES.map((l) => [l.id, l]));
-/** The lenses as offered, with Needs approval over what is waiting now (REVIEW-05). */
+/** The lenses as offered, with Review over what is waiting now (REVIEW-05). */
 export const lensesWith = (approval) => LENSES.map((l) => (l.id === approval.id ? approval : l));
 
 export const LIGHT_COLORS = {
