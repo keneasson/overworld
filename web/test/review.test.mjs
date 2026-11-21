@@ -4,7 +4,7 @@ import { rgb } from 'd3';
 import { buildTree } from '../src/model/tree.js';
 import { LENSES, lensesWith, needsApproval } from '../src/map/lenses.js';
 import { MARKER_LABEL, badgesOf } from '../src/map/labels.js';
-import { titleWithNumber, waitingForReview, waitingWords } from '../src/model/review.js';
+import { reviewingAt, titleWithNumber, waitingForReview, waitingWords } from '../src/model/review.js';
 
 const spec = (ids) => `Part of #1.\n\n## Why\n\nBecause.\n\n## Behaviours\n\n${ids.map((id) => `- ${id} Given this, when that, then ${id} holds.`).join('\n')}\n\n## Open questions\n\nNone.\n`;
 const issue = (n, parentId, title, body) => ({ id: `n${n}`, parentId, title: `#${n} ${title}`, kind: 'task', status: 'ready', url: `https://github.com/o/r/issues/${n}`, body, summary: 'Some work', estimate: 1 });
@@ -46,6 +46,19 @@ test('REVIEW-01 REVIEW-02 the Review lens, beside the others, counts the issues 
   const adopted = changesets.map((cs) => ({ ...cs, items: cs.items.filter((it) => it.key !== 'issue-12') }));
   assert.equal(reviewCount(waitingForReview({ changesets: adopted, notes, tree })), 3);
   assert.equal(reviewCount(waitingForReview({ changesets: [{ ...changesets[0], status: 'accepted' }], tree })), 0, 'a closed refinement waits on nobody');
+});
+
+test('REVIEW-03 an issue chosen from the Review list is reviewed there, and once decided it leaves the list and the next one is offered', () => {
+  const review = waitingForReview({ changesets, notes, tree });
+  const card = reviewingAt(review, 'n11');
+  assert.deepEqual([card.here, card.more, titleWithNumber(card.next.node)], [true, 3, '#14 Invoices'], 'still waiting, with the longest waiting of the rest offered next');
+
+  // Deciding all of it takes it out of its refinement, as adopting or declining does.
+  const decided = changesets.map((cs) => ({ ...cs, items: cs.items.filter((it) => it.key !== 'issue-11') }));
+  const after = reviewingAt(waitingForReview({ changesets: decided, notes, tree }), 'n11');
+  assert.deepEqual([after.here, after.more, titleWithNumber(after.next.node)], [false, 3, '#14 Invoices'], 'it has left the list, and the next is offered');
+  const last = reviewingAt(waitingForReview({ changesets: [], tree }), 'n11');
+  assert.deepEqual([last.here, last.next], [false, null], 'nothing else waiting');
 });
 
 test('REVIEW-04 an issue with changes waiting carries a "to review" marker', () => {
