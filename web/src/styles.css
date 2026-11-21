@@ -2636,6 +2636,25 @@ button.danger.armed {
 }
 
 /* Build (#14 HANDOFF-05): what can be built, and what waits for a builder. */
+/* An item that needs a split (#32 STATE-10, STATE-14): says why, and offers the split. */
+.split-bar {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--review, #ea7a3f) 12%, var(--surface));
+  font-size: 13px;
+}
+.split-bar p {
+  margin: 0;
+}
+.split-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .build-bar {
   display: grid;
   gap: 8px;
