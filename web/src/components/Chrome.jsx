@@ -5,34 +5,16 @@ import { renderThumbnail } from '../map/scene.js';
 import { symbolsInUse } from '../map/labels.js';
 import { symbolPath } from '../map/symbols.js';
 import { pathOf } from '../model/tree.js';
+import { search } from '../model/search.js';
 import { Icon } from './Icon.jsx';
 import { KindBadge } from './Panel.jsx';
-
-function score(n, q) {
-  const t = n.title.toLowerCase();
-  if (t.startsWith(q)) return 0;
-  if (t.includes(` ${q}`)) return 1;
-  if (t.includes(q)) return 2;
-  if (n.tags?.some((tag) => tag.includes(q))) return 3;
-  if ((n.summary ?? '').toLowerCase().includes(q) || n.assignee?.toLowerCase() === q.replace(/^@/, '')) return 4;
-  return -1;
-}
 
 export function SearchBar({ tree, projectTitle, onPick, onMenu }) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const inputRef = useRef(null);
-  const results = useMemo(() => {
-    const query = q.trim().toLowerCase();
-    if (!query || !tree) return [];
-    return tree.list
-      .map((n) => [n, score(n, query)])
-      .filter(([, s]) => s >= 0)
-      .sort((a, b) => a[1] - b[1] || a[0].depth - b[0].depth)
-      .slice(0, 8)
-      .map(([n]) => n);
-  }, [q, tree]);
+  const results = useMemo(() => search(tree, q), [q, tree]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -45,8 +27,8 @@ export function SearchBar({ tree, projectTitle, onPick, onMenu }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const pick = (n) => {
-    onPick(n.id);
+  const pick = ({ node }) => {
+    onPick(node.id);
     setOpen(false);
     setQ('');
     inputRef.current?.blur();
@@ -94,17 +76,19 @@ export function SearchBar({ tree, projectTitle, onPick, onMenu }) {
       )}
       {open && results.length > 0 && (
         <ul className="search-results" id="search-results" role="listbox">
-          {results.map((n, i) => (
-            <li key={n.id} role="option" aria-selected={i === active}>
-              <button className={i === active ? 'active' : ''} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(n)}>
-                <KindBadge kind={n.kind} />
+          {results.map((r, i) => (
+            <li key={r.behaviour ? `${r.node.id}:${r.behaviour.id}` : r.node.id} role="option" aria-selected={i === active}>
+              <button className={i === active ? 'active' : ''} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(r)}>
+                <KindBadge kind={r.behaviour ? 'behavior' : r.node.kind} />
                 <span className="row-main">
-                  <span className="row-title">{n.title}</span>
+                  <span className="row-title">{r.behaviour ? `${r.behaviour.id} ${r.behaviour.words}` : r.node.title}</span>
                   <span className="row-sub">
-                    {pathOf(n)
-                      .slice(1, -1)
-                      .map((p) => p.title)
-                      .join(' › ') || 'Project'}
+                    {r.behaviour
+                      ? r.node.title
+                      : pathOf(r.node)
+                          .slice(1, -1)
+                          .map((p) => p.title)
+                          .join(' › ') || 'Project'}
                   </span>
                 </span>
               </button>

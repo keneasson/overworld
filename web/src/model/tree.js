@@ -16,7 +16,7 @@ const behaviourRowsOf = (n) =>
     ? []
     : parseBehaviours(sectionText(parseIssue(editableOf(n).markdown), 'Behaviours'))
         .filter((r) => r.id)
-        .map((r) => ({ id: r.id, words: (r.then || r.text || r.when || r.given || '').trim() }))
+        .map((r) => ({ id: r.id, words: (r.then || r.text || r.when || r.given || '').trim(), said: [r.given, r.when, r.then, r.text].filter(Boolean).join(' ') }))
         .sort(inIdOrder);
 const BASE_WEIGHT = { project: 8, area: 6, epic: 5, feature: 4, story: 3, task: 2, bug: 1.6, behavior: 1.2 };
 const CONTAINER = new Set(['project', 'area', 'epic', 'feature']);
