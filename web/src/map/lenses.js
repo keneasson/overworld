@@ -1,9 +1,10 @@
 // Lenses are map types: the same geography, a different question answered.
-// Political (what is where), On target, Progress (terrain), Bugs (incidents),
+// Political (what is where), Needs approval, Progress (terrain), Bugs (incidents),
 // Fog (poorly defined), New features (night lights), Owners.
 
 import { hsl, interpolateRgbBasis } from 'd3';
-import { HEALTH_LABEL, isNewFeature } from '../model/tree.js';
+import { isNewFeature } from '../model/tree.js';
+import { waitedFor } from '../model/review.js';
 
 const LIGHT = {
   ocean: '#aad3ee',
@@ -48,8 +49,6 @@ function politicalFill(n) {
   return base.formatHex();
 }
 
-const HEALTH_FILL = { on_track: '#bde5c6', at_risk: '#ffe08f', off_track: '#f7b2ac', not_started: '#e3e5e8', done: '#c3d7f7' };
-const HEALTH_SWATCH = { on_track: '#34a853', at_risk: '#f9ab00', off_track: '#ea4335', not_started: '#9aa0a6', done: '#4285f4' };
 
 const terrain = interpolateRgbBasis(['#efe5cf', '#e4e7b4', '#bcdb92', '#86c178', '#4f9c62', '#2f7a4b']);
 const heat = interpolateRgbBasis(['#f6f3ee', '#fde3c3', '#fcb27e', '#f2714c', '#c9302c']);
@@ -125,6 +124,61 @@ function childSummary(n) {
   return plural(n.children.length, word, word === 'story' ? 'stories' : `${word}s`) + (count < n.children.length ? ' & more' : '');
 }
 
+// Needs approval (#62 REVIEW-05): how long the oldest change waiting in a place has waited. Nothing waiting is plain land;
+// the longer it has waited, the stronger, relative to the rest of the project.
+const waiting = interpolateRgbBasis(['#fdecc8', '#f9b96b', '#ea7a3f', '#b93d12']);
+const NOTHING_WAITING = '#eceee6';
+
+/** The Needs approval lens over a review list (web/src/model/review.js), longest waiting first. */
+export function needsApproval(review = []) {
+  const byNode = new Map(review.map((e) => [e.node.id, e]));
+  const oldest = new WeakMap();
+  const inside = new WeakMap();
+  const roll = (n) => {
+    if (oldest.has(n)) return;
+    let since = byNode.get(n.id)?.since ?? Infinity;
+    let count = byNode.has(n.id) ? 1 : 0;
+    for (const c of n.children) {
+      roll(c);
+      since = Math.min(since, oldest.get(c));
+      count += inside.get(c);
+    }
+    oldest.set(n, since);
+    inside.set(n, count);
+  };
+  const oldestIn = (n) => (roll(n), oldest.get(n));
+  const first = review[0]?.since ?? Infinity;
+  const last = review.at(-1)?.since ?? Infinity;
+  const strength = (since) => (last > first ? 0.25 + (0.75 * (last - since)) / (last - first) : 1);
+  return {
+    id: 'approval',
+    name: 'Needs approval',
+    chip: 'Needs approval',
+    icon: '✅',
+    blurb: 'What is waiting on you: proposed changes to adopt or decline, and questions to answer. The longer it has waited, the stronger the colour.',
+    theme: LIGHT,
+    fill: (n) => {
+      const since = oldestIn(n);
+      return Number.isFinite(since) ? waiting(strength(since)) : NOTHING_WAITING;
+    },
+    stat: (n) => {
+      const since = oldestIn(n);
+      if (!Number.isFinite(since)) return 'Nothing waiting for review';
+      const here = inside.get(n);
+      return `${here > 1 || !byNode.has(n.id) ? `${here} waiting · longest ` : 'Waiting '}${waitedFor(since)}`;
+    },
+    matches: (n) => byNode.has(n.id),
+    sort: (a, b) => byNode.get(a.id).since - byNode.get(b.id).since,
+    count: () => review.length,
+    review,
+    legend: () => [
+      { color: NOTHING_WAITING, label: 'Nothing waiting' },
+      { color: waiting(0.25), label: 'Just asked' },
+      { color: waiting(1), label: 'Waiting longest' },
+    ],
+  };
+}
+
 export const LENSES = [
   {
     id: 'map',
@@ -137,23 +191,7 @@ export const LENSES = [
     stat: (n) => [childSummary(n), pct(n.stats.progress) + ' done'].filter(Boolean).join(' · '),
     legend: (tree) => tree.root.children.slice(0, 10).map((a) => ({ color: politicalFill(a), label: a.title })),
   },
-  {
-    id: 'health',
-    name: 'On target',
-    chip: 'On target',
-    icon: '🎯',
-    blurb: 'Rolled-up health. Red is off target, amber at risk, green on target.',
-    theme: LIGHT,
-    fill: (n) => HEALTH_FILL[n.stats.health],
-    stat: (n) => `${HEALTH_LABEL[n.stats.health]} · ${pct(n.stats.progress)} done${n.stats.blocked ? ` · ${n.stats.blocked} blocked` : ''}`,
-    // Root causes: unhealthy nodes none of whose children share the problem.
-    matches: (n) =>
-      (n.stats.health === 'off_track' || n.stats.health === 'at_risk') &&
-      !n.children.some((c) => c.stats.health === 'off_track' || c.stats.health === 'at_risk'),
-    sort: (a, b) => (a.stats.health === 'off_track' ? 0 : 1) - (b.stats.health === 'off_track' ? 0 : 1),
-    count: (tree) => tree.list.filter((n) => LENSES[1].matches(n)).length,
-    legend: () => ['off_track', 'at_risk', 'on_track', 'not_started', 'done'].map((h) => ({ color: HEALTH_SWATCH[h], label: HEALTH_LABEL[h] })),
-  },
+  needsApproval(),
   {
     id: 'progress',
     name: 'Progress',
@@ -311,6 +349,8 @@ export const LENSES = [
 ];
 
 export const LENS_BY_ID = Object.fromEntries(LENSES.map((l) => [l.id, l]));
+/** The lenses as offered, with Needs approval over what is waiting now (REVIEW-05). */
+export const lensesWith = (approval) => LENSES.map((l) => (l.id === approval.id ? approval : l));
 
 export const LIGHT_COLORS = {
   idea: '#9b8cff',

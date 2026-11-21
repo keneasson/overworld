@@ -553,6 +553,22 @@ test('ADOPT-08 open questions in a refinement show as badges, and never keep it 
   assert.match((await map()).find((n) => n.title.startsWith('#4 ')).body, /kept/);
 });
 
+test('REVIEW-02 each proposed change says when it was proposed, and the notes say which questions wait to be answered or written in', async () => {
+  const { call, pid, node } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const { changeset } = (await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('a token.', 'a token, kept.') })).body;
+  assert.ok(Date.parse(changeset.items[0].at) >= Date.parse(cs.createdAt), 'waiting since it was proposed');
+  const ask = async (text) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text, author: 'Builder (a1)' })).body.comment;
+  const asked = await ask('Which provider?');
+  const answered = await ask('Which vault?');
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, replyTo: answered.id, text: 'Our own.', author: 'Ken' });
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'section', section: 'Why' }, text: 'Nice.', author: 'Ken' });
+  const notes = (await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'];
+  assert.deepEqual([notes.count, notes.asked, notes.answered], [3, 1, 1], 'one waiting on its answer, one on being written in; a plain comment waits on nobody');
+  assert.equal(notes.since, asked.createdAt, 'waiting since the oldest of them');
+});
+
 test('NEW-06 a new item dropped before adoption, or in a discarded refinement, is gone and never reaches GitHub', async () => {
   const { shop, call, pid, node, map } = await shopProject();
   const count = shop.issues.length;

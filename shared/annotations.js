@@ -152,9 +152,19 @@ export function notesByItem(comments) {
     const it = out[c.itemKey];
     if (!it) out[c.itemKey] = { count: 1, read: [...readersOf(c)] };
     else (it.count += 1), (it.read = it.read.filter((n) => readersOf(c).includes(n)));
+    // Questions waiting on someone (#62 REVIEW-02): asked and not answered yet, or answered and not yet written in.
+    const waits = questionWaits(c);
+    if (!waits) continue;
+    const at = waits === 'asked' ? c.createdAt : c.answer.at;
+    const here = out[c.itemKey];
+    here[waits] = (here[waits] ?? 0) + 1;
+    if (at && (!here.since || at < here.since)) here.since = at;
   }
   return out;
 }
+
+/** What an open question waits for: 'asked' (its answer), 'answered' (being written into the spec), or nothing. */
+export const questionWaits = (c) => (!isQuestion(c) || isDismissed(c) || c.answer?.appliedAt ? null : c.answer ? 'answered' : 'asked');
 
 /** Who a comment mentions (NOTE-14): each @name once, in order. */
 export const mentionsOf = (text = '') => [...new Set([...String(text).matchAll(/(?:^|[^\w@])@([A-Za-z][\w.-]*)/g)].map((m) => m[1].replace(/[.-]+$/, '')))];
