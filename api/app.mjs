@@ -352,7 +352,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         } else if (at >= 0) {
           const { conflict, theirs, ...kept } = cs.items[at];
           cs.items[at] = rebased ? { ...kept, base, after } : { ...cs.items[at], after };
-        } else cs.items.push({ key, nodeTitle: node.title, base, after });
+        } else cs.items.push({ key, nodeTitle: node.title, base, after, at: new Date().toISOString() }); // `at`: waiting since (#62 REVIEW-02)
         cs.updatedAt = new Date().toISOString();
         await model.changesets.put(pid, cs);
         return { changeset: cs, ...(rebased ? { rebased: true } : {}) };
@@ -375,7 +375,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const id = newId();
         const node = { ...applyTo({ ...sanitizeNode({ kind, title, status: 'idea', tags: kind === 'story' ? ['new-feature'] : [] }), id, parentId: parent.id, createdAt: now }, { title, markdown }, now), status: 'idea', refinement: cs.id };
         await model.nodes.put(pid, [node]);
-        cs.items.push({ key: itemKeyOf(node), nodeTitle: node.title, new: true });
+        cs.items.push({ key: itemKeyOf(node), nodeTitle: node.title, new: true, at: now });
         cs.updatedAt = now;
         await model.changesets.put(pid, cs);
         await touchProject(project, [...nodes, node]);

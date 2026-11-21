@@ -12,6 +12,7 @@ import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
 import { issueRefExtension } from '../model/links.js';
 import { useLinks } from './links-context.js';
+import { titleWithNumber, waitedFor, waitingWords } from '../model/review.js';
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
@@ -335,7 +336,7 @@ function Refinement({ cs, item, node, editing, comments }) {
     setReason('');
   };
   const count = nothing ? '' : ` ${ticked.length}`;
-  const other = diff.title || diff.sections.length;
+  const other = Boolean(diff.title || diff.sections.length);
   return (
     <section className="refinement" aria-label={`Refinement by ${cs.author}`}>
       <div className="refinement-head">
@@ -514,9 +515,23 @@ function BuildBar({ node, atBehaviour, builds, claims = [], onBuild }) {
   );
 }
 
-export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], review = null, onNextReview = null, onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const docRef = useRef(null);
+  const rootRef = useRef(null);
+  // Opened from the Review list (#62 REVIEW-03): at its proposed changes, once they've rendered.
+  const fromReview = Boolean(review);
+  useEffect(() => {
+    if (!fromReview) return undefined;
+    let tries = 0, frame = 0;
+    const look = () => {
+      const at = rootRef.current?.querySelector('.next-review');
+      if (at) return at.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      if (++tries < 60) frame = requestAnimationFrame(look);
+    };
+    look();
+    return () => cancelAnimationFrame(frame);
+  }, [fromReview, node.id]);
   // Opened from a behaviour's house on the map (#46 MARK-16): show that behaviour, once the document has rendered it.
   useEffect(() => {
     if (!atBehaviour) return undefined;
@@ -563,7 +578,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
   );
 
   return (
-    <div className="details">
+    <div className="details" ref={rootRef}>
       <header className="panel-head">
         {back && (
           <button type="button" className="icon-btn back-btn" onClick={back.go} aria-label={back.label} title={back.label}>
@@ -586,6 +601,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       </header>
       <div className="title-row">
         <KindBadge kind={node.kind} />
+        {issue && <span className="issue-number">#{issue.number}</span>}
         {node.priority && <span className="tag tag-strong">{node.priority}</span>}
         {/* Each fact once (EDIT-21): a new item is just new; a leaf's health only says more than its status when it is off track or at risk. */}
         {!node.refinement && (
@@ -648,6 +664,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         )}
       </div>
 
+      {review && <NextReview node={node} review={review} onNext={onNextReview} />}
       {proposals.map(({ cs, item }) => (
         <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} comments={comments.filter((c) => c.itemKey === key)} />
       ))}
@@ -765,6 +782,73 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
           <AddLink node={node} tree={tree} onPatch={onPatch} />
         </section>
       )}
+    </div>
+  );
+}
+
+/**
+ * Reviewing one item from the Review list (#62 REVIEW-03): how many more are waiting, and once this one is decided it
+ * has left the list and the next one is offered.
+ */
+function NextReview({ node, review, onNext }) {
+  const here = review.some((e) => e.node.id === node.id);
+  const next = review.find((e) => e.node.id !== node.id);
+  const more = review.length - (here ? 1 : 0);
+  return (
+    <div className={`next-review${here ? '' : ' decided'}`} role="status">
+      <span>{here ? `Reviewing · ${more ? `${more} more waiting` : 'the last one waiting'}` : 'Decided.'}</span>
+      {next ? (
+        <button type="button" className="link-btn" onClick={() => onNext(next)}>
+          Next: {titleWithNumber(next.node)} <Icon name="right" size={14} />
+        </button>
+      ) : (
+        !here && <span>Nothing else is waiting for review.</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Everything waiting on someone (#62 REVIEW-02), the longest waiting first: proposed changes by issue, who proposed them
+ * and how long ago, which behaviours are new or changed and which are marked ready, with the questions waiting to be
+ * answered or written in. The Needs approval lens lists the same (REVIEW-05).
+ */
+export function ReviewList({ review, onPick, onClose }) {
+  const now = Date.now();
+  const ago = (since) => {
+    const w = waitedFor(since, now);
+    return w && (w === 'just now' ? w : `${w} ago`);
+  };
+  return (
+    <div className="details review-list">
+      <header className="panel-head">
+        <div>
+          <div className="eyebrow">
+            <Icon name="edit" size={14} /> Review
+          </div>
+          <h2 className="node-title">{review.length ? `${review.length} waiting for review` : 'Nothing waiting for review'}</h2>
+        </div>
+        <button className="icon-btn" onClick={onClose} aria-label="Close review">
+          <Icon name="close" />
+        </button>
+      </header>
+      <p className="summary">Proposed changes to adopt or decline, and questions waiting on someone, the longest waiting first.</p>
+      <ul className="rows">
+        {review.map((e) => (
+          <li key={e.key}>
+            <button className="row review-row" onClick={() => onPick(e)}>
+              <StatusDot status={e.node.status} />
+              <span className="row-main">
+                <span className="row-title">{titleWithNumber(e.node)}</span>
+                <span className="row-sub">{[e.by.length ? `by ${e.by.join(', ')}` : '', ago(e.since)].filter(Boolean).join(' · ')}</span>
+                <span className="row-sub review-what">{waitingWords(e)}</span>
+                {e.ready.length > 0 && <span className="row-sub review-ready">Ready for adoption: {e.ready.join(', ')}</span>}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {!review.length && <p className="empty-note">Proposed changes and questions waiting on someone show here as soon as they're made.</p>}
     </div>
   );
 }

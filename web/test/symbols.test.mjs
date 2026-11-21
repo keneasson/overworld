@@ -110,7 +110,8 @@ test('NOTE-03 NOTE-04 an item has one comments badge: how many are not dismissed
     { id: '5', itemKey: 'node-b', kind: 'comment', text: 'Nice', author: 'Ken' },
   ];
   const open = notesByItem(comments);
-  assert.deepEqual(open['node-a'], { count: 2, read: ['Ken', 'Ana'] }, 'kinds mean nothing; dismissed comments and replies are not counted');
+  const { count, read } = open['node-a'];
+  assert.deepEqual({ count, read }, { count: 2, read: ['Ken', 'Ana'] }, 'kinds mean nothing; dismissed comments and replies are not counted');
   const liveFor = (you) => ({ notes: new Map(Object.entries(open).map(([k, v]) => [k.replace('node-', ''), { count: v.count, unread: !v.read.includes(you) }])) });
   assert.deepEqual(badgesOf(tree.byId.get('a'), liveFor('Ana')), [{ type: 'comment', count: 2 }, { type: 'question', count: 1 }], 'one badge, read; the "?" counts only Open questions');
   assert.deepEqual(badgesOf(tree.byId.get('a'), liveFor('Bo')), [{ type: 'comment', count: 2, unread: true }, { type: 'question', count: 1 }], 'marked for whoever has not read them all');

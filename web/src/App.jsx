@@ -5,10 +5,10 @@ import { KIND_LABEL } from '@shared/schema.js';
 import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
 import { MapView } from './map/MapView.jsx';
-import { LENS_BY_ID } from './map/lenses.js';
+import { LENS_BY_ID, lensesWith, needsApproval } from './map/lenses.js';
 import { Breadcrumbs, Chips, CommentToggle, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
 import { Composer } from './editor/Annotate.jsx';
-import { Details, Results } from './components/Panel.jsx';
+import { Details, Results, ReviewList } from './components/Panel.jsx';
 import { useItemEditing } from './editor/useItemEditing.js';
 import { isMapped } from './editor/items.js';
 import { Drawer, Unlock } from './components/Drawer.jsx';
@@ -19,6 +19,7 @@ import { backOf, followLink, linkTarget, repoOf } from './model/links.js';
 import { LinkContext } from './components/links-context.js';
 import { claimsByNode, openedBy, waitingByNode } from './map/houses.js';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
+import { changesWaiting, waitingForReview } from './model/review.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -113,6 +114,8 @@ export function App() {
   const [commenting, setCommenting] = useState(false); // the Comment control (#15 NOTE-10)
   const [placePick, setPlacePick] = useState(null); // a place on the map picked to comment on: { id, x, y }
   const [resultsOpen, setResultsOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false); // the Review list (#62 REVIEW-02)
+  const [reviewingId, setReviewingId] = useState(null); // the item opened from it, which offers the next one (REVIEW-03)
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [focusId, setFocusId] = useState(null);
@@ -188,6 +191,15 @@ export function App() {
       .then((d) => latest.current.projectId === projectId && setOpenNotes(d.open))
       .catch(() => {});
   }, [projectId]);
+  // Questions waiting on someone change while the map is open (#62 REVIEW-02): look again with the refinements.
+  const reloadNotes = useCallback(() => {
+    const pid = projectId;
+    if (!pid) return;
+    api
+      .openNotes(pid)
+      .then((d) => latest.current.projectId === pid && setOpenNotes(d.open))
+      .catch(() => {});
+  }, [projectId]);
   // Live claims (MCP-04): a house being coded has a bulldozer on its lot (#46 MARK-17), and the item an agent badge. Agents
   // claim through MCP while the map is open, so look again now and then; a claim that ends takes its bulldozer with it.
   // Build requests (#14 HANDOFF-05) come with them: what waits for a builder, and what the card can offer to build.
@@ -248,7 +260,7 @@ export function App() {
     return s;
   }, [data, projection]);
   const tree = scene?.tree;
-  const lens = LENS_BY_ID[lensId];
+  const offered = LENS_BY_ID[lensId]; // the lens chosen; Needs approval is drawn over what is waiting, below
   const selected = selectedId ? tree?.byId.get(selectedId) : null;
   useEffect(() => {
     if (selected) loadComments([itemKeyOf(selected)]);
@@ -320,7 +332,8 @@ export function App() {
     hashTimer.current = setTimeout(writeHash, 400);
   }, [writeHash]);
 
-  const panelMode = selected ? 'details' : resultsOpen && lens.matches ? 'results' : null;
+  // Needs approval's list is the Review list (REVIEW-05), so the two never disagree.
+  const panelMode = selected ? 'details' : reviewOpen || (resultsOpen && lensId === 'approval') ? 'review' : resultsOpen && offered.matches ? 'results' : null;
   const insets = useMemo(() => {
     if (mobile) return { top: 130, bottom: panelMode ? Math.round(window.innerHeight * (sheetFull ? 0.92 : 0.46)) : 72 };
     return { left: panelMode ? panelW + 24 : 0, top: 60 };
@@ -393,6 +406,7 @@ export function App() {
   );
   const setLens = useCallback((id) => {
     setLensId(id);
+    setReviewOpen(false); // a lens's own list replaces the Review list
     const hasResults = Boolean(LENS_BY_ID[id].matches);
     setResultsOpen(hasResults);
     if (hasResults) setSelectedId(null);
@@ -400,6 +414,8 @@ export function App() {
   const closePanel = useCallback(() => {
     setSelectedId(null);
     setResultsOpen(false);
+    setReviewOpen(false);
+    setReviewingId(null);
     setSheetFull(false);
   }, []);
 
@@ -474,6 +490,28 @@ export function App() {
     closePanel();
   }, [closePanel]);
 
+  // Everything waiting on someone's review (#62): the Review button and list, the "to review" marker and Needs approval.
+  const review = useMemo(() => waitingForReview({ changesets: editing.others, notes: openNotes, tree }), [editing.others, openNotes, tree]);
+  const approval = useMemo(() => needsApproval(review), [review]);
+  const lenses = useMemo(() => lensesWith(approval), [approval]);
+  const lens = lensId === approval.id ? approval : offered;
+  const openReview = useCallback(() => {
+    if (panelMode === 'review') return closePanel();
+    setSelectedId(null);
+    setReviewingId(null);
+    setReviewOpen(true);
+    editing.reloadRefinements();
+    reloadNotes();
+  }, [panelMode, closePanel, editing, reloadNotes]);
+  // Choosing one goes there and opens it at its proposed changes (REVIEW-03).
+  const pickReview = useCallback(
+    (e) => {
+      setReviewingId(e.node.id);
+      pick(e.node.id);
+    },
+    [pick],
+  );
+
   // Items with someone else's refinement waiting are marked on the map (ADOPT-02), so they can be found.
   const live = useMemo(() => {
     // One badge per item (NOTE-04): its comments not dismissed, marked when any are unread for this person (NOTE-03). The
@@ -491,26 +529,22 @@ export function App() {
     const byItem = { ...Object.fromEntries(fromServer), ...loaded };
     const nodeOf = new Map(tree ? tree.list.map((x) => [itemKeyOf(x), x.id]) : []);
     const notes = new Map(Object.entries(byItem).flatMap(([k, v]) => (nodeOf.has(k) ? [[nodeOf.get(k), v]] : [])));
-    const refinements = new Map();
-    const byKey = new Map(editing.others.length && tree ? tree.list.map((x) => [itemKeyOf(x), x]) : []);
-    for (const cs of editing.others)
-      for (const it of cs.items) {
-        const n = !it.new && byKey.get(it.key);
-        if (n) refinements.set(n.id, (refinements.get(n.id) ?? 0) + 1);
-      }
+    // An issue with changes waiting carries a "to review" marker (#62 REVIEW-04), from the same list as the Review button.
+    const refinements = new Map(review.filter((e) => e.changes > 0).map((e) => [e.node.id, e.changes]));
     const agents = tree ? claimsByNode(claims, tree, clock) : new Map();
     const waiting = tree ? waitingByNode(builds.requests, tree) : new Map();
     return { refinements, notes, agents, waiting };
-  }, [editing.others, editing.name, editing.hasRead, tree, comments, openNotes, claims, builds, clock]);
+  }, [review, editing.name, editing.hasRead, tree, comments, openNotes, claims, builds, clock]);
   // Agents propose through MCP while the map is open: look again when an item opens, and now and then.
   const { reloadRefinements } = editing;
   useEffect(() => {
     if (selectedId) reloadRefinements();
   }, [selectedId, reloadRefinements]);
   useEffect(() => {
-    const t = setInterval(() => document.visibilityState === 'visible' && reloadRefinements(), 60000);
+    // Proposed, adopted or declined elsewhere: the Review count follows within half a minute (REVIEW-01).
+    const t = setInterval(() => document.visibilityState === 'visible' && (reloadRefinements(), reloadNotes()), 30000);
     return () => clearInterval(t);
-  }, [reloadRefinements]);
+  }, [reloadRefinements, reloadNotes]);
   useEffect(() => {
     if (!withAgent) return undefined;
     const pid = projectId;
@@ -724,7 +758,7 @@ export function App() {
 
       <div className="top">
         <SearchBar tree={tree} projectTitle={tree?.root.title} onPick={pick} onMenu={() => setDrawerOpen(true)} />
-        {tree && <Chips tree={tree} lensId={lensId} setLens={setLens} showLinks={showLinks} setShowLinks={setShowLinks} />}
+        {tree && <Chips tree={tree} lensId={lensId} setLens={setLens} showLinks={showLinks} setShowLinks={setShowLinks} lenses={lenses} review={{ count: changesWaiting(review), on: panelMode === 'review', onOpen: openReview }} />}
         {tree && <Breadcrumbs tree={tree} focusId={focusId} onFly={(id) => mapRef.current?.flyTo(id)} />}
       </div>
 
@@ -749,6 +783,8 @@ export function App() {
                   editing={editing}
                   builds={builds}
                   claims={claims}
+                  review={reviewingId === selected.id ? review : null}
+                  onNextReview={pickReview}
                   onBuild={build}
                   commenting={commenting}
                   commentControl={inSheet ? commentControl : null}
@@ -772,6 +808,7 @@ export function App() {
                 />
               )}
               {panelMode === 'results' && <Results lens={lens} tree={tree} focusId={focusId} onPick={pick} onClose={() => setResultsOpen(false)} />}
+              {panelMode === 'review' && <ReviewList review={review} onPick={pickReview} onClose={closePanel} />}
               </ErrorBoundary>
             </div>
           </LinkContext.Provider>
@@ -804,6 +841,7 @@ export function App() {
             setShowLinks={setShowLinks}
             projection={projection}
             setProjection={setProjection}
+            lenses={lenses}
           />
           <Legend lens={lens} tree={tree} live={live} />
         </div>

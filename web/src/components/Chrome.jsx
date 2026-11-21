@@ -116,10 +116,11 @@ export function SearchBar({ tree, projectTitle, onPick, onMenu }) {
   );
 }
 
-export function Chips({ tree, lensId, setLens, showLinks, setShowLinks }) {
+export function Chips({ tree, lensId, setLens, showLinks, setShowLinks, lenses = LENSES, review = null }) {
   return (
     <div className="chips" role="toolbar" aria-label="Map lenses">
-      {LENSES.filter((l) => l.id !== 'map').map((l) => {
+      {review && <ReviewButton {...review} />}
+      {lenses.filter((l) => l.id !== 'map').map((l) => {
         const count = l.count?.(tree);
         const on = l.id === lensId;
         return (
@@ -133,6 +134,20 @@ export function Chips({ tree, lensId, setLens, showLinks, setShowLinks }) {
         <Icon name="route" size={16} /> Routes
       </button>
     </div>
+  );
+}
+
+/**
+ * The Review button (#62 REVIEW-01): how many issues have proposed changes waiting, wherever they are in the project.
+ * It opens the list of everything waiting on someone (REVIEW-02).
+ */
+export function ReviewButton({ count, on, onOpen }) {
+  const words = count ? `${count} issue${count === 1 ? ' has' : 's have'} changes waiting for review` : 'Nothing waiting for review';
+  return (
+    <button type="button" className={`chip review-chip${on ? ' on' : ''}${count ? ' waiting' : ''}`} aria-pressed={on} onClick={onOpen} title={words} aria-label={`Review: ${words}`}>
+      <Icon name="edit" size={16} /> Review
+      <span className="chip-count">{count}</span>
+    </button>
   );
 }
 
@@ -250,10 +265,10 @@ export function Legend({ lens, tree, live }) {
   );
 }
 
-export function LayerButton({ scene, lensId, setLens, showLinks, setShowLinks, projection, setProjection }) {
+export function LayerButton({ scene, lensId, setLens, showLinks, setShowLinks, projection, setProjection, lenses = LENSES }) {
   const [open, setOpen] = useState(false);
-  const thumbs = useMemo(() => (open && scene ? Object.fromEntries(LENSES.map((l) => [l.id, renderThumbnail(scene, l)])) : {}), [open, scene]);
-  const current = LENSES.find((l) => l.id === lensId);
+  const thumbs = useMemo(() => (open && scene ? Object.fromEntries(lenses.map((l) => [l.id, renderThumbnail(scene, l)])) : {}), [open, scene, lenses]);
+  const current = lenses.find((l) => l.id === lensId);
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => e.key === 'Escape' && setOpen(false);
@@ -283,7 +298,7 @@ export function LayerButton({ scene, lensId, setLens, showLinks, setShowLinks, p
             ))}
           </div>
           <div className="layer-grid">
-            {LENSES.map((l) => (
+            {lenses.map((l) => (
               <button
                 key={l.id}
                 className={`layer-tile${l.id === lensId ? ' on' : ''}`}

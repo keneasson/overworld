@@ -14,7 +14,7 @@ export const BADGE_LABEL = {
   waiting: 'Waiting for a builder',
   comment: 'Comments',
   question: 'Open questions',
-  refine: 'Refinement waiting for adoption',
+  refine: 'To review: proposed changes waiting for adoption', // #62 REVIEW-04
 };
 export const KIND_SYMBOL_LABEL = { project: 'Project', area: 'Area', epic: 'Epic', feature: 'Feature', story: 'Story', task: 'Task', bug: 'Bug', behavior: 'Behaviour' };
 

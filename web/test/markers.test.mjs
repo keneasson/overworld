@@ -331,7 +331,7 @@ test('MARK-15 an item whose outline can be read is its own lot, apart from its s
   }
   assert.ok(checked > 50, `neighbouring lots were compared (${checked})`);
   // A lot's ground is the lens's colour for it, only lighter or darker: the lens still says what the land means.
-  const lens = LENSES.find((l) => l.id === 'health');
+  const lens = LENSES.find((l) => l.id === 'progress');
   const k = k0 * 20;
   const { grounds } = lotsAt(scene, { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H }, { lens, T });
   for (const { n, ground } of grounds) {
