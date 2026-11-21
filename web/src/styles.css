@@ -2009,6 +2009,16 @@ button.danger.armed {
   justify-content: space-between;
   font-size: 12px;
 }
+.your-name {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
 .thread {
   display: flex;
   flex-direction: column;

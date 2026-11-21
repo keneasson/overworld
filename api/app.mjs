@@ -531,6 +531,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         // On a behaviour in a refinement (#13 ADOPT-14): it is for the refinement's author, as a comment on a pull request is.
         const refinement = anchor.refinement ? await model.changesets.get(pid, anchor.refinement) : null;
         if (anchor.refinement && !refinement) throw new HttpError(404, 'That refinement is gone');
+        // Every comment says who wrote it (#15 NOTE-21): one with no name would show as "Someone", and nobody could tell whose it is.
+        if (!String(body?.author ?? '').trim()) throw new ValidationError('author: say who is commenting');
         const writer = author(body?.author);
         const forAuthor = refinement && !fromAgent && refinement.author !== writer;
         const agents = mentionsOf(said).length || forAuthor ? await model.agents.list(pid) : [];

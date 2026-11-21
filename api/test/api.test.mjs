@@ -285,12 +285,24 @@ test("EDIT-03 a refresh keeps accepted edits that aren't on GitHub yet", async (
   );
 });
 
+test('NOTE-21 a comment that doesn\'t say who wrote it is refused, so none shows as "Someone"', async () => {
+  const { call, pid } = await shopProject();
+  for (const author of [undefined, '', '   ']) {
+    const r = await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.', author });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /who/);
+  }
+  assert.equal((await call('GET', `/api/projects/${pid}/comments`)).body.comments.length, 0);
+  const ok = await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.', author: 'Ken' });
+  assert.equal(ok.body.comment.author, 'Ken');
+});
+
 test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', async () => {
   const { call, pid } = await shopProject();
   const a = await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { behaviour: 'PAY-10' }, text: 'Which vault?', author: 'QA' });
   assert.equal(a.status, 201);
-  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.' });
-  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-40', anchor: { section: 'Why' }, text: 'Elsewhere.' });
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.', author: 'Ann' });
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-40', anchor: { section: 'Why' }, text: 'Elsewhere.', author: 'Ann' });
   assert.equal((await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', text: '  ' })).status, 400);
   await call('POST', `/api/projects/${pid}/refresh`, {});
   const { comments } = (await call('GET', `/api/projects/${pid}/comments`)).body;
@@ -298,8 +310,8 @@ test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', 
     comments.map((c) => [c.itemKey, c.anchor.behaviour ?? c.anchor.section, c.text, c.author]),
     [
       ['issue-4', 'PAY-10', 'Which vault?', 'QA'],
-      ['issue-4', 'Why', 'Agreed.', 'Someone'],
-      ['issue-40', 'Why', 'Elsewhere.', 'Someone'],
+      ['issue-4', 'Why', 'Agreed.', 'Ann'],
+      ['issue-40', 'Why', 'Elsewhere.', 'Ann'],
     ],
   );
   const id = a.body.comment.id;
@@ -311,7 +323,7 @@ test('EDIT-04 comments anchor to a section or behaviour and survive a refresh', 
 test('NOTE-01 a comment sits on what it is about, and is just a comment: no kind, no value', async () => {
   const { call, pid, map } = await shopProject();
   const before = (await map()).find((n) => n.title.startsWith('#4 ')).body;
-  const post = (body) => call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', ...body });
+  const post = (body) => call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', author: 'Ann', ...body });
   const on = { on: 'word', section: 'Why', quote: 'tokens', prefix: 'Cards need ', suffix: '.' };
   const said = await post({ kind: 'change', anchor: on, text: 'Make this blue', value: '#EEAA18', author: 'Ken' });
   assert.equal(said.status, 201, JSON.stringify(said.body));
@@ -346,19 +358,19 @@ test('NOTE-09 comments made before annotations are comments in the same place, a
 
 test('NOTE-11 each annotation is its own thread at its own words, and a reply stays in its thread', async () => {
   const { call, pid } = await shopProject();
-  const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', ...body })).body.comment;
+  const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', author: 'Ann', ...body })).body.comment;
   const first = await post({ anchor: { on: 'word', section: 'Open questions', quote: 'vault' }, text: 'Which one?' });
   const second = await post({ anchor: { on: 'word', section: 'Open questions', quote: 'provider' }, text: 'Stripe?' });
   const reply = await post({ replyTo: first.id, text: 'The PCI one.', author: 'Ken' });
   assert.deepEqual([reply.anchor, reply.replyTo], [first.anchor, first.id]);
-  assert.equal((await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', replyTo: 'gone', text: 'x' })).status, 404);
+  assert.equal((await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', replyTo: 'gone', text: 'x', author: 'Ann' })).status, 404);
   const threads = threadsOf((await call('GET', `/api/projects/${pid}/comments/issue-4`)).body.comments);
   assert.deepEqual(threads.map((t) => [t.root.id, t.root.anchor.quote, t.replies.map((r) => r.text)]), [[first.id, 'vault', ['The PCI one.']], [second.id, 'provider', []]]);
 });
 
 test('NOTE-03 a thread is unread for everyone but whoever said its last word, read once opened, and reading moves nothing', async () => {
   const { call, pid } = await shopProject();
-  const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'section', section: 'Why' }, ...body })).body;
+  const post = async (body) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'section', section: 'Why' }, author: 'Ann', ...body })).body;
   const read = async (c, by) => (await call('POST', `/api/projects/${pid}/comments/issue-4/${c.id}/read`, { by })).body.comment;
   const unread = (c, by) => isUnread(c, by);
   const { comment: c } = await post({ text: 'Great work, team.', author: 'Ken' });
@@ -547,7 +559,7 @@ test('ADOPT-08 open questions in a refinement show as badges, and never keep it 
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
   const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('None.', '- Which vault?').replace('a token.', 'a token, kept.') });
-  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text: 'Which provider?' });
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text: 'Which provider?', author: 'Ann' });
   assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].count, 1, 'the question asked on it is badged');
   assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200, 'adopted with questions in its text and on it');
   assert.match((await map()).find((n) => n.title.startsWith('#4 ')).body, /kept/);

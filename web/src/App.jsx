@@ -7,7 +7,7 @@ import { buildScene } from './map/scene.js';
 import { MapView } from './map/MapView.jsx';
 import { LENS_BY_ID, lensesWith, needsApproval } from './map/lenses.js';
 import { Breadcrumbs, Chips, CommentToggle, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
-import { Composer } from './editor/Annotate.jsx';
+import { Composer, YouContext } from './editor/Annotate.jsx';
 import { Details, Results, ReviewList } from './components/Panel.jsx';
 import { useItemEditing } from './editor/useItemEditing.js';
 import { isMapped } from './editor/items.js';
@@ -722,6 +722,8 @@ export function App() {
 
   if (locked) return <Unlock onSubmit={unlock} error={unlockError} />;
 
+  // Who is commenting, and how to save a name when none is (#15 NOTE-21).
+  const you = useMemo(() => ({ you: editing.name, setYou: editing.setName }), [editing.name]); // eslint-disable-line react-hooks/exhaustive-deps
   const classes = ['app', mobile && 'mobile', panelMode && 'panel-open', sheetFull && 'sheet-full', lens.theme.dark && 'night', commenting && 'commenting'].filter(Boolean).join(' ');
   // One Comment control: on the map's controls, or at the top of the sheet on a phone, where the sheet covers them.
   const commentControl = tree && <CommentToggle on={commenting} onToggle={() => setCommenting((c) => !c)} />;
@@ -729,6 +731,7 @@ export function App() {
   const placed = placePick && tree?.byId.get(placePick.id);
 
   return (
+    <YouContext.Provider value={you}>
     <div className={classes}>
       {scene ? (
         <MapView
@@ -942,5 +945,6 @@ export function App() {
       )}
       <Toasts toasts={toasts} />
     </div>
+    </YouContext.Provider>
   );
 }

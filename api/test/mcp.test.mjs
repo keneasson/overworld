@@ -124,8 +124,8 @@ test('MCP-02 next_work returns new, unclaimed behaviours by issue in priority or
 test('MCP-03 context gives one issue whole, with finished siblings and old discussion summarised', async () => {
   const { agent, rest, pid, clear } = await setup();
   const a = await agent('Builder');
-  await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-10', anchor: { behaviour: 'ZOOM-01' }, text: 'Children in order?' });
-  const old = (await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-10', text: 'Settled long ago.' })).comment;
+  await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-10', anchor: { behaviour: 'ZOOM-01' }, text: 'Children in order?', author: 'Ann' });
+  const old = (await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-10', text: 'Settled long ago.', author: 'Ann' })).comment;
   await clear('issue-10', old.id);
   await a.use('claim', { behaviours: ['ZOOM-01'] });
   await a.use('handoff', { note: 'Children render; counts next.' });
