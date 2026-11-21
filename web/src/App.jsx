@@ -19,7 +19,7 @@ import { backOf, followLink, linkTarget, repoOf } from './model/links.js';
 import { LinkContext } from './components/links-context.js';
 import { claimsByNode, openedBy, waitingByNode } from './map/houses.js';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
-import { changesWaiting, waitingForReview } from './model/review.js';
+import { waitingForReview } from './model/review.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -114,7 +114,6 @@ export function App() {
   const [commenting, setCommenting] = useState(false); // the Comment control (#15 NOTE-10)
   const [placePick, setPlacePick] = useState(null); // a place on the map picked to comment on: { id, x, y }
   const [resultsOpen, setResultsOpen] = useState(false);
-  const [reviewOpen, setReviewOpen] = useState(false); // the Review list (#62 REVIEW-02)
   const [reviewingId, setReviewingId] = useState(null); // the item opened from it, which offers the next one (REVIEW-03)
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
@@ -260,7 +259,7 @@ export function App() {
     return s;
   }, [data, projection]);
   const tree = scene?.tree;
-  const offered = LENS_BY_ID[lensId]; // the lens chosen; Needs approval is drawn over what is waiting, below
+  const offered = LENS_BY_ID[lensId]; // the lens chosen; Review is drawn over what is waiting, below
   const selected = selectedId ? tree?.byId.get(selectedId) : null;
   useEffect(() => {
     if (selected) loadComments([itemKeyOf(selected)]);
@@ -332,8 +331,8 @@ export function App() {
     hashTimer.current = setTimeout(writeHash, 400);
   }, [writeHash]);
 
-  // Needs approval's list is the Review list (REVIEW-05), so the two never disagree.
-  const panelMode = selected ? 'details' : reviewOpen || (resultsOpen && lensId === 'approval') ? 'review' : resultsOpen && offered.matches ? 'results' : null;
+  // The Review lens's list is the Review list (REVIEW-05): the chip beside Fog and Bugs is the one way in (REVIEW-01).
+  const panelMode = selected ? 'details' : resultsOpen && lensId === 'approval' ? 'review' : resultsOpen && offered.matches ? 'results' : null;
   const insets = useMemo(() => {
     if (mobile) return { top: 130, bottom: panelMode ? Math.round(window.innerHeight * (sheetFull ? 0.92 : 0.46)) : 72 };
     return { left: panelMode ? panelW + 24 : 0, top: 60 };
@@ -406,7 +405,6 @@ export function App() {
   );
   const setLens = useCallback((id) => {
     setLensId(id);
-    setReviewOpen(false); // a lens's own list replaces the Review list
     const hasResults = Boolean(LENS_BY_ID[id].matches);
     setResultsOpen(hasResults);
     if (hasResults) setSelectedId(null);
@@ -414,7 +412,6 @@ export function App() {
   const closePanel = useCallback(() => {
     setSelectedId(null);
     setResultsOpen(false);
-    setReviewOpen(false);
     setReviewingId(null);
     setSheetFull(false);
   }, []);
@@ -490,19 +487,18 @@ export function App() {
     closePanel();
   }, [closePanel]);
 
-  // Everything waiting on someone's review (#62): the Review button and list, the "to review" marker and Needs approval.
+  // Everything waiting on someone's review (#62): the Review lens, its list and the "to review" marker.
   const review = useMemo(() => waitingForReview({ changesets: editing.others, notes: openNotes, tree }), [editing.others, openNotes, tree]);
   const approval = useMemo(() => needsApproval(review), [review]);
   const lenses = useMemo(() => lensesWith(approval), [approval]);
   const lens = lensId === approval.id ? approval : offered;
-  const openReview = useCallback(() => {
-    if (panelMode === 'review') return closePanel();
-    setSelectedId(null);
+  // Choosing the Review lens fetches what's waiting now, so its count and list are fresh the moment it opens (REVIEW-01).
+  useEffect(() => {
+    if (lensId !== approval.id) return;
     setReviewingId(null);
-    setReviewOpen(true);
     editing.reloadRefinements();
     reloadNotes();
-  }, [panelMode, closePanel, editing, reloadNotes]);
+  }, [lensId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Choosing one goes there and opens it at its proposed changes (REVIEW-03).
   const pickReview = useCallback(
     (e) => {
@@ -529,7 +525,7 @@ export function App() {
     const byItem = { ...Object.fromEntries(fromServer), ...loaded };
     const nodeOf = new Map(tree ? tree.list.map((x) => [itemKeyOf(x), x.id]) : []);
     const notes = new Map(Object.entries(byItem).flatMap(([k, v]) => (nodeOf.has(k) ? [[nodeOf.get(k), v]] : [])));
-    // An issue with changes waiting carries a "to review" marker (#62 REVIEW-04), from the same list as the Review button.
+    // An issue with changes waiting carries a "to review" marker (#62 REVIEW-04), from the same list as the Review lens.
     const refinements = new Map(review.filter((e) => e.changes > 0).map((e) => [e.node.id, e.changes]));
     const agents = tree ? claimsByNode(claims, tree, clock) : new Map();
     const waiting = tree ? waitingByNode(builds.requests, tree) : new Map();
@@ -758,7 +754,7 @@ export function App() {
 
       <div className="top">
         <SearchBar tree={tree} projectTitle={tree?.root.title} onPick={pick} onMenu={() => setDrawerOpen(true)} />
-        {tree && <Chips tree={tree} lensId={lensId} setLens={setLens} showLinks={showLinks} setShowLinks={setShowLinks} lenses={lenses} review={{ count: changesWaiting(review), on: panelMode === 'review', onOpen: openReview }} />}
+        {tree && <Chips tree={tree} lensId={lensId} setLens={setLens} showLinks={showLinks} setShowLinks={setShowLinks} lenses={lenses} />}
         {tree && <Breadcrumbs tree={tree} focusId={focusId} onFly={(id) => mapRef.current?.flyTo(id)} />}
       </div>
 

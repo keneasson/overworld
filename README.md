@@ -50,9 +50,8 @@ plus *Behind the screen*, and top-level items have *Continent*.
 **Lenses** (the chips across the top, or the Layers button) re-colour the same geography:
 
 - **Map**: one colour per area.
-- **Needs approval**: how long the oldest proposed change in each place has waited for review; the longer, the stronger.
-  Its list is the Review list: the **Review** button above the map counts the issues with changes waiting, and lists them
-  with the questions waiting on someone, the longest waiting first (#62).
+- **Review**: what is waiting on someone. Its chip counts the issues waiting, and its list names them, with their proposed
+  changes and questions, the longest waiting first. On the map, the longer something has waited, the stronger the colour (#62).
 - **Progress**: terrain from sand (untouched) to deep green (done).
 - **Bugs**: heat by open bugs, with each bug as an incident dot.
 - **Poorly defined (Fog)**: hatches items missing a summary, details, acceptance criteria or an estimate.

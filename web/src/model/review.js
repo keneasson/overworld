@@ -1,5 +1,5 @@
 // Everything waiting on someone's review (#62): proposed changes not yet adopted or declined, and questions waiting to be
-// answered or written in. The Review button, its list, the "to review" marker and the Needs approval lens all read this
+// answered or written in. The Review lens, its list and the "to review" marker all read this
 // one list, so they never disagree (REVIEW-01 to REVIEW-05).
 
 import { compareItems, editableOf, itemKeyOf } from '@shared/issue-shape.js';
@@ -52,9 +52,6 @@ export function waitingForReview({ changesets = [], notes = {}, tree }) {
   }
   return [...out.values()].sort((a, b) => a.since - b.since || a.key.localeCompare(b.key));
 }
-
-/** How many issues have proposed changes waiting: the Review button's count (REVIEW-01). */
-export const changesWaiting = (review) => review.filter((e) => e.changes > 0).length;
 
 /** How long something has waited, in a few words: "just now", "5 min", "3 h", "2 days". */
 export function waitedFor(since, now = Date.now()) {

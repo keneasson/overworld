@@ -811,7 +811,7 @@ function NextReview({ node, review, onNext }) {
 /**
  * Everything waiting on someone (#62 REVIEW-02), the longest waiting first: proposed changes by issue, who proposed them
  * and how long ago, which behaviours are new or changed and which are marked ready, with the questions waiting to be
- * answered or written in. The Needs approval lens lists the same (REVIEW-05).
+ * answered or written in. The Review lens lists the same (REVIEW-05).
  */
 export function ReviewList({ review, onPick, onClose }) {
   const now = Date.now();
