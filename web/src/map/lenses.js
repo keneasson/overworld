@@ -6,6 +6,9 @@ import { hsl, interpolateRgbBasis } from 'd3';
 import { isNewFeature } from '../model/tree.js';
 import { waitedFor } from '../model/review.js';
 import { WASTELAND_LENS } from './wasteland.js';
+import { fogOver, fogReason } from './fog.js';
+
+export { fogOver };
 
 const LIGHT = {
   ocean: '#aad3ee',
@@ -98,28 +101,6 @@ export const provenSummary = (s) => `${s.proven} of ${plural(s.adopted, 'behavio
 const OWNER_COLORS = ['#a9cdf5', '#f7c59f', '#b6e0b0', '#e9b6e3', '#f5e19c', '#a7e0dc', '#d3c0f0', '#f4b0b0', '#c9d99a', '#b9c7d6'];
 
 const pct = (v) => `${Math.round(v * 100)}%`;
-/**
- * How thick the fog over an item is, 0 to 1: full over uncharted work, none once it is well defined.
- * A region's fog is the average of what is inside it, weighted by size, so zooming in shows where the fog is
- * without changing how much there is.
- */
-const fogCache = new WeakMap();
-export function fogOver(n) {
-  if (fogCache.has(n)) return fogCache.get(n);
-  let f;
-  if (n.children.length) {
-    let sum = 0;
-    let weight = 0;
-    for (const c of n.children) {
-      const w = Math.max(1, c.stats.items);
-      sum += fogOver(c) * w;
-      weight += w;
-    }
-    f = sum / weight;
-  } else f = n.stats.vague ? 1 : Math.sqrt(Math.min(1, Math.max(0, (1 - Math.min(1, n.stats.def)) * 1.5 - 0.15)));
-  fogCache.set(n, f);
-  return f;
-}
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function childSummary(n) {
@@ -241,23 +222,20 @@ export const LENSES = [
     name: 'Fog',
     chip: 'Poorly defined',
     icon: '🌫️',
-    blurb: 'Uncharted territory: items missing a summary, details, acceptance criteria or an estimate.',
+    blurb: 'Uncharted territory: behaviour nobody knows yet. Issues with no behaviours, and behaviours marked "Not worked out yet", lie under cloud; lightning strikes where it has sat too long.',
     theme: LIGHT,
     fill: (n) => fog(1 - fogOver(n)),
     fog: fogOver,
-    stat: (n) =>
-      n.stats.vague
-        ? `Uncharted · ${pct(n.stats.def)} defined`
-        : n.children.length
-          ? `${pct(1 - n.stats.poorlyDefined / n.stats.items)} charted${n.stats.poorlyDefined ? ` · ${n.stats.poorlyDefined} vague` : ''}`
-          : `${pct(n.stats.def)} defined`,
+    stat: fogReason,
+    // Lightning over fog that has sat too long (FOG-04).
+    storms: true,
     matches: (n) => n.stats.vague && n.depth > 0,
     sort: (a, b) => a.depth - b.depth,
     count: (tree) => tree.root.stats.poorlyDefined,
     legend: () => [
-      { color: fog(1), label: 'Well defined' },
-      { color: fog(0.55), label: 'Partly defined' },
-      { color: fog(0), label: 'Uncharted, under fog', fog: true },
+      { color: fog(1), label: 'Worked out' },
+      { color: fog(0.55), label: 'Partly worked out' },
+      { color: fog(0), label: 'Nobody knows yet, under fog', fog: true },
     ],
   },
   { ...WASTELAND_LENS, theme: LIGHT },

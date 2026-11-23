@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { select, zoom as d3zoom, zoomIdentity } from 'd3';
+import { fogClock } from './fog.js';
 import { drawMap, hitTest, markerAt, nodeView, overviewView, thresholds, fitScale } from './renderer.js';
 
 /**
@@ -40,8 +41,9 @@ export const MapView = forwardRef(function MapView(
     const ctx = canvas.getContext('2d');
     const ins = p.insets ?? {};
     const center = [(ins.left ?? 0) + (s.w - (ins.left ?? 0)) / 2, (ins.top ?? 0) + (s.h - (ins.top ?? 0) - (ins.bottom ?? 0)) / 2];
-    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, marked: p.marked, hoverId: s.hoverId ?? (p.commenting ? p.outlineId : null), showLinks: p.showLinks, live: p.live, center, insets: ins, time: still() ? 0 : performance.now() / 1000 });
-    // Fog drifts: while any is on screen, redraw a few times a second. Nothing moves for people who ask for less motion.
+    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, marked: p.marked, hoverId: s.hoverId ?? (p.commenting ? p.outlineId : null), showLinks: p.showLinks, live: p.live, center, insets: ins, time: fogClock(performance.now() / 1000, still()), reducedMotion: still() });
+    // Fog drifts and lightning strikes: while any is on screen, redraw a few times a second (FOG-03, FOG-04). Nothing
+    // moves for people who ask for less motion.
     if (s.info?.drifting && !still() && !s.drift) s.drift = setTimeout(() => ((s.drift = 0), schedule()), 50);
     if (s.info && s.info.focusId !== s.lastFocus) {
       s.lastFocus = s.info.focusId;

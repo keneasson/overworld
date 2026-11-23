@@ -41,7 +41,7 @@ test('LIFE-06 a region whose work was all rejected is settled, not empty', () =>
   const epic = tree.byId.get('epic');
   assert.equal(epic.stats.health, 'done');
   assert.equal(epic.stats.progress, 1);
-  assert.ok(Number.isFinite(epic.stats.defAvg));
+  assert.ok(Number.isFinite(epic.stats.fog));
 });
 
 test('land mapped from the code is not work: it counts nothing and says so', () => {

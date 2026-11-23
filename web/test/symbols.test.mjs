@@ -14,7 +14,7 @@ import { fogPatches, hitTest, roads, thresholds } from '../src/map/renderer.js';
 
 const root = { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' };
 const item = (id, parentId, extra = {}) => ({ id, parentId, title: `#${id.length + 10} ${id}`, kind: parentId === 'root' ? 'epic' : 'task', status: 'ready', ...extra });
-const LONG = 'This is a long enough body to count as some detail about the work.\n\n## Acceptance\n- [ ] it works';
+const LONG = 'This is a long enough body to count as some detail about the work.\n\n## Behaviours\n\n- WORK-01 Given this, when that, then it works.';
 const SIZES = [20, 40, 62, 95, 150, 330, 600, 1200, 4000];
 
 test('SYM-01 SYM-06 at every zoom an item shows at most its symbol, short title and badges', () => {
@@ -36,7 +36,7 @@ test('SYM-01 SYM-06 at every zoom an item shows at most its symbol, short title 
 test('SYM-02 FOG-01 a symbol is filled by its status, and the Fog lens puts poorly defined work under fog', () => {
   const tree = buildTree([
     root,
-    item('epic', 'root', { body: LONG, summary: 'An epic with a summary' }),
+    item('epic', 'root', { body: 'An epic, whose behaviours are its tasks.', summary: 'An epic with a summary' }),
     item('a', 'epic', { status: 'ready', body: LONG, summary: 'Well defined task', estimate: 3 }),
     item('b', 'epic', { status: 'in_progress', body: LONG, summary: 'Well defined task', estimate: 3 }),
     item('c', 'epic', { status: 'in_progress' }),
@@ -49,8 +49,9 @@ test('SYM-02 FOG-01 a symbol is filled by its status, and the Fog lens puts poor
 
   const fog = LENS_BY_ID.definition;
   assert.ok(fog.fog(c) === 1 && fog.fog(b) === 0, 'uncharted land is under fog, charted land is clear');
-  const region = (fog.fog(a) + fog.fog(b) + fog.fog(c)) / 3;
-  assert.ok(Math.abs(fog.fog(tree.byId.get('epic')) - region) < 1e-9, 'a region holds the fog of what is inside it, so zooming in never changes how much there is');
+  const land = [a, b, c].reduce((sum, n) => sum + n.stats.raw, 0);
+  const region = [a, b, c].reduce((sum, n) => sum + fog.fog(n) * n.stats.raw, 0) / land;
+  assert.ok(Math.abs(fog.fog(tree.byId.get('epic')) - region) < 1e-9, 'a region holds the fog of what is inside it, land for land, so zooming in never changes how much there is');
   assert.notEqual(fog.fill(c), fog.fill(b));
   assert.ok(fog.matches(c) && !fog.matches(b));
 
