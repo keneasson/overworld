@@ -1451,6 +1451,9 @@ button.danger.armed {
 .swatch.fog {
   background-image: radial-gradient(circle at 30% 40%, rgba(255, 255, 255, 0.95) 0 28%, transparent 60%), radial-gradient(circle at 72% 62%, rgba(255, 255, 255, 0.85) 0 24%, transparent 58%) !important;
 }
+.swatch.cracks {
+  background-image: linear-gradient(115deg, transparent 0 40%, rgba(70, 45, 25, 0.55) 40% 47%, transparent 47%), linear-gradient(35deg, transparent 0 58%, rgba(70, 45, 25, 0.45) 58% 64%, transparent 64%) !important;
+}
 .swatch.hatch {
   background-image: repeating-linear-gradient(135deg, rgba(60, 64, 67, 0.35) 0 1.5px, transparent 1.5px 5px) !important;
 }
@@ -2724,6 +2727,36 @@ button.danger.armed {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+.waste-bar {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border-left: 3px solid #7d5a43;
+  background: color-mix(in srgb, #b08a64 14%, var(--surface));
+  font-size: 13px;
+}
+.waste-bar p {
+  margin: 0;
+}
+.waste-marks,
+.waste-cleared {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+.waste-kind {
+  font-weight: 600;
+}
+.waste-text {
+  display: block;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .build-bar {
   display: grid;

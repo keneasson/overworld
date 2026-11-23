@@ -68,10 +68,10 @@ export function githubStore({ repo, strict = true, app = null, fetchImpl = fetch
     update: (ref, item, version) => client().updateIssue(repo, Number(ref), patchFor(item, version, { strict })),
     placed: (node, ref) => ({ ...node, url: `https://github.com/${repo}/issues/${ref}`, title: `#${ref} ${node.title}`.slice(0, 200) }),
     onMap: (node, item) => mapIssueOnto(node, item, { strict }),
-    async mapAgain({ token } = {}) {
+    async mapAgain({ token, previous = null } = {}) {
       if (!token && app) token = await app.token().catch(() => undefined); // private repositories need the App; public ones read without it
-      const data = await importGitHub({ repo, token }, fetchImpl);
-      return { nodes: data.nodes, project: { strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested, airports: data.airports } };
+      const data = await importGitHub({ repo, token, previous }, fetchImpl);
+      return { nodes: data.nodes, project: { strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested, airports: data.airports, waste: data.waste } };
     },
   };
 }

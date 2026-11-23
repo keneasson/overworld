@@ -163,6 +163,34 @@ function hatch(ctx, color) {
   return ctx.createPattern(hatchCache.get(color), 'repeat');
 }
 
+// Wasteland (#24 WASTE-01): cracked, dried-out ground, so it reads as damage rather than weather (Fog) or a hatch's "none".
+let cracksTile = null;
+function cracks(ctx) {
+  if (!cracksTile) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 40;
+    const g = c.getContext('2d');
+    g.strokeStyle = 'rgba(70,45,25,0.42)';
+    g.lineWidth = 1.3;
+    g.lineJoin = 'round';
+    for (const line of [
+      [[0, 9], [8, 12], [14, 7], [22, 11], [30, 6], [40, 9]],
+      [[14, 7], [16, 0]],
+      [[8, 12], [10, 22], [5, 30], [7, 40]],
+      [[22, 11], [25, 21], [33, 26], [40, 24]],
+      [[25, 21], [20, 31], [24, 40]],
+      [[10, 22], [20, 31]],
+      [[0, 24], [5, 30]],
+    ]) {
+      g.beginPath();
+      line.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+      g.stroke();
+    }
+    cracksTile = c;
+  }
+  return ctx.createPattern(cracksTile, 'repeat');
+}
+
 // ---------- houses: how much a place holds (MARK-09) ----------
 
 // A small seeded random, so a place's houses stand in the same spots every time it is drawn.
@@ -684,6 +712,7 @@ export function drawMap(ctx, scene, view, opts) {
   ctx.save();
   ctx.clip(coastPath);
   let hatchPattern = null;
+  let crackPattern = null;
   const fogged = [];
   const towns = [];
   const { grounds, streets, parks } = lotsAt(scene, view, { lens, T });
@@ -697,6 +726,15 @@ export function drawMap(ctx, scene, view, opts) {
       hatchPattern.setTransform(new DOMMatrix().scale(1 / k));
       ctx.fillStyle = hatchPattern;
       ctx.fill(path);
+    }
+    if (lens.cracks?.(n) && s > 14) {
+      const before = ctx.globalAlpha;
+      crackPattern ??= cracks(ctx);
+      ctx.globalAlpha = before * (theme.dark ? 0.6 : 1);
+      crackPattern.setTransform(new DOMMatrix().scale(1 / k));
+      ctx.fillStyle = crackPattern;
+      ctx.fill(path);
+      ctx.globalAlpha = before;
     }
     // Houses and fog belong to what you can see: a region hands them to its children as they fade in.
     if (here > 0.02 && !thumbnail) towns.push({ n, g, w: here });

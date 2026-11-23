@@ -945,7 +945,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/import\/github$/,
       async ({ body }) => {
         const data = await importGitHub({ repo: body?.repo, token: body?.token || undefined }, fetchImpl);
-        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested, airports: data.airports });
+        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested, airports: data.airports, waste: data.waste });
         await model.links.link(stores.forProject(saved.project).key, saved.project.id);
         return saved;
       },
@@ -960,7 +960,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project } = await loadProject(pid);
         const store = stores.forProject(project);
         if (!store) throw new ValidationError('only projects imported from a store can be refreshed');
-        const data = await store.mapAgain({ token: body?.token || undefined });
+        const data = await store.mapAgain({ token: body?.token || undefined, previous: project });
         const kept = keepPending(data.nodes, await model.nodes.pending(pid), store);
         await model.nodes.replace(pid, kept.nodes);
         const updated = await touchProject(project, kept.nodes, data.project);

@@ -1,10 +1,11 @@
 // Lenses are map types: the same geography, a different question answered.
 // Political (what is where), Review, Progress (terrain), Bugs (incidents),
-// Fog (poorly defined), New features (night lights), Owners.
+// Fog (poorly defined), Wasteland (damaged code), New features (night lights), Owners.
 
 import { hsl, interpolateRgbBasis } from 'd3';
 import { isNewFeature } from '../model/tree.js';
 import { waitedFor } from '../model/review.js';
+import { WASTELAND_LENS } from './wasteland.js';
 
 const LIGHT = {
   ocean: '#aad3ee',
@@ -253,6 +254,7 @@ export const LENSES = [
       { color: fog(0), label: 'Uncharted, under fog', fog: true },
     ],
   },
+  { ...WASTELAND_LENS, theme: LIGHT },
   {
     id: 'lifecycle',
     name: 'Lifecycle',
