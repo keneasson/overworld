@@ -12,7 +12,7 @@ import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
 import { issueRefExtension } from '../model/links.js';
 import { useLinks } from './links-context.js';
-import { titleWithNumber, waitedFor, waitingWords } from '../model/review.js';
+import { reviewingAt, titleWithNumber, waitedFor, waitingWords } from '../model/review.js';
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
@@ -880,9 +880,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
  * has left the list and the next one is offered.
  */
 function NextReview({ node, review, onNext }) {
-  const here = review.some((e) => e.node.id === node.id);
-  const next = review.find((e) => e.node.id !== node.id);
-  const more = review.length - (here ? 1 : 0);
+  const { here, more, next } = reviewingAt(review, node.id);
   return (
     <div className={`next-review${here ? '' : ' decided'}`} role="status">
       <span>{here ? `Reviewing · ${more ? `${more} more waiting` : 'the last one waiting'}` : 'Decided.'}</span>

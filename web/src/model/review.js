@@ -53,6 +53,17 @@ export function waitingForReview({ changesets = [], notes = {}, tree }) {
   return [...out.values()].sort((a, b) => a.since - b.since || a.key.localeCompare(b.key));
 }
 
+/**
+ * Where the person stands while reviewing one issue opened from the Review list (REVIEW-03): whether it is still waiting,
+ * how many others are, and the one offered next, the longest waiting. Once it is decided it has left the list.
+ * @returns {{ here: boolean, more: number, next: object|null }}
+ */
+export function reviewingAt(review, nodeId) {
+  const here = review.some((e) => e.node.id === nodeId);
+  const next = review.find((e) => e.node.id !== nodeId) ?? null;
+  return { here, more: review.length - (here ? 1 : 0), next };
+}
+
 /** How long something has waited, in a few words: "just now", "5 min", "3 h", "2 days". */
 export function waitedFor(since, now = Date.now()) {
   if (!Number.isFinite(since)) return '';
