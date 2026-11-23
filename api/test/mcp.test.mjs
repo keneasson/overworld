@@ -833,7 +833,11 @@ test('HANDOFF-11 HANDOFF-04 HANDOFF-08 a claim whose pull request opened holds t
   assert.equal((await a.use('claim', { behaviours: ['CL-01', 'CL-02'], pull_request: 12, built_with: standIn })).pull_request, 12);
   assert.deepEqual((await rest('GET', `/api/projects/${pid}/claims`)).claims.filter((c) => c.pr?.number === 12).map((c) => c.pr.builtWith), [standIn, standIn], 'the card can say an agent stood in for the project\'s own');
   assert.match((await a.refused('claim', { behaviours: ['CL-01'], built_with: 'aider' })).error, /built_with: name the pull_request/);
-  await a.use('claim', { behaviours: ['ZOOM-01'], pull_request: 13 });
+  await a.use('claim', { behaviours: ['ZOOM-01'] });
+  const zoom = (await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title === '#10 Zoom');
+  await rest('PATCH', `/api/projects/${pid}/nodes/${zoom.id}`, { status: 'in_progress' });
+  await a.use('claim', { behaviours: ['ZOOM-01'], pull_request: 13 }); // its item is in progress now: its builder can still name the pull request
+  assert.match((await b.refused('claim', { behaviours: ['ZOOM-02'] })).error, /in progress, not ready/, 'anyone else is still refused work that is in progress');
 
   clock.now += 24 * 3_600_000;
   assert.deepEqual(await claims(), [['CL-01', true, 12, 'open', undefined], ['CL-02', true, 12, 'open', undefined], ['ZOOM-01', true, 13, 'open', undefined]], 'held through review, long past any claim\'s length, so the agent badge stays');
