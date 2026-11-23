@@ -10,8 +10,9 @@ import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './e
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, githubKey, signedByGitHub } from './stores/github/index.mjs';
-import { answerPrompt, settleAnswers } from './answers.mjs';
-import { annotationOf, answers, cleanAnchor, isDismissed, mentionsOf, notesByItem, whereOf } from '../shared/annotations.js';
+import { answerPrompt, awaitsApplying, questionsOfNode, questionsOnMap, settleAnswers } from './answers.mjs';
+import { annotationOf, cleanAnchor, isDismissed, mentionsOf, notesByItem, whereOf } from '../shared/annotations.js';
+import { questionId, questionsIn, withAnswer, withQuestion } from '../shared/questions.js';
 import { addresseesOf } from './notes.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
@@ -226,6 +227,41 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     const issue = issueOf(parent);
     if (issue) return `#${issue.number}`;
     return parent.refinement || parent.sync ? `#new-${parent.id}` : '';
+  }
+
+  /**
+   * Change an item's text in place, the way accepting an edit does: it waits for a save (SYNC-07). Asking and answering a
+   * question are such changes (ANSWER-01, ANSWER-07). Each open refinement of the item gets the same change, so what it
+   * proposes is still proposed against the item as it now is, and no question leaves it a conflict.
+   * @param {(markdown: string) => string | null} change  the new markdown, or null if it can't be made
+   * @returns {Promise<{ node: object, changesets: object[] }>}
+   */
+  async function rewrite(pid, itemKey, change) {
+    const { project, nodes } = await loadProject(pid);
+    const node = findItem(nodes, itemKey);
+    if (!node) throw new HttpError(404, 'No such item on the map');
+    const before = editableOf(node);
+    const markdown = change(before.markdown);
+    if (markdown == null) throw new HttpError(404, 'That question is no longer in its item\'s Open questions');
+    const now = new Date(clock()).toISOString();
+    const after = { title: before.title, markdown };
+    // A new item is part of its refinement, which adopts it (NEW-03): its state waits for that.
+    const changed = node.refinement ? { ...applyTo(node, after, now), status: node.status } : markEdited(node, applyTo(node, after, now), stores.forProject(project));
+    await model.nodes.put(pid, [changed]);
+    await touchProject(project, nodes.map((n) => (n.id === node.id ? changed : n)));
+    const carried = [];
+    for (const cs of await model.changesets.list(pid)) {
+      const at = cs.status === 'open' ? cs.items.findIndex((it) => it.key === itemKey && !it.new && same(it.base, before)) : -1;
+      if (at < 0) continue;
+      const it = cs.items[at];
+      const theirs = change(it.after.markdown);
+      cs.items[at] = { ...it, base: after, after: theirs == null ? it.after : { ...it.after, markdown: theirs } };
+      if (same(cs.items[at].base, cs.items[at].after)) cs.items.splice(at, 1);
+      cs.updatedAt = now;
+      await model.changesets.put(pid, cs);
+      carried.push(cs);
+    }
+    return { node: changed, changesets: carried };
   }
 
   const routes = [
@@ -538,10 +574,10 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         await model.changesets.put(pid, cs);
         // Adopting it applies the answers it carries, and an item with nothing else open comes back ready (ANSWER-04).
         // The comments it acted on stay where they are: adopting dismisses nothing (NOTE-19, NOTE-05).
-        const { applied, ready } = await settleAnswers(model, pid, cs, changed, now);
+        const { applied, ready } = await settleAnswers(model, pid, cs, nodes, changed, now);
         const marked = ready.filter((n) => n.status !== 'ready').map((n) => markEdited(n, { ...n, status: 'ready', updatedAt: now }, store));
         if (marked.length) await model.nodes.put(pid, marked);
-        return { changeset: cs, nodes: changed.map((n) => marked.find((m) => m.id === n.id) ?? n), ...(applied.length ? { applied: applied.map(annotationOf) } : {}) };
+        return { changeset: cs, nodes: changed.map((n) => marked.find((m) => m.id === n.id) ?? n), ...(applied.length ? { applied } : {}) };
       },
     ],
 
@@ -549,7 +585,26 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
 
     ['GET', /^\/api\/projects\/([\w-]+)\/comments$/, async ({ params: [pid] }) => ({ comments: (await model.comments.list(pid)).map(annotationOf) })],
     // What the map badges (NOTE-03, NOTE-04): comments not dismissed, by item, and who has read them all, without sending every thread.
-    ['GET', /^\/api\/projects\/([\w-]+)\/notes$/, async ({ params: [pid] }) => ({ open: notesByItem(await model.comments.list(pid)) })],
+    // Beside them, the open questions waiting on someone (#62 REVIEW-02), from the items' Open questions sections: asked and
+    // not answered, or answered and not yet written in. Comments are never among them (NOTE-22).
+    [
+      'GET',
+      /^\/api\/projects\/([\w-]+)\/notes$/,
+      async ({ params: [pid] }) => {
+        const { nodes } = await loadProject(pid);
+        const questions = {};
+        const byKey = new Map(nodes.map((n) => [itemKeyOf(n), n]));
+        for (const q of await questionsOnMap(model, pid, nodes)) {
+          const waits = !q.answer ? 'asked' : awaitsApplying(q, byKey.get(q.itemKey)) ? 'answered' : null;
+          if (!waits) continue;
+          const here = (questions[q.itemKey] ??= { asked: 0, answered: 0 });
+          here[waits] += 1;
+          const since = (waits === 'asked' ? q.asked?.at : q.answered?.at) ?? byKey.get(q.itemKey).updatedAt;
+          if (since && (!here.since || since < here.since)) here.since = since;
+        }
+        return { open: notesByItem(await model.comments.list(pid)), questions };
+      },
+    ],
     // One item's threads: the web app loads comments only for what is open, never a whole project's.
     ['GET', /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)$/, async ({ params: [pid, itemKey] }) => ({ comments: (await model.comments.list(pid, itemKey)).map(annotationOf) })],
 
@@ -558,7 +613,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/projects\/([\w-]+)\/comments$/,
       // A new comment is its own thread (NOTE-11); a reply joins one, on the same anchor, and makes it unread again for everyone else (NOTE-03).
       async ({ params: [pid], body }) => {
-        const { nodes } = await loadProject(pid);
+        await loadProject(pid);
         const itemKey = String(body?.itemKey ?? '');
         if (!KEY.test(itemKey)) throw new ValidationError('itemKey: expected issue-<number> or node-<id>');
         const said = text(body?.text ?? '', 4000, 'text').trim();
@@ -607,19 +662,10 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           thread = { ...thread, delivery: { ...root.delivery, state: 'replied', by: comment.author, at } };
           await model.inbox.delete(pid, root.id);
         }
-        // A person's reply to an open question is its answer, and goes to an agent to apply (ANSWER-01, ANSWER-02). The
-        // prompt it goes with is kept only if the person changed it (ANSWER-05). An agent's reply is never the answer.
-        let prompt;
-        if (root && !fromAgent && answers(root, comment.author)) {
-          const built = answerPrompt({ nodes, comments: await model.comments.list(pid, itemKey), question: root, answer: said, answeredBy: comment.author });
-          const asked = body?.prompt == null ? '' : text(body.prompt, 40000, 'prompt').trim();
-          const answer = { text: said, by: comment.author, at, reply: comment.id, ...(asked && asked !== built.trim() ? { prompt: asked } : {}) };
-          thread = { ...thread, answer };
-          prompt = answer.prompt ?? built;
-        }
+        // A reply is a reply, wherever its thread is anchored: a comment is never an open question, so it answers none (NOTE-22).
         await model.comments.put(pid, comment);
         if (thread !== root) await model.comments.put(pid, thread);
-        return { comment: annotationOf(comment), ...(thread !== root ? { thread: annotationOf(thread) } : {}), ...(prompt ? { prompt } : {}) };
+        return { comment: annotationOf(comment), ...(thread !== root ? { thread: annotationOf(thread) } : {}) };
       },
       { status: 201 },
     ],
@@ -661,19 +707,61 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       },
     ],
 
+    // ---- Open questions (#68): lines in an item's Open questions section, answered directly under each ----
+
     [
       'POST',
-      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/prompt$/,
-      // The prompt a reply to an open question would go out with, to read and change before posting it (ANSWER-05).
-      async ({ params: [pid, itemKey, id], body }) => {
-        const question = await model.comments.get(pid, { itemKey, id });
-        if (!question) throw new HttpError(404, 'Comment not found');
-        if (!answers(question, author(body?.author))) throw new ValidationError('only an open question someone else asked can be answered');
-        const said = text(body?.text ?? '', 4000, 'text').trim();
+      /^\/api\/projects\/([\w-]+)\/questions$/,
+      // A question is added to its item's Open questions, in place of "None.", at once: a question decides nothing, so it
+      // waits for no adoption, and reaches the store with the next save like any accepted edit (ANSWER-07). Who asked, and
+      // when, are kept beside the text. Asking the same question again changes nothing.
+      async ({ params: [pid], body }) => {
+        const itemKey = String(body?.itemKey ?? '');
+        if (!KEY.test(itemKey)) throw new ValidationError('itemKey: expected issue-<number> or node-<id>');
+        const said = text(body?.text ?? '', 2000, 'text').replace(/\s+/g, ' ').trim();
         if (!said) throw new ValidationError('text: required');
-        const by = author(body?.author);
+        const id = questionId(itemKey, said);
         const { nodes } = await loadProject(pid);
-        return { prompt: answerPrompt({ nodes, comments: await model.comments.list(pid, itemKey), question, answer: said, answeredBy: by }) };
+        const node = findItem(nodes, itemKey);
+        if (!node) throw new HttpError(404, 'No such item on the map');
+        const there = questionsIn(itemKey, editableOf(node).markdown).some((q) => q.id === id);
+        const res = there ? { node } : await rewrite(pid, itemKey, (md) => withQuestion(md, said));
+        const meta = await model.questions.get(pid, { itemKey, id });
+        if (!meta?.asked) {
+          const agentId = typeof body?.agentId === 'string' ? body.agentId.slice(0, 40) : null;
+          await model.questions.put(pid, { ...meta, itemKey, id, text: said, asked: { by: author(body?.author), at: new Date(clock()).toISOString(), ...(agentId ? { agentId } : {}) } });
+        }
+        return { question: { id, itemKey, text: said }, ...res };
+      },
+      { status: 201 },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/questions\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/(answer|prompt)$/,
+      // Answering writes the answer directly under its question, as "Answer: …" (ANSWER-01), and it goes to an agent with
+      // one prompt (ANSWER-02); the prompt is kept only if the person changed it (ANSWER-05). Who answered, and when, are
+      // kept beside the text. `prompt` is that prompt, built as if the answer were written, to read and change first.
+      async ({ params: [pid, itemKey, id, action], body }) => {
+        const said = text(body?.text ?? '', 4000, 'text').replace(/\s+/g, ' ').trim();
+        if (!said) throw new ValidationError('text: required');
+        const by = author(body?.by ?? body?.author);
+        const { nodes } = await loadProject(pid);
+        const node = findItem(nodes, itemKey);
+        if (!node) throw new HttpError(404, 'No such item on the map');
+        const meta = await model.questions.get(pid, { itemKey, id });
+        const question = questionsOfNode(node, meta ? [meta] : []).find((q) => q.id === id);
+        if (!question) throw new HttpError(404, 'That question is no longer in its item\'s Open questions');
+        const answered = withAnswer(editableOf(node).markdown, itemKey, id, said);
+        const as = nodes.map((n) => (n === node ? applyTo(n, { ...editableOf(n), markdown: answered }, n.updatedAt) : n));
+        const built = answerPrompt({ nodes: as, question, answer: said, answeredBy: by });
+        if (action === 'prompt') return { prompt: built };
+        const res = await rewrite(pid, itemKey, (md) => withAnswer(md, itemKey, id, said));
+        const asked = body?.prompt == null ? '' : text(body.prompt, 40000, 'prompt').trim();
+        const { handedAt, refinement, applied, ...kept } = meta ?? {};
+        const answer = { text: said, by, at: new Date(clock()).toISOString(), ...(asked && asked !== built.trim() ? { prompt: asked } : {}) };
+        await model.questions.put(pid, { ...kept, itemKey, id, text: question.text, answered: answer });
+        return { question: { ...question, answer: said, answered: answer }, prompt: answer.prompt ?? built, ...res };
       },
     ],
 

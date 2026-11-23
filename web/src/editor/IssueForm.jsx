@@ -33,7 +33,7 @@ function Outline({ rects, picked }) {
  * With the Comment control on (`commenting`, #15 NOTE-10), the text stops being editable and pointing at it outlines
  * what a comment would be on; a click, or a second tap, opens the comment box there.
  */
-export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, placeholderTitle = null, onChange, onComment, onPromote, onDismiss, onRestore, onAnswerPrompt, you, hasRead, onRead, conflict }) {
+export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, placeholderTitle = null, onChange, onComment, onPromote, onDismiss, onRestore, hasRead, onRead, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   // The title that stands in for an empty one (EDIT-22): a new item's placeholder, or the title it opened with.
@@ -366,11 +366,9 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
             src={open.root.anchor?.src}
             moved={openAt?.moved}
             thread={open}
-            you={you}
-            onReply={(text, prompt) => onComment(open.root.anchor, text, { replyTo: open.root.id, prompt })}
+            onReply={(text) => onComment(open.root.anchor, text, { replyTo: open.root.id })}
             onPromote={onPromote}
             onDismiss={onDismiss}
-            onAnswerPrompt={onAnswerPrompt}
             onClose={() => setThread(null)}
           />
         </div>

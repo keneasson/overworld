@@ -3,7 +3,7 @@
 // with ⌘/Ctrl+Enter (NOTE-12). Everything said is written and shown like the document (EDIT-15).
 
 import { Suspense, createContext, lazy, useContext, useState } from 'react';
-import { answers, initials, isDismissed } from '@shared/annotations.js';
+import { initials, isDismissed } from '@shared/annotations.js';
 import { Icon } from '../components/Icon.jsx';
 import { commentHtml } from './comment-text.js';
 import { useLinks } from '../components/links-context.js';
@@ -139,12 +139,10 @@ export function dismissedWords(c) {
   return `Dismissed by ${d.by ?? 'someone'}${d.at ? `, ${when(d.at)}` : ''}${d.note ? `: ${d.note}` : ''}`;
 }
 
-/** Where an annotation addressed to an agent has got to (NOTE-17), and its answer (ANSWER-01). */
+/** Where an annotation addressed to an agent has got to (NOTE-17). */
 function Status({ c }) {
   const lines = [];
   if (isDismissed(c)) lines.push(<p key="x" className="note-status done">{dismissedWords(c)}.</p>);
-  if (c.answer?.appliedAt) lines.push(<p key="answer" className="note-status done">{c.answer.by}’s answer was applied in refinement {c.answer.appliedBy}.</p>);
-  else if (c.answer) lines.push(<p key="answer" className="note-status">{c.answer.by}’s answer is with an agent to apply.</p>);
   const d = c.delivery;
   if (d?.state === 'waiting') lines.push(<p key="d" className="note-status">Sent to {d.for === 'any agent' ? 'Claude' : d.for}. No agent is connected: it is the first thing the next one to call gets.</p>);
   else if (d?.state === 'delivered') lines.push(<p key="d" className="note-status live">With {d.to} since {when(d.at)}. Its reply comes here.</p>);
@@ -171,41 +169,20 @@ function Said({ c, children }) {
 
 /**
  * One comment's thread (NOTE-11): the comment, its replies, and a reply box. Nothing clears it: it stays until someone
- * dismisses it, quietly, after the replies (NOTE-05), or makes it a task (NOTE-06). A person's reply to a question is its
- * answer (ANSWER-01), and they can read and change the prompt it goes out with before posting it (ANSWER-05). The prompt
- * is built by the server, so it is the one an agent gets; left as built, it is built again when it goes.
+ * dismisses it, quietly, after the replies (NOTE-05), or makes it a task (NOTE-06). A reply is a reply, wherever the
+ * comment is anchored: a comment is never an open question (NOTE-22).
  */
-export function Thread({ heading, quote, what, src, moved, thread, you, onReply, onPromote, onDismiss, onAnswerPrompt, onClose }) {
+export function Thread({ heading, quote, what, src, moved, thread, onReply, onPromote, onDismiss, onClose }) {
   const { root, replies } = thread;
   const [text, setText] = useState('');
-  const [prompt, setPrompt] = useState(null);
-  const [built, setBuilt] = useState(null);
   const [busy, setBusy] = useState(false);
   const name = useAskName();
-  const answering = answers(root, you || 'Someone') && Boolean(onAnswerPrompt);
-  const showPrompt = async () => {
-    setBusy(true);
-    try {
-      const p = await onAnswerPrompt(root, text.trim());
-      setBuilt(p);
-      setPrompt(p);
-    } catch {
-      // The editor's toast says what went wrong.
-    } finally {
-      setBusy(false);
-    }
-  };
   const reply = async (e) => {
     e?.preventDefault();
     if (!text.trim() || busy || !name.named) return;
     name.save();
     setBusy(true);
-    const changed = answering && prompt != null && prompt !== built ? prompt : undefined;
-    if (await onReply(text.trim(), changed)) {
-      setText('');
-      setPrompt(null);
-      setBuilt(null);
-    }
+    if (await onReply(text.trim())) setText('');
     setBusy(false);
   };
   return (
@@ -245,32 +222,78 @@ export function Thread({ heading, quote, what, src, moved, thread, you, onReply,
         </button>
       )}
       <form className="comment-form" onSubmit={reply}>
-        <Box
-          className="reply"
-          label={answering ? 'Answer' : 'Reply'}
-          value={text}
-          onChange={setText}
-          onSubmit={reply}
-          placeholder={answering ? 'Answer… goes to an agent to apply (⌘/Ctrl+Enter posts)' : 'Reply… (⌘/Ctrl+Enter posts)'}
-        />
+        <Box className="reply" label="Reply" value={text} onChange={setText} onSubmit={reply} placeholder="Reply… (⌘/Ctrl+Enter posts)" />
         {name.field}
         <button type="submit" disabled={!text.trim() || busy || !name.named}>
           Reply
         </button>
       </form>
-      {answering && (
-        <div className="answer-prompt">
-          {prompt != null && (
-            <label>
-              <span>The prompt an agent gets. Change it if you like.</span>
-              <textarea aria-label="The prompt an agent gets" rows={8} value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={40000} />
-            </label>
-          )}
-          <button type="button" className="link-btn" disabled={!text.trim() || busy} onClick={showPrompt}>
-            {prompt == null ? 'See the prompt' : 'Build it again'}
-          </button>
-        </div>
-      )}
     </div>
+  );
+}
+
+/**
+ * Answering one open question (ANSWER-01): the answer is written directly under it as "Answer: …", and goes to an agent
+ * with one prompt the person can read and change first (ANSWER-05). The prompt is built by the server, so it is the one an
+ * agent gets; left as built, it is built again when it goes. `onAnswer(text, prompt)` is true once it is written.
+ */
+export function AnswerBox({ question, onPrompt, onAnswer, onCancel }) {
+  const [text, setText] = useState(question.answer ?? '');
+  const [prompt, setPrompt] = useState(null);
+  const [built, setBuilt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const showPrompt = async () => {
+    setBusy(true);
+    try {
+      const p = await onPrompt(text.trim());
+      setBuilt(p);
+      setPrompt(p);
+    } catch {
+      // The editor's toast says what went wrong.
+    } finally {
+      setBusy(false);
+    }
+  };
+  const answer = async (e) => {
+    e?.preventDefault();
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    const ok = await onAnswer(text.trim(), prompt != null && prompt !== built ? prompt : undefined);
+    setBusy(false);
+    if (ok) onCancel();
+  };
+  return (
+    <form
+      className="thread composer answer-box"
+      aria-label={`Answer: ${question.text}`}
+      onSubmit={answer}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return;
+        e.stopPropagation();
+        onCancel();
+      }}
+    >
+      <Box autoFocus label="Answer" value={text} onChange={setText} onSubmit={answer} placeholder="Answer… written under the question, and an agent applies it (⌘/Ctrl+Enter)" />
+      <div className="answer-prompt">
+        {prompt != null && (
+          <label>
+            <span>The prompt an agent gets. Change it if you like.</span>
+            <textarea aria-label="The prompt an agent gets" rows={8} value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={40000} />
+          </label>
+        )}
+        <button type="button" className="link-btn" disabled={!text.trim() || busy} onClick={showPrompt}>
+          {prompt == null ? 'See the prompt' : 'Build it again'}
+        </button>
+      </div>
+      <div className="answer-actions">
+        <span className="note-keys">⌘/Ctrl+Enter</span>
+        <button type="button" className="link-btn" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="submit" disabled={!text.trim() || busy} aria-disabled={!text.trim() || busy}>
+          Answer
+        </button>
+      </div>
+    </form>
   );
 }

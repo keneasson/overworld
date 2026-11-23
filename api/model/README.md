@@ -18,6 +18,7 @@ model.
 | Flag    | `APP`          | `FLAG#<name>` |          |             |
 | Changeset | `PROJECT#<id>` | `CHANGESET#<changesetId>` | | |
 | Comment | `PROJECT#<id>` | `COMMENT#<itemKey>#<commentId>` | | |
+| Question | `PROJECT#<id>` | `ASK#<itemKey>#<questionId>` | | |
 | Inbox | `PROJECT#<id>` | `INBOX#<commentId>` | | |
 | Sync job | `PROJECT#<id>` | `JOB#<savedAt>#<itemKey>` | | |
 | Sync lease | `PROJECT#<id>` | `LEASE#sync` | | |
@@ -78,6 +79,8 @@ agents' tokens first. The token itself is never stored.
 | Every comment in a project, by item then time | `comments.list(projectId)` | Query `begins_with(SK, COMMENT#)` |
 | One item's comment thread | `comments.list(projectId, itemKey)` | Query `begins_with(SK, COMMENT#<itemKey>#)` |
 | Add, answer, resolve or delete a comment | `comments.get` / `put` / `delete` | GetItem, PutItem, DeleteItem |
+| Who asked and answered a project's open questions (the notes, next work, a standup), or one item's | `questions.list(projectId[, itemKey])` | Query `begins_with(SK, ASK#[<itemKey>#])` |
+| Ask, answer, hand over or apply one | `questions.get` / `put` | GetItem, PutItem |
 | What is addressed to agents (`@Claude`), on every agent call | `inbox.list(projectId)` | Query `begins_with(SK, INBOX#)` |
 | Address an annotation to agents, hand it to one, or clear it once one replies | `inbox.put` / `delete` | PutItem, DeleteItem |
 | Has a one-off thing happened? | `flags.has(name)`, `flags.set(name)` | GetItem, PutItem |

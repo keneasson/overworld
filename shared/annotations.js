@@ -14,11 +14,8 @@ const CONTEXT = 32; // characters kept on each side of a quote, to tell repeated
 /** What an anchor is on. Comments from before annotations (#5) name only a section or a behaviour. */
 export const onOf = (a = {}) => (ANCHOR_ON.includes(a.on) ? a.on : a.behaviour ? 'behaviour' : 'section');
 
-/**
- * Is this thread a question, for answering it (#68)? One on the item's Open questions section is: that is where an
- * agent's ask() puts it, and where a person asks one. A stored `kind` from before is kept but means nothing.
- */
-export const isQuestion = (c) => !c.replyTo && c.anchor?.section === 'Open questions';
+// A comment is never an open question, wherever it is anchored, Open questions included (NOTE-22): a question is a line in
+// its item's Open questions section (shared/questions.js). A stored `kind` or `answer` from before is kept but means nothing.
 
 /** Is this thread dismissed into the conversation log (NOTE-05)? Comments cleared before dismissing existed count as dismissed. */
 export const isDismissed = (c) => Boolean(c?.dismissed || c?.resolved);
@@ -129,13 +126,6 @@ export function threadsOf(comments) {
 export const isOpen = (c) => !c.replyTo && !isDismissed(c);
 
 /**
- * Is a reply from `by` the answer to this thread's question (ANSWER-01)? A person's reply to an open question is, when
- * someone else asked it (an agent, through ask()) or it is addressed to an agent; the asker talking in their own thread is
- * not. Once its answer is applied, replies are just replies.
- */
-export const answers = (root, by) => isQuestion(root) && isOpen(root) && !root.answer?.appliedAt && (root.author !== by || toAgent(root));
-
-/**
  * Who has read a thread since its last word (NOTE-03): its author, then whoever opened it. A reply makes it unread again
  * for everyone but whoever wrote the reply. Reading never moves a comment anywhere.
  */
@@ -154,19 +144,9 @@ export function notesByItem(comments) {
     const it = out[c.itemKey];
     if (!it) out[c.itemKey] = { count: 1, read: [...readersOf(c)] };
     else (it.count += 1), (it.read = it.read.filter((n) => readersOf(c).includes(n)));
-    // Questions waiting on someone (#62 REVIEW-02): asked and not answered yet, or answered and not yet written in.
-    const waits = questionWaits(c);
-    if (!waits) continue;
-    const at = waits === 'asked' ? c.createdAt : c.answer.at;
-    const here = out[c.itemKey];
-    here[waits] = (here[waits] ?? 0) + 1;
-    if (at && (!here.since || at < here.since)) here.since = at;
   }
   return out;
 }
-
-/** What an open question waits for: 'asked' (its answer), 'answered' (being written into the spec), or nothing. */
-export const questionWaits = (c) => (!isQuestion(c) || isDismissed(c) || c.answer?.appliedAt ? null : c.answer ? 'answered' : 'asked');
 
 /** Who a comment mentions (NOTE-14): each @name once, in order. */
 export const mentionsOf = (text = '') => [...new Set([...String(text).matchAll(/(?:^|[^\w@])@([A-Za-z][\w.-]*)/g)].map((m) => m[1].replace(/[.-]+$/, '')))];

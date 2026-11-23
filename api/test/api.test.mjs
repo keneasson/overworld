@@ -621,14 +621,16 @@ test('REVIEW-02 each proposed change says when it was proposed, and the notes sa
   const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
   const { changeset } = (await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('a token.', 'a token, kept.') })).body;
   assert.ok(Date.parse(changeset.items[0].at) >= Date.parse(cs.createdAt), 'waiting since it was proposed');
-  const ask = async (text) => (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, text, author: 'Builder (a1)' })).body.comment;
-  const asked = await ask('Which provider?');
+  const ask = async (text) => (await call('POST', `/api/projects/${pid}/questions`, { itemKey: 'issue-4', text, author: 'Builder (a1)' })).body.question;
+  const first = new Date().toISOString();
+  await ask('Which provider?');
   const answered = await ask('Which vault?');
-  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Open questions' }, replyTo: answered.id, text: 'Our own.', author: 'Ken' });
+  await call('POST', `/api/projects/${pid}/questions/issue-4/${answered.id}/answer`, { text: 'Our own.', by: 'Ken' });
   await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { on: 'section', section: 'Why' }, text: 'Nice.', author: 'Ken' });
-  const notes = (await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'];
-  assert.deepEqual([notes.count, notes.asked, notes.answered], [3, 1, 1], 'one waiting on its answer, one on being written in; a plain comment waits on nobody');
-  assert.equal(notes.since, asked.createdAt, 'waiting since the oldest of them');
+  const { open, questions } = (await call('GET', `/api/projects/${pid}/notes`)).body;
+  assert.equal(open['issue-4'].count, 1, 'a plain comment waits on nobody');
+  assert.deepEqual([questions['issue-4'].asked, questions['issue-4'].answered], [1, 1], 'one waiting on its answer, one on being written in');
+  assert.ok(questions['issue-4'].since >= first && questions['issue-4'].since <= (await call('GET', `/api/projects/${pid}`)).body.nodes.find((n) => n.title.startsWith('#4 ')).updatedAt, 'waiting since the oldest of them was asked');
 });
 
 test('NEW-06 a new item dropped before adoption, or in a discarded refinement, is gone and never reaches GitHub', async () => {
