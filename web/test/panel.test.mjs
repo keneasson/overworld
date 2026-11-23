@@ -138,8 +138,8 @@ test('ADOPT-17 ADOPT-18 a refinement shows only what it changed: a behaviour as 
     { kind: 'same', text: ' because' },
   ]);
   const { changeSummary } = await import('@shared/word-diff.js');
-  const asked = '- Which vault? It matters.\n  Two sentences here.\n- How long? Two hours.\n- Who pays?';
-  assert.equal(changeSummary({ name: 'Open questions', change: 'changed', before: asked, after: '- How long? Two hours.' }), '2 questions removed', 'a list counts its items');
+  const asked = '- Which vault? It matters.\n  Two sentences here.\n- How long? Two hours.\nAnswer: two. It is decided.\n- Who pays?';
+  assert.equal(changeSummary({ name: 'Open questions', change: 'changed', before: asked, after: '- How long? Two hours.\nAnswer: two. It is decided.' }), '2 questions removed', 'a list counts its items');
   assert.equal(changeSummary({ name: 'Acceptance', change: 'changed', before: '- It holds.', after: '- It holds firm.\n- It ships.' }), '1 item reworded, 1 added');
   assert.equal(changeSummary({ name: 'Open questions', change: 'changed', before: asked, after: 'None' }), 'emptied');
   assert.equal(changeSummary({ name: 'Why', change: 'changed', before: 'Agents collide.\n\n- One point.', after: 'Agents collide.\n\n- One point.\n\nA new paragraph.' }), '1 sentence added', 'prose with a few points in it is read by sentence');
