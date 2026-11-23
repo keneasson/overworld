@@ -353,6 +353,10 @@ button {
   box-shadow: var(--shadow);
   overflow: hidden;
 }
+/* A pinch in the panel never zooms the page, so the map under it stays where it is (EDIT-23); scrolling still scrolls. */
+.panel {
+  touch-action: pan-x pan-y;
+}
 .panel-scroll {
   flex: 1;
   overflow: auto;
@@ -2019,6 +2023,55 @@ button.danger.armed {
 .selection-menu .icon-btn.on {
   background: var(--accent-soft);
   color: var(--accent);
+}
+/* A missing section's place in the document (EDIT-07): quiet, and pressing it adds the section there. */
+.issue-doc-text .section-gap {
+  display: block;
+  margin: 10px 0 4px;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: 600 0.85em var(--font);
+  cursor: pointer;
+}
+.issue-doc-text .section-gap:hover,
+.issue-doc-text .section-gap:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* The right-click menu of missing sections (EDIT-25). */
+.section-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
+}
+.section-menu-head {
+  margin: 2px 8px 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.section-menu button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+}
+.section-menu button:hover,
+.section-menu button:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: none;
 }
 .thread-pop {
   position: absolute;

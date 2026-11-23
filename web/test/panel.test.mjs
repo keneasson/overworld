@@ -1,0 +1,129 @@
+// The panel beside the map, where an item is read and edited (#41).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createElement as h } from 'react';
+import { prerender } from 'react-dom/static';
+import { buildTree } from '../src/model/tree.js';
+import { LENSES } from '../src/map/lenses.js';
+import { afterHandle, fitWidth, keepMapStill, PANEL_MIN, readWidth, rememberWidth, sheetAfter } from '../src/model/panel.js';
+
+const url = (n) => `https://github.com/o/r/issues/${n}`;
+const tree = buildTree([
+  { id: 'root', kind: 'project', title: 'o/r', url: 'https://github.com/o/r' },
+  { id: 'e', parentId: 'root', kind: 'epic', title: '#12 Walk the map', url: url(12), status: 'ready' },
+  { id: 't', parentId: 'e', kind: 'task', title: '#13 Follow a link', url: url(13), status: 'ready' },
+  { id: 'n', parentId: 'e', kind: 'task', title: 'New task', status: 'idea', refinement: 'cs1' },
+]);
+const key = (n) => `issue-${n}`;
+const editing = (more = {}) => ({
+  others: [],
+  changeset: { id: 'cs1', items: [] },
+  drafts: new Map(),
+  generation: 0,
+  conflicts: new Set(),
+  edited: [],
+  unsaved: [],
+  saving: false,
+  onItsWay: 0,
+  busy: false,
+  name: 'Ken',
+  splitOf: () => null,
+  ...more,
+});
+
+/** The panel as it opens on `id`, once the document editor has loaded. */
+async function panel(id, ed = editing()) {
+  const { Details } = await import('../src/components/Panel.jsx');
+  const noop = () => {};
+  const { prelude } = await prerender(
+    h(Details, { node: tree.byId.get(id), tree, lens: LENSES[0], editing: ed, onPick: noop, onFly: noop, onAdd: noop, onPatch: noop, onDelete: noop, onClose: noop, onCopyLink: noop }),
+  );
+  let html = '';
+  for await (const chunk of prelude) html += Buffer.from(chunk).toString();
+  return html;
+}
+const titleRow = (html) => /<div class="title-row">([\s\S]*?)<\/div>/.exec(html)[1];
+
+test('EDIT-09 EDIT-11 an item open in the panel is edited right there: its text is the document, its properties change in place', async () => {
+  const html = await panel('t');
+  const doc = /<div class="doc">([\s\S]*?)<section>/.exec(html)[1];
+  assert.match(doc, /<textarea class="issue-doc-title"[^>]*>Follow a link<\/textarea>/, 'the panel holds the editor, open on the item');
+  assert.doesNotMatch(doc, /readOnly|readonly/);
+  assert.doesNotMatch(html, />\s*Edit\s*</, 'no separate edit screen to go to');
+  for (const name of ['Kind', 'Status', 'Priority']) assert.match(html, new RegExp(`<label for="[^"]+">${name}</label><select`), `${name} is changed where it is`);
+  assert.match(html, /More properties/, 'place and the rest, one click away in the same panel');
+  assert.match(html, /aria-label="Connect to"/, 'links too');
+});
+
+test('EDIT-13 the panel holds one item, and an edit not yet saved is still there when it is picked again', async () => {
+  const ed = editing({ drafts: new Map([[key(13), { title: 'Follow a link, and back', markdown: '' }]]) });
+  const first = await panel('t', ed);
+  assert.equal(first.match(/class="issue-doc-title"/g).length, 1, 'one item, never several side by side');
+  const other = await panel('e', ed);
+  assert.match(other, />Walk the map<\/textarea>/, 'picking another replaces it');
+  assert.match(await panel('t', ed), />Follow a link, and back<\/textarea>/, 'the edit waited in the changeset');
+});
+
+test('EDIT-21 the title comes after one line of where it is and its state, each fact once, and the changeset is one quiet line', async () => {
+  const ready = titleRow(await panel('t'));
+  assert.equal(ready.match(/Ready/g).length, 2, 'its status once (its dot\'s title and its word)');
+  assert.doesNotMatch(ready, /On target|Not started|At risk/, 'a leaf not started has no health beside its status');
+  const fresh = titleRow(await panel('n'));
+  assert.match(fresh, />New</);
+  assert.doesNotMatch(fresh, /status-text|Idea/, 'a new item is just new');
+  const html = await panel('t', editing({ edited: [{ key: key(13) }] }));
+  const bars = html.match(/<div class="edit-bar"/g) ?? [];
+  assert.equal(bars.length, 1);
+  assert.ok(html.indexOf('class="edit-bar"') > html.indexOf('class="issue-doc-title"'), 'under the text');
+  assert.match(html, /1 edited/);
+});
+
+test('EDIT-10 the expand handle widens the panel and collapses it back, drags to any width with the map still beside it, and is remembered', () => {
+  const viewport = 1440;
+  const wide = afterHandle({ startW: PANEL_MIN, dx: 0, moved: false }, viewport);
+  assert.ok(wide > PANEL_MIN + 200, 'a click widens it');
+  assert.equal(afterHandle({ startW: wide, dx: 0, moved: false }, viewport), PANEL_MIN, 'and collapses it back');
+  assert.equal(afterHandle({ startW: PANEL_MIN, dx: 150, moved: true }, viewport), PANEL_MIN + 150, 'dragged, it is as wide as it was dragged');
+  assert.ok(afterHandle({ startW: PANEL_MIN, dx: 5000, moved: true }, viewport) < viewport - 200, 'the map is still beside it');
+  assert.equal(fitWidth(100, viewport), PANEL_MIN);
+  const kept = new Map();
+  const store = { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => kept.set(k, v) };
+  assert.equal(readWidth(store, viewport), PANEL_MIN, 'narrow until widened');
+  rememberWidth(store, 700);
+  assert.equal(readWidth(store, viewport), 700, 'it remembers');
+  assert.equal(readWidth(store, 800), fitWidth(700, 800), 'in a smaller window, still with the map beside it');
+  const blocked = { getItem: () => { throw new Error('private'); }, setItem: () => { throw new Error('private'); } };
+  rememberWidth(blocked, 700);
+  assert.equal(readWidth(blocked, viewport), PANEL_MIN, 'a private window still has a panel');
+});
+
+test('EDIT-12 on a phone the sheet pulls up to fill the screen and down to see the map', () => {
+  assert.equal(sheetAfter(-120, false), true, 'pulled up');
+  assert.equal(sheetAfter(140, true), false, 'pulled down');
+  assert.equal(sheetAfter(-2, false), true, 'a tap on the handle switches');
+  assert.equal(sheetAfter(3, true), false);
+});
+
+test('EDIT-23 scrolling or pinching inside the panel never reaches the map', () => {
+  const app = new EventTarget();
+  const panelEl = new EventTarget();
+  const reached = [];
+  for (const type of ['wheel', 'touchmove']) app.addEventListener(type, () => reached.push(type));
+  // The panel sits in the app; events on it go on to the app, as they would in the page.
+  const send = (type, props) => {
+    const e = Object.assign(new Event(type, { cancelable: true }), props);
+    panelEl.dispatchEvent(e);
+    if (!e.cancelBubble) app.dispatchEvent(e);
+    return e;
+  };
+  const undo = keepMapStill(panelEl);
+  assert.equal(send('wheel', { ctrlKey: false }).defaultPrevented, false, 'a scroll scrolls the panel');
+  assert.equal(send('wheel', { ctrlKey: true }).defaultPrevented, true, 'a trackpad pinch zooms nothing');
+  assert.equal(send('touchmove', { touches: [{}, {}] }).defaultPrevented, true, 'nor a two-finger pinch');
+  assert.equal(send('touchmove', { touches: [{}] }).defaultPrevented, false, 'one finger scrolls');
+  assert.equal(send('gesturestart', {}).defaultPrevented, true);
+  assert.deepEqual(reached, [], 'the map never hears them');
+  undo();
+  send('wheel', { ctrlKey: true });
+  assert.deepEqual(reached, ['wheel']);
+});
