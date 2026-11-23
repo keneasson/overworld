@@ -127,3 +127,33 @@ test('EDIT-23 scrolling or pinching inside the panel never reaches the map', () 
   send('wheel', { ctrlKey: true });
   assert.deepEqual(reached, ['wheel']);
 });
+
+test('ADOPT-17 ADOPT-18 a refinement shows only what it changed: a behaviour as one text with its edits in place, and other changes as a line each', async () => {
+  const { Details } = await import('../src/components/Panel.jsx');
+  const { wordDiff } = await import('@shared/word-diff.js');
+  assert.deepEqual(wordDiff('then it shows as Fog, because', 'then it shows as #22 STRAY-01 says, because'), [
+    { kind: 'same', text: 'then it shows as ' },
+    { kind: 'del', text: 'Fog,' },
+    { kind: 'ins', text: '#22 STRAY-01 says,' },
+    { kind: 'same', text: ' because' },
+  ]);
+  const why = Array.from({ length: 40 }, (_, i) => `Word${i}`).join(' ');
+  const base = { title: 'Proof', markdown: `Part of #1\n\n## Why\n\n${why}.\n\n## Behaviours\n\n- PR-01 Given a test, when it runs, then it shows as Fog, because nobody knows.\n\n## Open questions\n\nNone\n` };
+  const after = { title: 'Proof', markdown: base.markdown.replace('as Fog,', 'as #22 STRAY-01 says,').replace('Word20', 'Twenty') };
+  const t = buildTree([
+    { id: 'root', kind: 'project', title: 'o/r', url: 'https://github.com/o/r' },
+    // Since it was proposed, the item gained an Acceptance section: not the refinement's change.
+    { id: 'p', parentId: 'root', kind: 'task', title: '#20 Proof', url: url(20), status: 'ready', body: base.markdown.replace('## Open questions', '## Acceptance\n\nIt holds.\n\n## Open questions') },
+  ]);
+  const cs = { id: 'cs9', author: 'Builder (a1)', status: 'open', updatedAt: new Date().toISOString(), items: [{ key: key(20), base, after }] };
+  const noop = () => {};
+  const { prelude } = await prerender(h(Details, { node: t.byId.get('p'), tree: t, lens: LENSES[0], editing: editing({ others: [cs] }), onPick: noop, onFly: noop, onAdd: noop, onPatch: noop, onDelete: noop, onClose: noop, onCopyLink: noop }));
+  let html = '';
+  for await (const chunk of prelude) html += Buffer.from(chunk).toString();
+  const review = /<section class="refinement"[\s\S]*?<\/section>/.exec(html)[0];
+  assert.match(review, /then it shows as <del class="diff-del">Fog,<\/del><ins class="diff-ins">#22 STRAY-01 says,<\/ins> because/, 'one text, its edits in place');
+  assert.doesNotMatch(review, /class="change-before"/, 'never the old block above the new');
+  assert.match(review, /<summary><span class="change-label">Why<\/span>: <!-- -->1 sentence reworded/, 'a line for what changed in the Why');
+  assert.doesNotMatch(review, /It holds|Acceptance/, "an edit made since isn't the refinement's");
+  assert.match(review, /diff-fold/, 'a long section folds what it left alone');
+});

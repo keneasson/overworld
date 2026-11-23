@@ -625,11 +625,44 @@ button {
   margin: 6px 0 2px;
   color: var(--muted);
 }
-.change-other > .changes {
-  margin: 4px 0 0;
+/* A change as one text, its edits in place (ADOPT-18). */
+.change-after del.diff-del {
+  color: var(--danger);
+  text-decoration: line-through;
+  background: rgb(217 48 37 / 0.08);
+  border-radius: 2px;
 }
-.change-other > .changes .change {
-  padding: 2px 0 2px 20px;
+.change-after ins.diff-ins {
+  text-decoration: none;
+  background: rgb(30 142 62 / 0.16);
+  box-shadow: 0 1px 0 rgb(30 142 62 / 0.6);
+  border-radius: 2px;
+}
+.diff-fold {
+  padding: 0 4px;
+  font-weight: 700;
+}
+.change-summary {
+  margin: 4px 0 0;
+  padding: 0 0 0 20px;
+  list-style: none;
+}
+.section-change {
+  margin: 2px 0;
+}
+.section-change summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.section-change summary .change-label {
+  color: var(--text);
+}
+.section-change .change-after {
+  margin: 4px 0 6px;
+  padding-left: 14px;
+}
+.pill-conflict {
+  background: var(--danger);
 }
 .pill-ready {
   background: #1e8e3e;

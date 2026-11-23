@@ -33,7 +33,7 @@ export function waitingForReview({ changesets = [], notes = {}, tree }) {
       const node = byKey.get(it.key);
       if (!node || (!it.new && !it.after)) continue;
       const e = entryOf(node);
-      const diff = it.new ? compareItems(BLANK, editableOf(node)) : compareItems(editableOf(node), it.after);
+      const diff = it.new ? compareItems(BLANK, editableOf(node)) : compareItems(editableOf(node), it.after, it.base);
       for (const b of diff.behaviours) add(e[b.change], b.id);
       for (const id of it.readyForAdoption ?? []) add(e.ready, id);
       add(e.by, cs.author);

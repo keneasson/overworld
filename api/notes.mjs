@@ -57,7 +57,7 @@ export function notePrompt({ nodes, comments, note, refinement = null, photo = n
 function proposedWords(refinement, node, behaviour) {
   const item = refinement.items.find((it) => it.key === itemKeyOf(node));
   if (!item?.after) return ['', 'That change is no longer in the refinement: it has been adopted or declined.'];
-  const change = compareItems(editableOf(node), item.after).behaviours.find((b) => b.key === behaviour);
+  const change = compareItems(editableOf(node), item.after, item.base).behaviours.find((b) => b.key === behaviour);
   if (!change) return behaviour === OTHER_CHANGES ? [] : ['', `Your refinement no longer changes ${behaviour}.`];
   return ['', `Your refinement ${change.change === 'added' ? 'adds' : change.change === 'removed' ? 'removes' : 'changes'} it:`, ...(change.before ? ['The spec says:', quote(change.before)] : []), ...(change.after ? ['You propose:', quote(change.after)] : [])];
 }
