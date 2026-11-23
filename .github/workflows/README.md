@@ -142,8 +142,8 @@ Choosing **Build** in Overworld records a build request and sends this repositor
 (so the map shows the bulldozer), runs the coding agent on the request's prompt on a branch of its
 own, runs `npm test`, and opens a pull request that goes through CI and review like anyone's. If it
 can't finish, it releases the claim with a note saying why (and asks the agent's question on the item),
-so the card says what happened. A pull request keeps the claim: it is released once the work is merged
-and deployed, by hand for now. If an agent session takes the request first, the runner finds it gone and
+so the card says what happened. A pull request keeps the claim, and the card says which agent built it (and why, when
+one stood in for the project's own); the claim is released for it when the Production deploy that carries it succeeds. If an agent session takes the request first, the runner finds it gone and
 stops without doing anything.
 
 It never pushes to main: the agent's step has no GitHub credentials, and the only push is to

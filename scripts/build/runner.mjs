@@ -159,7 +159,8 @@ export function decide({ commits, testsPass, blocked }) {
 
 /**
  * When the run ends. A pull request is named on the claim, which then holds through review and merge until the deploy that
- * carries it succeeds (HANDOFF-11): the work isn't done until people can use it. A run that stopped releases it with a note saying why and where the unfinished work is
+ * carries it succeeds (HANDOFF-11): the work isn't done until people can use it. It says which agent built it, so the card
+ * says when one stood in for the project's own (HANDOFF-08). A run that stopped releases it with a note saying why and where the unfinished work is
  * (HANDOFF-09, MCP-09), so nothing is left claimed and idle; what the agent couldn't settle also goes on the item as a
  * question (MCP-05), for a person to answer there.
  */
@@ -170,7 +171,7 @@ export async function finish({ mcp, item, behaviours, pr, why, branch, pushed, b
     if (r?.refused) throw new Error(`Overworld refused ${name}: ${r.refused}`);
     return r;
   };
-  if (pr) return sure('claim', { behaviours, pull_request: Number(String(pr).match(/(\d+)\/?$/)?.[1]), request_key: key('pull') });
+  if (pr) return sure('claim', { behaviours, pull_request: Number(String(pr).match(/(\d+)\/?$/)?.[1]), ...(used ? { built_with: used } : {}), request_key: key('pull') });
   if (blocked?.trim()) await sure('ask', { place: item, question: `The runner couldn't finish ${behaviours.join(', ')}: ${blocked.trim()}`, request_key: key('ask') });
   const note = `The runner stopped on ${behaviours.join(', ')}${used ? `, built with ${used}` : ''}: ${why}${pushed ? ` The unfinished work is on the branch ${branch}.` : ''}${runUrl ? ` Its run: ${runUrl}` : ''}`;
   return sure('handoff', { behaviours, note, request_key: key('handoff') });

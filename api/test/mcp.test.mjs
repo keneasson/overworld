@@ -799,14 +799,17 @@ test('HANDOFF-07 HANDOFF-09 Build starts the project\'s runner, or says why it c
   assert.deepEqual(after.buildable['issue-11'], ['CL-01', 'CL-02'], 'nothing is left claimed and idle: it can be built again');
 });
 
-test('HANDOFF-11 HANDOFF-04 a claim whose pull request opened holds through review and merge, ends only when the deploy carrying it succeeds, and a closed pull request or a failed deploy leaves it with its builder, saying so', async () => {
+test('HANDOFF-11 HANDOFF-04 HANDOFF-08 a claim whose pull request opened holds through review and merge, ends only when the deploy carrying it succeeds, and a closed pull request or a failed deploy leaves it with its builder, saying so; it says which agent built it', async () => {
   const { rest, pid, agent, clock, model, deliver } = await setup({ webhooks: true });
   await model.links.link(githubKey('octo/app'), pid);
   const a = await agent('Builder');
   const b = await agent('Reviewer');
   const claims = async () => (await rest('GET', `/api/projects/${pid}/claims`)).claims.map((c) => [c.behaviour, c.owner === a.id, c.pr?.number, c.pr?.state, c.pr?.deploy?.state]);
   await a.use('claim', { behaviours: ['CL-01', 'CL-02'] });
-  assert.equal((await a.use('claim', { behaviours: ['CL-01', 'CL-02'], pull_request: 12 })).pull_request, 12);
+  const standIn = 'aider (anthropic/claude-sonnet-5-5), chosen by falling back from claude-code: claude-code couldn\'t be installed';
+  assert.equal((await a.use('claim', { behaviours: ['CL-01', 'CL-02'], pull_request: 12, built_with: standIn })).pull_request, 12);
+  assert.deepEqual((await rest('GET', `/api/projects/${pid}/claims`)).claims.filter((c) => c.pr?.number === 12).map((c) => c.pr.builtWith), [standIn, standIn], 'the card can say an agent stood in for the project\'s own');
+  assert.match((await a.refused('claim', { behaviours: ['CL-01'], built_with: 'aider' })).error, /built_with: name the pull_request/);
   await a.use('claim', { behaviours: ['ZOOM-01'], pull_request: 13 });
 
   clock.now += 24 * 3_600_000;
