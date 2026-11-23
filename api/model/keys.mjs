@@ -26,6 +26,7 @@
 //   Request   PROJECT#<id>    KEY#<agentId>#<requestKey>  a change's result, kept a day for repeats (MCP-12)
 //   Limit     PROJECT#<id>    LIMIT#<agentId>#<minute>    an agent's calls this minute (MCP-13)
 //   Finding   PROJECT#<id>    COHERE#<pairKey>   two behaviours close in meaning, the model that found them, and a judgement (#36 COHERE-04)
+//   Coverage  PROJECT#<id>    COVERAGE           the latest coverage report from CI, compressed (#20 COVER-03)
 //
 // A project and its nodes share a partition (an item collection): one query reads a
 // whole map, and one query finds everything to delete. The map's entities sort last: every prefix in a
@@ -87,6 +88,7 @@ export const keys = {
   actionsOf: (projectId, agentId) => ({ index: 'GSI1', pk: `ACTIONS#${projectId}#${agentId}` }),
   request: (projectId, agentId, requestKey) => ({ PK: projectPartition(projectId), SK: `KEY#${agentId}#${requestKey}` }),
   limit: (projectId, agentId, minute) => ({ PK: projectPartition(projectId), SK: `LIMIT#${agentId}#${minute}` }),
+  coverage: (projectId) => ({ PK: projectPartition(projectId), SK: 'COVERAGE' }),
   clientError: ({ at, id }) => ({ PK: 'ERRORS', SK: `ERROR#${at}#${id}` }),
   clientErrorsSince: (at) => ({ pk: 'ERRORS', skFrom: `ERROR#${at}`, skTo: 'ERROR#~' }),
   question: (projectId, { itemKey, id }) => ({ PK: projectPartition(projectId), SK: `ASK#${itemKey}#${id}` }),

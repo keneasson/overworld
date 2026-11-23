@@ -19,6 +19,7 @@ concurrency:
 jobs:
   test:
     uses: ./.github/workflows/ci.yml
+    secrets: inherit # the agent token its coverage report is saved with (#20 COVER-03)
 
   deploy:
     needs: test

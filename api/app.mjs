@@ -1180,6 +1180,23 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       { status: 201, people: true },
     ],
 
+    // Coverage per behaviour (#20 COVER-03): CI saves its latest report with the project's agent token, over the last one;
+    // the map reads it for the proof layer (#21).
+    [
+      'PUT',
+      /^\/api\/coverage$/,
+      async ({ headers, body }) => {
+        const who = await agents.authenticate(String(headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
+        if (!who) throw new HttpError(401, 'An agent token is required, as "Authorization: Bearer <token>"');
+        const report = coverageReport(body);
+        await model.coverage.put(who.projectId, report, new Date(clock()).toISOString());
+        return { saved: report.commit, behaviours: Object.keys(report.behaviours).length };
+      },
+      { public: true },
+    ],
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/coverage$/, async ({ params: [pid] }) => ({ coverage: await model.coverage.get(pid) })],
+
     ['GET', /^\/api\/projects\/([\w-]+)\/facts$/, async ({ params: [pid] }) => ({ facts: await model.facts.list(pid) })],
 
     [
@@ -1201,6 +1218,26 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       },
     ],
   ];
+
+  /** A coverage report as scripts/coverage.mjs writes it, checked before it is kept. */
+  function coverageReport(body) {
+    const bad = (why) => {
+      throw new ValidationError(`coverage report: ${why}`);
+    };
+    if (!body || typeof body !== 'object') bad('expected a JSON object');
+    const { commit, coverage, behaviours } = body;
+    if (!/^[0-9a-f]{7,40}$/.test(String(commit ?? ''))) bad('commit: expected a git commit hash');
+    if (!['behaviour', 'file'].includes(coverage)) bad('coverage: expected "behaviour" or "file"');
+    if (!behaviours || typeof behaviours !== 'object' || Array.isArray(behaviours)) bad('behaviours: expected an object by behaviour ID');
+    const ids = Object.keys(behaviours);
+    if (ids.length > 5000) bad('behaviours: at most 5000');
+    for (const id of ids) {
+      const b = behaviours[id];
+      if (!/^[A-Z][A-Z0-9]*-\d+$/.test(id) || typeof b?.passed !== 'boolean' || !Array.isArray(b.tests) || !b.files || typeof b.files !== 'object') bad(`${id}: expected { passed, tests, files }`);
+    }
+    if (JSON.stringify(body).length > 4_000_000) bad('at most 4 MB');
+    return { commit, coverage, behaviours };
+  }
 
   // The MCP server signs agents in with their own tokens, and reaches the routes above as a trusted caller.
   const mcp = createMcp({ model, agents, log, call: (method, path, body) => handle({ method, path, body, trusted: true }) });

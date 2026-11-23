@@ -37,6 +37,7 @@ model.
 | Request key | `PROJECT#<id>` | `KEY#<agentId>#<requestKey>` | | |
 | Call count | `PROJECT#<id>` | `LIMIT#<agentId>#<minute>` | | |
 | Coherence finding | `PROJECT#<id>` | `COHERE#<pairKey>` | | |
+| Coverage report | `PROJECT#<id>` | `COVERAGE` | | |
 
 A project and its nodes share a partition, and sort last in it (`NODE#…`, then `PROJECT`), so one
 query reads a whole map and nothing else. A new entity in the partition must sort before `NODE#`. Changesets and
@@ -118,6 +119,7 @@ agents' tokens first. The token itself is never stored.
 | A change's request key: start, read, finish, forget | `requests.start` / `get` / `finish` / `forget` | Conditional PutItem; GetItem; PutItem; DeleteItem |
 | Pairs of behaviours close in meaning, to judge or judged (#36 COHERE-04, COHERE-05) | `findings.list(projectId)` | Query `begins_with(SK, COHERE#)` |
 | One finding; record a check's pairs or a judgement | `findings.get(projectId, key)`, `findings.put(projectId, list)` | GetItem; batched puts |
+| The latest coverage report from CI, for the proof layer; save one over it (#20 COVER-03) | `coverage.get(projectId)`, `coverage.put(projectId, report, savedAt)` | GetItem; PutItem (gzipped, so it fits an item) |
 | Count an agent's call this minute | `limits.count(projectId, agentId, minute, limit)` | UpdateItem `ADD`, conditional on the limit |
 
 ## Adding a feature

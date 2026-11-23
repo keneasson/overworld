@@ -3,6 +3,7 @@ web/dist/
 .build/
 .aws-sam/
 .data/
+.coverage/
 # Secrets and machine-local settings: everything in .conf/ stays on this machine.
 .conf/
 .DS_Store

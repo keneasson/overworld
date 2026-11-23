@@ -6,7 +6,7 @@ to be seen running before it merges.
 
 | Workflow | When | What |
 |---|---|---|
-| `ci.yml` | every pull request, including forks | `npm test` and the build (SHIP-01) |
+| `ci.yml` | every pull request, including forks | `npm test` and the build (SHIP-01), with coverage per behaviour saved to Overworld (#20) |
 | `production.yml` | a push to main | the tests, then deploy, smoke test, and roll back to the last version that passed if the smoke test fails (SHIP-02, SHIP-03) |
 | `preview.yml` | a pull request labelled `preview`, from this repository | its own stack `projectmap-pr-<N>` with an empty table, one comment with the URL, torn down on close or unlabel (SHIP-04 to SHIP-07). Sync with GitHub is off in a preview (SHIP-11). |
 | `sweep.yml` | daily at 07:17 UTC, or by hand | tears down previews past their rules, and deletes deployment records nobody needs (SHIP-07, SHIP-08) |
@@ -27,7 +27,7 @@ facts from GitHub and AWS and acts on them.
 | Lambda logs | 3 days for previews, 14 for production | CloudWatch retention |
 | Lambda versions | none are published | nothing to clear |
 | Deployment records | previews' go once the preview is gone; production keeps its newest 20 | `sweep.yml` |
-| Actions artifacts | 3 days (none are uploaded today; a test enforces the limit) | GitHub |
+| Actions artifacts | 3 days at most (a test enforces it); the coverage report, CI's only one, is kept 1 day | GitHub |
 | Workflow run logs | 30 days | the repository setting below |
 | Actions cache | 7 days unused, 10 GB | GitHub |
 
@@ -134,6 +134,25 @@ aws s3api put-bucket-lifecycle-configuration --bucket "$b" --lifecycle-configura
   previous value.
 - Once CI deploys production, prefer it to `npm run deploy`. A local deploy still works, but it
   can race CI's deploy.
+
+## Coverage per behaviour (#20)
+
+`ci.yml` runs the tests as `npm run coverage` (`scripts/coverage.mjs`): the same command as `npm test`, measuring with
+V8 which files and lines each behaviour's tests reach, in the same run. It writes `.coverage/report.json` (each behaviour
+ID, its tests, pass or fail, and what they reached, marked with the commit). Its `coverage` job then saves it to
+Overworld, over the one before, even when a test failed: only the latest report is kept, for the proof layer (#21). Running it
+locally on the same commit gives the same report (COVER-02); random ids are made in order while it measures, so each
+test takes the same path every time. `--by file` measures per test file instead, if per test ever gets too slow (COVER-04);
+the report then says `"coverage": "file"`.
+
+Saving uses the runner's `OVERWORLD_AGENT_TOKEN` secret and the `OVERWORLD_URL` variable (step 6 above): the token
+says which project the report is for. The job never runs for a fork (SHIP-05), and without them it says it didn't save
+and passes; the tests still decide CI. Production's run gets the secret through `secrets: inherit`. To set them for coverage alone:
+
+```sh
+gh secret set OVERWORLD_AGENT_TOKEN -R keneasson/overworld      # an agent token from Connect an agent in Overworld
+gh variable set OVERWORLD_URL -R keneasson/overworld --body https://overworld.kene.info
+```
 
 ## The runner (#14)
 

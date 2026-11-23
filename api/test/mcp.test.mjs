@@ -844,3 +844,21 @@ test('ANSWER-09 an answer on a finished item goes to an agent to reopen it or bu
   const prompt = answerPrompt({ nodes: [node], question: { id: 'q1', itemKey: 'issue-7', text: 'Should it remember me?' }, answer: 'Yes, for 30 days.', answeredBy: 'Ken' });
   for (const part of [/not edited in place/, /Reopen it/, /Building on Login \(#7\)/, /new behaviour IDs/, /answers: \["q1"\]/]) assert.match(prompt, part);
 });
+
+test('COVER-03 CI saves the coverage report, marked with its commit, with the project agent token; only the latest is kept', async () => {
+  const { api, rest, pid, agent } = await setup();
+  const ci = await agent('CI');
+  const put = (report, token = ci.token) => api({ method: 'PUT', path: '/api/coverage', body: report, headers: token ? { authorization: `Bearer ${token}` } : {} });
+  const report = (commit, passed) => ({ commit, coverage: 'behaviour', behaviours: { 'ZOOM-01': { passed, tests: [{ name: 'ZOOM-01 zooms', file: 'web/test/zoom.test.mjs', passed }], files: { 'web/zoom.js': '1-4,9' } } } });
+
+  assert.equal((await put(report('aaaaaaa', true), '')).status, 401, 'only with an agent token');
+  assert.equal((await put({ commit: 'nope', coverage: 'behaviour', behaviours: {} })).status, 400, 'a report must say which commit it is');
+  assert.equal((await put(report('aaaaaaa', true))).status, 200);
+  assert.equal((await put(report('bbbbbbb', false))).status, 200);
+
+  const { coverage } = await rest('GET', `/api/projects/${pid}/coverage`);
+  assert.equal(coverage.commit, 'bbbbbbb', 'the newer report replaced the older one');
+  assert.equal(coverage.behaviours['ZOOM-01'].passed, false);
+  assert.deepEqual(coverage.behaviours['ZOOM-01'].files, { 'web/zoom.js': '1-4,9' });
+  assert.ok(coverage.savedAt);
+});
