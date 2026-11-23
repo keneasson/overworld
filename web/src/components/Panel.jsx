@@ -426,6 +426,57 @@ function Refinement({ cs, item, node, editing, comments }) {
 }
 
 /**
+ * A new item in someone else's refinement (NEW-03), decided as a whole, its title and its behaviours (ADOPT-05): adopted,
+ * it joins the spec and waits for a save to reach GitHub (NEW-04); declined, it is dropped, with what is inside it, and
+ * never reaches GitHub (NEW-06). The rest of the refinement stays to decide (ADOPT-06).
+ */
+function NewItemReview({ cs, node, editing }) {
+  const [declining, setDeclining] = useState(false);
+  const [reason, setReason] = useState('');
+  const ids = useMemo(() => compareItems({ title: '', markdown: '' }, editableOf(node)).behaviours.map((b) => b.id).filter(Boolean), [node]);
+  // The spec takes a new item's parent first, when that is new too.
+  const waitsOn = node.parent?.refinement ? node.parent : null;
+  const inside = node.children.filter((c) => c.refinement).length;
+  const key = itemKeyOf(node);
+  return (
+    <section className="refinement" aria-label={`New item in a refinement by ${cs.author}`}>
+      <div className="refinement-head">
+        <Icon name="plus" size={16} />
+        <span>
+          New in a refinement by <strong>{cs.author}</strong> · {when(cs.updatedAt)}
+        </span>
+      </div>
+      <p className="refinement-note">
+        It isn’t in the spec until it is adopted. Adopt or Decline takes the whole {KIND_LABEL[node.kind]?.toLowerCase() ?? 'item'}: its title{ids.length ? ` and ${ids.join(', ')}` : ''}.
+      </p>
+      {waitsOn && <p className="empty-note">It is inside “{waitsOn.title}”, which is new too: adopt that first.</p>}
+      {declining ? (
+        <div className="refinement-decline">
+          <textarea aria-label="Why decline (optional)" placeholder="Why not? (optional: its author sees this)" value={reason} maxLength={2000} rows={2} onChange={(e) => setReason(e.target.value)} />
+          <div className="edit-actions">
+            <button type="button" onClick={() => setDeclining(false)} disabled={editing.busy}>
+              Keep it
+            </button>
+            <button type="button" className="armed" onClick={() => editing.decline(cs, key, reason)} disabled={editing.busy} title={inside ? `Drops it, and the ${inside} new item${inside === 1 ? '' : 's'} inside it` : 'Drops it: it never reaches GitHub'}>
+              Decline{inside ? ` with ${inside} inside` : ''}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="edit-actions">
+          <button type="button" onClick={() => setDeclining(true)} disabled={editing.busy}>
+            Decline…
+          </button>
+          <button type="button" className="primary" onClick={() => editing.adopt(cs, key)} disabled={editing.busy || Boolean(waitsOn)} title="Adopt it: it joins the spec, and waits for a save to reach GitHub">
+            <Icon name="check" size={16} /> Adopt
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
  * One item, open beside the map, and edited where it is (#41 EDIT-09): its text is the document editor, its
  * properties change in place (EDIT-11), and comments sit on what they are about. The panel only ever holds this
  * one item (EDIT-13); its edits wait in the project's changeset when another is picked.
@@ -568,6 +619,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
   // and on the behaviour in the text once the refinement has closed.
   const reviewing = new Set([...editing.others.map((cs) => cs.id), ...(editing.changeset ? [editing.changeset.id] : [])]);
   const proposals = editing.others.flatMap((cs) => cs.items.filter((it) => it.key === key && !it.new && it.after).map((it) => ({ cs, item: it })));
+  const madeIn = theirs ? editing.others.find((cs) => cs.id === node.refinement && cs.items.some((it) => it.key === key && it.new)) : null;
   // Every behaviour already written, drafts included, so a new behaviour's ID never collides.
   const texts = useMemo(() => (editable ? tree.list.map((n) => editing.drafts.get(itemKeyOf(n))?.markdown ?? n.body ?? '') : []), [editable, tree, editing.drafts]);
   const readOnly = (
@@ -613,7 +665,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
         {s.vague && <span className="pill pill-fog">Poorly defined</span>}
         {node.refinement && (
-          <span className="pill pill-new" title={theirs ? 'New in someone else’s refinement: it changes there until it is adopted.' : 'New in your refinement: Accept adopts it, Discard drops it.'}>
+          <span className="pill pill-new" title={theirs ? 'New in someone else’s refinement: adopt or decline it below.' : 'New in your refinement: Accept adopts it, Discard drops it.'}>
             New
           </span>
         )}
@@ -665,6 +717,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       </div>
 
       {review && <NextReview node={node} review={review} onNext={onNextReview} />}
+      {madeIn && <NewItemReview key={madeIn.id} cs={madeIn} node={node} editing={editing} />}
       {proposals.map(({ cs, item }) => (
         <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} comments={comments.filter((c) => c.itemKey === key)} />
       ))}

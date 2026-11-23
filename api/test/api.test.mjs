@@ -502,6 +502,48 @@ test('ADOPT-05 a person declines an item of a refinement: it is dropped, the spe
   assert.deepEqual(await map(), before);
 });
 
+test("ADOPT-05 ADOPT-06 NEW-06 a person adopts or declines a new item of someone else's refinement on its own, a new item's parent first", async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const epic = await newItem(call, pid, cs.id, node(1).id, 'epic', { title: 'Epic: Refunds' });
+  const inside = await newItem(call, pid, cs.id, epic.id, 'task', { title: 'Refund to the card' });
+  // A split: a new task takes a behaviour out of #4, whose change is in the same refinement.
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const split = await newItem(call, pid, cs.id, node(4).id, 'task', { title: 'Token vault' });
+  const vault = editableOf(split).markdown.replace(/## Behaviours\n\n<!--[^\n]*-->/, '## Behaviours\n\n- VAULT-01 Given a token, when stored, then it is in the vault.');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: itemKeyOf(split), title: 'Token vault', markdown: vault });
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('then it is a token.', 'then it is a token, see the vault.') });
+  const decide = (n, action, body) => call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/${itemKeyOf(n)}/${action}`, { by: 'Ken', ...body });
+
+  const early = await decide(inside, 'adopt');
+  assert.equal(early.status, 409, 'not before the new item it is inside');
+  assert.match(early.body.error, /Epic: Refunds/);
+
+  // Adopted: in the spec as if a person had accepted it, waiting for a save, and the rest still to decide.
+  let res = await decide(split, 'adopt');
+  assert.equal(res.status, 200);
+  const adopted = (await map()).find((n) => n.id === split.id);
+  assert.equal(adopted.refinement, undefined);
+  assert.equal(adopted.sync, 'unsaved', 'a save creates it on GitHub');
+  assert.deepEqual(res.body.changeset.adopted.map((d) => [d.key, d.behaviours, d.by]), [[itemKeyOf(split), ['VAULT-01'], 'Ken']]);
+  assert.ok(res.body.changeset.adopted[0].at);
+  assert.equal(res.body.changeset.status, 'open');
+  assert.doesNotMatch((await map()).find((n) => n.title.startsWith('#4 ')).body, /see the vault/, 'the parent of a split is decided on its own');
+  assert.ok((await call('POST', `/api/projects/${pid}/save`, {})).body.saved.includes(`new-${split.id}`));
+  assert.equal((await decide(split, 'adopt')).status, 404, 'adopted once');
+
+  // Declined: gone from the map and the refinement, with what was inside it, and the reason kept for its author.
+  res = await decide(epic, 'decline', { reason: 'Refunds wait for next year.' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.deleted.sort(), [epic.id, inside.id].sort());
+  assert.ok(!(await map()).some((n) => n.id === epic.id || n.id === inside.id));
+  assert.deepEqual(res.body.changeset.declined.map((d) => [d.key, d.reason]).sort(), [[itemKeyOf(epic), 'Refunds wait for next year.'], [itemKeyOf(inside), 'Refunds wait for next year.']].sort());
+  assert.deepEqual(res.body.changeset.items.map((it) => it.key), ['issue-4']);
+
+  res = await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' });
+  assert.equal(res.body.changeset.status, 'accepted', 'everything in it decided: it closes');
+});
+
 test('ADOPT-05 ADOPT-06 a person adopts or declines a refinement one behaviour at a time, and it stays open until nothing is left', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;

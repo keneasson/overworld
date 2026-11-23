@@ -492,6 +492,22 @@ const behaviours = [
       assert.ok(![epic, ...kids].some((k) => map.find((n) => n.id === k.id)?.sync), 'all in line with the store');
     },
   ],
+  [
+    "ADOPT-05 NEW-04 NEW-06 a new item adopted from someone else's refinement reaches the store at the next save, and one declined never does",
+    {},
+    async (h) => {
+      const cs = (await h.call('POST', `/api/projects/${h.pid}/changesets`, { author: 'Builder (a1)' })).body.changeset;
+      const add = async (title) => (await h.call('POST', `/api/projects/${h.pid}/changesets/${cs.id}/new`, { parentId: 'root', kind: 'task', title })).body.node;
+      const [kept, dropped] = [await add('Refund to the card'), await add('Refund in cash')];
+      const decide = (n, action) => h.call('POST', `/api/projects/${h.pid}/changesets/${cs.id}/items/node-${n.id}/${action}`, { by: 'Ken' });
+      assert.equal((await decide(kept, 'adopt')).status, 200);
+      assert.equal((await decide(dropped, 'decline')).status, 200);
+      assert.equal((await h.save()).length, 1);
+      assert.equal((await h.sync.drain(h.pid)).status, 'synced');
+      assert.equal(h.storedTitled('Refund to the card').length, 1);
+      assert.equal(h.storedTitled('Refund in cash').length, 0);
+    },
+  ],
 ];
 
 for (const [name, options, run] of behaviours) test(name, async () => run(await harness('github', options)));
