@@ -190,7 +190,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       if (!editableOf(node).title.trim()) throw new ValidationError('a new item needs a title');
       const store = stores.forProject(project);
       const { refinement, ...adopted } = node;
-      changed = [{ ...adopted, status: openQuestions(editableOf(node).markdown) ? 'needs_decision' : node.status, updatedAt: now, ...(store ? { sync: 'unsaved' } : {}) }];
+      changed = [{ ...adopted, status: openQuestions(editableOf(node).markdown) ? 'needs_decision' : (node.adoptAs ?? node.status), updatedAt: now, ...(store ? { sync: 'unsaved' } : {}) }];
+      delete changed[0].adoptAs;
       await model.nodes.put(pid, changed);
       await touchProject(project, nodes.map((n) => (n.id === node.id ? changed[0] : n)));
       cs.items = cs.items.filter((it) => it.key !== entry.key);
@@ -456,7 +457,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const title = text(body?.title ?? '', 200, 'title').trim() || `New ${kind}`;
         const markdown = body?.markdown != null ? text(body.markdown, 19000, 'markdown') : newItemMarkdown({ kind, partOf: partOf(stores.forProject(project), parent), place: placeOf(editableOf(parent).markdown) });
         const id = newId();
-        const node = { ...applyTo({ ...sanitizeNode({ kind, title, status: 'idea', tags: kind === 'story' ? ['new-feature'] : [] }), id, parentId: parent.id, createdAt: now }, { title, markdown }, now), status: 'idea', refinement: cs.id };
+        const node = { ...applyTo({ ...sanitizeNode({ kind, title, status: 'idea', tags: kind === 'story' ? ['new-feature'] : [] }), id, parentId: parent.id, createdAt: now }, { title, markdown }, now), status: 'idea', refinement: cs.id, ...(['ready', 'in_progress'].includes(body?.adoptAs) ? { adoptAs: 'ready' } : {}) };
         await model.nodes.put(pid, [node]);
         cs.items.push({ key: itemKeyOf(node), nodeTitle: node.title, new: true, at: now });
         cs.updatedAt = now;
@@ -864,7 +865,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const template = newItemMarkdown({ kind: 'task', partOf: partOf(stores.forProject(project), parent), place: placeOf(was.markdown) });
         const why = `Split from ${parent.title} (STATE-10): the behaviours it still had to build, moved here word for word. ${parent.title} keeps ${split.looks_built.join(', ') || 'what is built'}.`;
         const markdown = writeIssue(parseIssue(template), { Why: why, Behaviours: moved.join('\n'), 'Open questions': 'None.' });
-        const { node } = await call('POST', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/new`, { parentId: parent.id, kind: 'task', title, markdown });
+        const { node } = await call('POST', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/new`, { parentId: parent.id, kind: 'task', title, markdown, adoptAs: parent.status }); // what was ready stays ready once the split is adopted
         const oldWhy = sectionText(shape, 'Why').trim();
         const note = `What was left to build (${split.still_to_build.join(', ')}) moved to the child "${node.title}".`;
         const after = { title: was.title, markdown: writeIssue(shape, { Why: oldWhy ? `${oldWhy}\n\n${note}` : note, Behaviours: kept.join('\n') }) };

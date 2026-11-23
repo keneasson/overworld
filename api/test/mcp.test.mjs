@@ -710,6 +710,8 @@ test('STATE-14 a person or an agent splits an item that needs it: what is left t
   const done = await a.use('split', { refinement, item: 'issue-33' });
   assert.deepEqual([done.refinement, done.moved, done.title], [refinement, ['AH-02'], "Also half: what's left to build"]);
   await assert.rejects(a.use('split', { refinement, item: 'issue-32' }), /doesn't need a split/);
+  const adopted = await rest('POST', `/api/projects/${pid}/changesets/${refinement}/items/${done.child}/adopt`, { by: 'Ken' });
+  assert.equal(adopted.nodes.find((n) => n.title.endsWith("what's left to build"))?.status, 'ready', 'adopted, what was ready to build is ready in its child');
 });
 
 test('HANDOFF-05 HANDOFF-01 a person chooses Build on an issue or on one behaviour: the request carries the prompt and waits for a builder; an agent cannot make one', async () => {
