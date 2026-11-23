@@ -27,6 +27,9 @@
 //   Limit     PROJECT#<id>    LIMIT#<agentId>#<minute>    an agent's calls this minute (MCP-13)
 //   Finding   PROJECT#<id>    COHERE#<pairKey>   two behaviours close in meaning, the model that found them, and a judgement (#36 COHERE-04)
 //   Coverage  PROJECT#<id>    COVERAGE           the latest coverage report from CI, compressed (#20 COVER-03)
+//   Photo     PROJECT#<id>    IMAGE#<itemKey>#<photoId>  a screenshot in an item's Photos: what it is, not its bytes (#16)
+//   Photo part PROJECT#<id>   IMGPART#<photoId>#<version>#<n>  a piece of a screenshot's bytes, each well inside an item's size limit
+//   Upload    UPLOAD#<sha256>  UPLOAD             a one-time link an agent sends a screenshot's bytes to, for 15 minutes (SHOT-04)
 //
 // A project and its nodes share a partition (an item collection): one query reads a
 // whole map, and one query finds everything to delete. The map's entities sort last: every prefix in a
@@ -88,6 +91,11 @@ export const keys = {
   actionsOf: (projectId, agentId) => ({ index: 'GSI1', pk: `ACTIONS#${projectId}#${agentId}` }),
   request: (projectId, agentId, requestKey) => ({ PK: projectPartition(projectId), SK: `KEY#${agentId}#${requestKey}` }),
   limit: (projectId, agentId, minute) => ({ PK: projectPartition(projectId), SK: `LIMIT#${agentId}#${minute}` }),
+  photo: (projectId, { itemKey, id }) => ({ PK: projectPartition(projectId), SK: `IMAGE#${itemKey}#${id}` }),
+  photosOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `IMAGE#${itemKey ? `${itemKey}#` : ''}` }),
+  photoPart: (projectId, { id, version }, n) => ({ PK: projectPartition(projectId), SK: `IMGPART#${id}#${String(version).padStart(4, '0')}#${String(n).padStart(3, '0')}` }),
+  photoPartsOf: (projectId, { id, version }) => ({ pk: projectPartition(projectId), skBeginsWith: `IMGPART#${id}#${String(version).padStart(4, '0')}#` }),
+  upload: (hash) => ({ PK: `UPLOAD#${hash}`, SK: 'UPLOAD' }),
   coverage: (projectId) => ({ PK: projectPartition(projectId), SK: 'COVERAGE' }),
   clientError: ({ at, id }) => ({ PK: 'ERRORS', SK: `ERROR#${at}#${id}` }),
   clientErrorsSince: (at) => ({ pk: 'ERRORS', skFrom: `ERROR#${at}`, skTo: 'ERROR#~' }),

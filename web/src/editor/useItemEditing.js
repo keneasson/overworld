@@ -339,6 +339,17 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
     }
   }
 
+  // Confirm a pin on a newer screenshot, or move it (#16 SHOT-02): `spot` is { x, y[, w, h] }, or nothing to confirm it where it is.
+  async function movePin(c, spot) {
+    try {
+      replace((await api.pinComment(projectId, c, { ...(spot ?? {}), by: name || 'Someone' })).comment);
+      return true;
+    } catch (err) {
+      fail(err);
+      return false;
+    }
+  }
+
   // Dismiss a thread into the conversation log, or bring it back (NOTE-05). Nothing else moves a comment.
   async function dismiss(c) {
     try {
@@ -412,5 +423,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
     storage.set(NAME, v || null);
   };
 
-  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, split, splitOf, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, answer, answerPrompt, hasRead, markRead, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, split, splitOf, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, movePin, projectId, fail, toast, answer, answerPrompt, hasRead, markRead, flush };
 }

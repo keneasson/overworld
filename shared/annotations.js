@@ -4,6 +4,7 @@
 // editor all read comments through this.
 
 import { ValidationError } from './schema.js';
+import { cleanSpot } from './photos.js';
 
 // What an annotation can be about (NOTE-15). Words, a phrase and a paragraph quote their text; the rest name it. A
 // changeset's comments are on the area its edits are in, about the changeset as a whole (#62 SYNC-01).
@@ -33,6 +34,7 @@ export function whereOf(a = {}) {
   if (a.refinement) return `${a.behaviour ?? 'a change'} in a refinement`;
   if (on === 'place') return 'the place on the map';
   if (on === 'changeset') return 'the changeset';
+  if (on === 'image' && a.photo) return `a screenshot in Photos`;
   if (on === 'image') return `an image in ${a.section ?? 'the text'}`;
   return a.behaviour ?? a.section ?? 'the text';
 }
@@ -94,6 +96,15 @@ export function cleanAnchor(a = {}) {
   const out = { on, section: str(a.section, 60, 'anchor.section') ?? (behaviour ? 'Behaviours' : 'Why'), ...(behaviour ? { behaviour } : {}), ...(refinement ? { refinement } : {}) };
   if (refinement && !behaviour) throw new ValidationError('anchor.behaviour: required on a refinement');
   if (on === 'behaviour' && !behaviour) throw new ValidationError('anchor.behaviour: required');
+  // A pin on a screenshot in Photos (#16 SHOT-01): which one, the version it was pinned on (SHOT-02), and the spot.
+  if (on === 'image' && a.photo != null) {
+    const photo = str(a.photo, 40, 'anchor.photo');
+    if (!/^[\w-]+$/.test(photo ?? '')) throw new ValidationError('anchor.photo: expected a photo id');
+    const version = Number(a.version ?? 1);
+    if (!Number.isInteger(version) || version < 1) throw new ValidationError('anchor.version: expected a whole number');
+    const caption = str(a.quote, 300, 'anchor.quote');
+    return { on, section: 'Photos', photo, version, ...cleanSpot(a), ...(caption ? { quote: caption } : {}) };
+  }
   if (on === 'image') {
     out.src = str(a.src, 2000, 'anchor.src');
     if (!out.src) throw new ValidationError('anchor.src: required');

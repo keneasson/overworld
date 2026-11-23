@@ -18,6 +18,7 @@ import { wasteCard } from '../map/wasteland.js';
 import { behavioursReaching, isStale, linesOf } from '@shared/proof.js';
 import { houseId } from '../map/houses.js';
 import { provenSummary } from '../map/lenses.js';
+import { Photos } from './Photos.jsx';
 
 // Only where there is a page to sanitise for (not when the panel is read in a test).
 DOMPurify.addHook?.('afterSanitizeAttributes', (node) => {
@@ -1107,7 +1108,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
               value={editing.drafts.get(key) ?? editableOf(node)}
               issueNumber={issue?.number}
               areaTexts={texts}
-              comments={comments.filter((c) => c.itemKey === key && c.anchor?.on !== 'changeset' && !(c.anchor?.refinement && reviewing.has(c.anchor.refinement)))}
+              comments={comments.filter((c) => c.itemKey === key && c.anchor?.on !== 'changeset' && !c.anchor?.photo && !(c.anchor?.refinement && reviewing.has(c.anchor.refinement)))}
               commenting={commenting}
               placeholderTitle={Boolean(node.refinement) && !theirs ? `New ${node.kind}` : null}
               conflict={editing.conflicts.has(key)}
@@ -1129,6 +1130,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
 
       <ProofSection node={node} atBehaviour={atBehaviour} proof={proof} />
       <FileProof node={node} tree={tree} proof={proof} lit={lit} onPick={onPick} onDirections={onDirections} />
+      {editing.projectId && <Photos itemKey={key} comments={comments.filter((c) => c.itemKey === key)} editing={editing} />}
 
       <section>
         <h3>Properties</h3>

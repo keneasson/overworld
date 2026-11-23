@@ -38,6 +38,9 @@ model.
 | Call count | `PROJECT#<id>` | `LIMIT#<agentId>#<minute>` | | |
 | Coherence finding | `PROJECT#<id>` | `COHERE#<pairKey>` | | |
 | Coverage report | `PROJECT#<id>` | `COVERAGE` | | |
+| Photo (a screenshot, #16) | `PROJECT#<id>` | `IMAGE#<itemKey>#<photoId>` | | |
+| Photo part (its bytes) | `PROJECT#<id>` | `IMGPART#<photoId>#<version>#<n>` | | |
+| Upload link | `UPLOAD#<sha256 of the link>` | `UPLOAD` | | |
 
 A project and its nodes share a partition, and sort last in it (`NODE#…`, then `PROJECT`), so one
 query reads a whole map and nothing else. A new entity in the partition must sort before `NODE#`. Changesets and
@@ -55,6 +58,10 @@ webhook about one issue reads and writes one item. Store links are the one thing
 partition: they let an event from a store (a GitHub webhook, say) find the projects that live there
 without a scan. A store's key names it, e.g. `github:owner/name`. A link left behind by a deleted
 project is removed the next time an event finds it.
+
+Screenshots (#16) are bigger than an item can be (400 KB), so each is one small row saying what it is, by item, and
+its bytes in parts of about 350 KB, keyed by the screenshot and its version. Both sort before `NODE#`, so opening a map never reads
+them, and deleting a project deletes them with it. An upload link sits outside any partition, like a token, and expires in 15 minutes.
 
 Agents that use a project through MCP (#4) keep their records in its partition too, all sorting before `NODE#`:
 who they are, their claims (one per behaviour, so a claim is one conditional write), handoff notes (by item, so
@@ -120,6 +127,12 @@ agents' tokens first. The token itself is never stored.
 | Pairs of behaviours close in meaning, to judge or judged (#36 COHERE-04, COHERE-05) | `findings.list(projectId)` | Query `begins_with(SK, COHERE#)` |
 | One finding; record a check's pairs or a judgement | `findings.get(projectId, key)`, `findings.put(projectId, list)` | GetItem; batched puts |
 | The latest coverage report from CI, for the proof layer; save one over it (#20 COVER-03) | `coverage.get(projectId)`, `coverage.put(projectId, report, savedAt)` | GetItem; PutItem (gzipped, so it fits an item) |
+| An item's screenshots, without their bytes (#16) | `photos.list(projectId, itemKey)` | Query `begins_with(SK, IMAGE#<itemKey>#)` |
+| One screenshot | `photos.get(projectId, { itemKey, id })` | GetItem |
+| A screenshot's bytes | `photos.bytes(projectId, photo)` | Query `begins_with(SK, IMGPART#<photoId>#<version>#)` |
+| Add a screenshot, or a newer one in its place (SHOT-02) | `photos.put(projectId, photo, bytes)` | Batched puts of its parts, PutItem, then batched deletes of the last version's parts |
+| Remove a screenshot | `photos.delete(projectId, photo)` | DeleteItem, Query its parts, batched deletes |
+| Give an agent a one-time link to send a screenshot to; use it (SHOT-04) | `uploads.put(hash, row)`, `uploads.take(hash, now)` | PutItem with TTL; GetItem, DeleteItem |
 | Count an agent's call this minute | `limits.count(projectId, agentId, minute, limit)` | UpdateItem `ADD`, conditional on the limit |
 
 ## Adding a feature

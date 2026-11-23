@@ -1,7 +1,7 @@
 // HTTP-agnostic API. `handle({ method, path, headers, body })` -> { status, body }.
 // Used by the Lambda handler in AWS and by the Vite dev server locally.
 
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
 import { changeKeys, compareItems, issueOf, mergeChanges, newItemMarkdown, parseBehaviours, parseIssue, placeOf, sectionText, writeIssue } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
@@ -19,6 +19,8 @@ import { createMcp } from './mcp.mjs';
 import { behavioursOf, childrenOf, keyOf, nextWork, splitOf } from './work.mjs';
 import { VOCABULARY, duplicateIds, pairKey, textHash, vocabularyDrift } from '../shared/coherence.js';
 import { openQuestions } from './engine/lifecycle.mjs';
+import { imageInfo } from './photos.mjs';
+import { MAX_PHOTO_BYTES, PHOTO_SOURCES, cleanSpot, isPin, photoName } from '../shared/photos.js';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -157,6 +159,50 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     if (!c) throw new HttpError(404, 'Comment not found');
     if (c.replyTo) throw new ValidationError('that is a reply: act on its thread');
     return c;
+  }
+
+  /** One of an item's screenshots, or 404. */
+  async function photoOf(pid, itemKey, id) {
+    const photo = await model.photos.get(pid, { itemKey, id });
+    if (!photo) throw new HttpError(404, 'That screenshot is not in this item\'s Photos');
+    return photo;
+  }
+
+  /** The item a screenshot goes on, or 404. */
+  async function itemOf(pid, itemKey) {
+    const { nodes } = await loadProject(pid);
+    const node = findItem(nodes, itemKey);
+    if (!node) throw new HttpError(404, 'No such item on the map');
+    return node;
+  }
+
+  /** What a request to add a screenshot says, besides its bytes: where it goes, what it is called, where it came from, who added it. */
+  function photoRequest(body) {
+    const itemKey = String(body?.itemKey ?? '');
+    if (!KEY.test(itemKey)) throw new ValidationError('itemKey: expected issue-<number> or node-<id>');
+    const source = String(body?.source ?? 'upload');
+    if (!PHOTO_SOURCES.includes(source)) throw new ValidationError(`source: one of ${PHOTO_SOURCES.join(', ')}`);
+    const replaces = body?.replaces == null || body.replaces === '' ? null : String(body.replaces);
+    if (replaces && !/^[\w-]{1,40}$/.test(replaces)) throw new ValidationError('replaces: expected a photo id');
+    if (!String(body?.by ?? '').trim()) throw new ValidationError('by: say who is adding it');
+    const caption = text(body?.caption ?? '', 200, 'caption').trim();
+    return { itemKey, source, by: author(body.by), ...(caption ? { caption } : {}), ...(replaces ? { replaces } : {}) };
+  }
+
+  /**
+   * Keep a screenshot in an item's Photos (SHOT-04), or a newer one in an old one's place (SHOT-02): the same screenshot,
+   * one version on, so the pins on it stay and read as possibly out of date until someone confirms or moves them.
+   */
+  async function addPhoto(pid, { itemKey, bytes, caption, source, replaces, by }) {
+    await itemOf(pid, itemKey);
+    const info = imageInfo(bytes);
+    const at = new Date(clock()).toISOString();
+    const old = replaces ? await photoOf(pid, itemKey, replaces) : null;
+    const photo = old
+      ? { ...old, ...info, bytes: bytes.length, version: (old.version ?? 1) + 1, ...(caption ? { caption } : {}), source, replacedBy: by, replacedAt: at }
+      : { id: newId(), itemKey, ...info, bytes: bytes.length, version: 1, ...(caption ? { caption } : {}), source, addedBy: by, addedAt: at };
+    await model.photos.put(pid, photo, bytes);
+    return photo;
   }
 
   /**
@@ -628,7 +674,13 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (!said) throw new ValidationError('text: required');
         const root = body?.replyTo ? await model.comments.get(pid, { itemKey, id: String(body.replyTo) }) : null;
         if (body?.replyTo && !root) throw new HttpError(404, 'The thread to reply in is gone');
-        const anchor = root ? root.anchor : cleanAnchor(body?.anchor ?? {});
+        let anchor = root ? root.anchor : cleanAnchor(body?.anchor ?? {});
+        // A pin is on the screenshot as it is now (#16 SHOT-01): the version it was pinned on says when it may be out of date (SHOT-02).
+        if (!root && isPin(anchor)) {
+          const photo = await model.photos.get(pid, { itemKey, id: anchor.photo });
+          if (!photo) throw new HttpError(404, 'That screenshot is not in this item\'s Photos');
+          anchor = { ...anchor, version: photo.version, quote: photoName(photo) };
+        }
         const at = new Date(clock()).toISOString();
         const fromAgent = typeof body?.fromAgent === 'string' ? body.fromAgent : null;
         // On a behaviour in a refinement (#13 ADOPT-14): it is for the refinement's author, as a comment on a pull request is.
@@ -1186,6 +1238,84 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       { status: 201, people: true },
     ],
 
+    // ---- Photos (#16): screenshots of the running app, and comments pinned on them. Whatever a screenshot's source, it is
+    // kept, shown, pinned and handed on the same way (SHOT-04); only the words say where it came from. ----
+
+    ['GET', /^\/api\/projects\/([\w-]+)\/photos\/(issue-\d+|node-[\w-]+)$/, async ({ params: [pid, itemKey] }) => ({ photos: await model.photos.list(pid, itemKey) })],
+    [
+      'GET',
+      /^\/api\/projects\/([\w-]+)\/photos\/(issue-\d+|node-[\w-]+)\/([\w-]+)$/,
+      async ({ params: [pid, itemKey, id] }) => {
+        const photo = await photoOf(pid, itemKey, id);
+        return { photo, data: (await model.photos.bytes(pid, photo)).toString('base64') };
+      },
+    ],
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/photos$/,
+      // A screenshot in its bytes, as base64 (a data: URL is fine), from a person or an agent. With `replaces`, it is a newer one in an old one's place.
+      async ({ params: [pid], body }) => {
+        const data = String(body?.data ?? '').replace(/^data:[\w/+.-]+;base64,/, '');
+        if (data.length > Math.ceil(MAX_PHOTO_BYTES / 3) * 4 + 4) throw new ValidationError(`data: at most ${MAX_PHOTO_BYTES / 1_000_000} MB`);
+        return { photo: await addPhoto(pid, { ...photoRequest(body), bytes: Buffer.from(data, 'base64') }) };
+      },
+      { status: 201 },
+    ],
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/photos\/uploads$/,
+      // A one-time link to send a screenshot's bytes to (SHOT-04): an agent with a file sends it with curl, rather than as base64 in a tool call.
+      async ({ params: [pid], body }) => {
+        const request = photoRequest(body);
+        await itemOf(pid, request.itemKey);
+        if (request.replaces) await photoOf(pid, request.itemKey, request.replaces);
+        const link = randomBytes(24).toString('base64url');
+        const expiresAt = Math.floor(clock() / 1000) + 15 * 60;
+        await model.uploads.put(digest(link).toString('hex'), { projectId: pid, ...request, expiresAt });
+        return { upload: `/api/uploads/${link}`, expires: new Date(expiresAt * 1000).toISOString() };
+      },
+      { status: 201 },
+    ],
+    [
+      'POST',
+      /^\/api\/uploads\/([\w-]+)$/,
+      // The link is the permission: it was made by someone signed in, says which item, and works once.
+      async ({ params: [link], rawBytes }) => {
+        const row = await model.uploads.take(digest(link).toString('hex'), Math.floor(clock() / 1000));
+        if (!row) throw new HttpError(404, 'This upload link is used or out of date: ask for another');
+        const { projectId, expiresAt, ...request } = row;
+        return { photo: await addPhoto(projectId, { ...request, bytes: rawBytes ?? Buffer.alloc(0) }) };
+      },
+      { status: 201, public: true },
+    ],
+    [
+      'DELETE',
+      /^\/api\/projects\/([\w-]+)\/photos\/(issue-\d+|node-[\w-]+)\/([\w-]+)$/,
+      // A screenshot with open pins stays: its conversation isn't over (#15 NOTE-05).
+      async ({ params: [pid, itemKey, id] }) => {
+        const photo = await photoOf(pid, itemKey, id);
+        const open = (await model.comments.list(pid, itemKey)).filter((c) => !c.replyTo && !isDismissed(c) && c.anchor?.photo === id);
+        if (open.length) throw new HttpError(409, `This screenshot has ${open.length} open comment${open.length === 1 ? '' : 's'} pinned on it: dismiss ${open.length === 1 ? 'it' : 'them'} first, or replace the screenshot`);
+        await model.photos.delete(pid, photo);
+        return { deleted: id };
+      },
+    ],
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/comments\/(issue-\d+|node-[\w-]+)\/([\w-]+)\/pin$/,
+      // Confirm a pin on the newer screenshot, or move it there (SHOT-02): either way it is on the version shown now.
+      async ({ params: [pid, itemKey, id], body }) => {
+        const comment = await rootOf(pid, itemKey, id);
+        if (!isPin(comment.anchor)) throw new ValidationError('that comment is not pinned on a screenshot');
+        const photo = await photoOf(pid, itemKey, comment.anchor.photo);
+        const { x, y, w, h, ...rest } = comment.anchor;
+        const spot = body?.x != null ? cleanSpot(body) : { x, y, ...(w != null ? { w, h } : {}) };
+        const pinned = { ...comment, anchor: { ...rest, ...spot, version: photo.version, quote: photoName(photo) }, pinned: { by: author(body?.by), at: new Date(clock()).toISOString(), moved: body?.x != null } };
+        await model.comments.put(pid, pinned);
+        return { comment: annotationOf(pinned) };
+      },
+    ],
+
     // Coverage per behaviour (#20 COVER-03): CI saves its latest report with the project's agent token, over the last one;
     // the map reads it for the proof layer (#21).
     [
@@ -1260,7 +1390,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
 
   return handle;
 
-  async function handle({ method, path, headers = {}, body = null, rawBody = null, trusted = false }) {
+  async function handle({ method, path, headers = {}, body = null, rawBody = null, rawBytes = null, trusted = false }) {
     try {
       if (path === '/api/mcp') return await mcp({ method, headers, body });
       for (const [m, re, fn, opts = {}] of routes) {
@@ -1268,7 +1398,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         if (!match || m !== method) continue;
         if (!opts.public && !trusted) authorize(headers);
         if (opts.people && trusted) throw new HttpError(403, 'Only a person can do this');
-        const result = await fn({ params: match.slice(1), body, headers, rawBody });
+        const result = await fn({ params: match.slice(1), body, headers, rawBody, rawBytes });
         return { status: opts.status ?? 200, body: result };
       }
       const pathKnown = routes.some(([, re]) => re.test(path));

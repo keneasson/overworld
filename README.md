@@ -92,6 +92,11 @@ time, the umbrella, epic, story or task you picked; picking another replaces it.
   If an item changed on GitHub since you started, accepting stops and says which one.
 - **Anchored comments.** Comment on one section or one behaviour (by its ID), from the 💬 beside it.
   The comment stays with it when items are reordered or the map is refreshed.
+- **Photos.** Screenshots of the running app sit under the document: choose, paste or drop one on *Add a
+  screenshot*. Click a spot on it, or drag over a region, to pin a comment there; it is a comment like any other, so
+  `@Claude` hands it to an agent with the image and the spot. *Replace with a newer one* keeps the pins, marked with a
+  **?** as possibly out of date until someone says *Still right here* or moves them. Agents add screenshots too, from a
+  file or a browser, through the MCP server's `screenshot`, `photo` and `pin` tools, and theirs work the same way.
 - **Room to write.** The handle on the panel's edge widens it while the map stays beside it: drag it
   to any width, or click it to switch between narrow and wide. The panel remembers its width.
 - **New items** open in the panel at once, titled *New epic* (or story, task…), ready to write over.

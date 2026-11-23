@@ -36,6 +36,15 @@ const server = await createServer({
       configureServer(vite) {
         vite.middlewares.use(async (req, res, next) => {
           if (!req.url.startsWith('/api/')) return next();
+          const headers = Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k.toLowerCase(), String(v)]));
+          // A screenshot sent to a one-time upload link (#16) is its own bytes, not JSON.
+          if (req.url.startsWith('/api/uploads/')) {
+            const chunks = [];
+            for await (const c of req) chunks.push(c);
+            const out = await api({ method: req.method, path: req.url.split('?')[0], headers, rawBytes: Buffer.concat(chunks) });
+            res.writeHead(out.status, { 'content-type': 'application/json' }).end(JSON.stringify(out.body));
+            return;
+          }
           let body = null;
           try {
             body = await readBody(req);
@@ -43,7 +52,6 @@ const server = await createServer({
             res.writeHead(400, { 'content-type': 'application/json' }).end('{"error":"Body must be JSON"}');
             return;
           }
-          const headers = Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k.toLowerCase(), String(v)]));
           const out = await api({ method: req.method, path: req.url.split('?')[0], headers, body });
           res.writeHead(out.status, { 'content-type': 'application/json' }).end(out.body == null ? '' : JSON.stringify(out.body));
         });
