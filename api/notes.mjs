@@ -21,17 +21,18 @@ export function addresseesOf(text, agents = []) {
 
 /**
  * The prompt an annotation reaches an agent with (NOTE-18): everything needed to act on it, with no chat history.
- * @param {{ nodes: object[], comments: object[], note: object, refinement?: object }} o  `note` is the thread's first
- *   annotation; `refinement` is the changeset it is on, when it is on a behaviour in one (#13 ADOPT-14)
+ * @param {{ nodes: object[], comments: object[], note: object, refinement?: object, photo?: object }} o  `note` is the thread's first
+ *   annotation; `refinement` is the changeset it is on, when it is on a behaviour in one (#13 ADOPT-14); `photo` is the
+ *   screenshot it is pinned on, when it is a pin (#16 SHOT-03)
  */
-export function notePrompt({ nodes, comments, note, refinement = null }) {
+export function notePrompt({ nodes, comments, note, refinement = null, photo = null }) {
   const node = nodes.find((n) => itemKeyOf(n) === note.itemKey);
   if (!node) return '';
   const key = itemKeyOf(node);
   const threads = threadsOf(comments.filter((c) => c.itemKey === note.itemKey));
   const replies = threads.find((t) => t.root.id === note.id)?.replies ?? [];
   const others = threads.filter((t) => t.root.id !== note.id && isOpen(t.root));
-  const [where, ...quoted] = anchorWords(note.anchor);
+  const [where, ...quoted] = anchorWords(note.anchor, photo);
   return [
     `${note.author} addressed you in a comment on ${node.title} (${key}). Act on it now. This prompt holds everything you need.`,
     '',

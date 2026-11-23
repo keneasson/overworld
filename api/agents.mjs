@@ -447,7 +447,9 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         await model.comments.put(projectId, note);
       }
       const refinement = note.anchor?.refinement ? await model.changesets.get(projectId, note.anchor.refinement) : null;
-      out.push({ note, prompt: notePrompt({ nodes, comments, note, refinement }) });
+      // A pin on a screenshot goes with its screenshot (#16 SHOT-03): the MCP server attaches the image.
+      const photo = note.anchor?.photo ? await model.photos.get(projectId, { itemKey: r.itemKey, id: note.anchor.photo }) : null;
+      out.push({ note, prompt: notePrompt({ nodes, comments, note, refinement, photo }), ...(photo ? { photo } : {}) });
     }
     return out;
   }
@@ -618,7 +620,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
 }
 
 /** An annotation addressed to an agent, as its tools show it: who said what, where, and the prompt to act on it. */
-export const noteOf = ({ note, prompt }) => ({ annotation: note.id, item: note.itemKey, from: note.author, said: note.text, prompt });
+export const noteOf = ({ note, prompt }) => ({ annotation: note.id, item: note.itemKey, from: note.author, said: note.text, ...(note.anchor?.photo ? { photo: note.anchor.photo } : {}), prompt });
 
 /** A build request as agents' tools show it: what to build, who asked, since when, and the prompt to build it with (HANDOFF-10). */
 export const buildOf = (r) => ({

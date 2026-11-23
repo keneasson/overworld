@@ -10,6 +10,7 @@ import { changesets } from './access-patterns/changesets.mjs';
 import { comments, inbox, questions } from './access-patterns/comments.mjs';
 import { errors } from './access-patterns/errors.mjs';
 import { coverage } from './access-patterns/coverage.mjs';
+import { photos, uploads } from './access-patterns/photos.mjs';
 import { audits, budgets, jobs, leases, links } from './access-patterns/sync.mjs';
 import { findings } from './access-patterns/coherence.mjs';
 import { actions, agents, builds, claims, facts, handoffs, limits, requests } from './access-patterns/agents.mjs';
@@ -25,5 +26,6 @@ export function modelFor(table) {
     agents: agents(table), builds: builds(table), claims: claims(table), handoffs: handoffs(table), facts: facts(table), actions: actions(table), requests: requests(table), limits: limits(table),
     findings: findings(table),
     coverage: coverage(table),
+    photos: photos(table), uploads: uploads(table),
   };
 }

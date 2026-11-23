@@ -44,6 +44,13 @@ export async function handler(event, context) {
 
   if (!path.startsWith('/api/')) return serveStatic({ method, path, headers });
 
+  // A screenshot sent to a one-time upload link (#16 SHOT-04) is its own bytes, not JSON.
+  if (/^\/api\/uploads\//.test(path)) {
+    const rawBytes = event.body ? Buffer.from(event.body, event.isBase64Encoded ? 'base64' : 'utf8') : null;
+    const res = await api({ method, path, headers, rawBytes });
+    return json(res.status, res.body);
+  }
+
   let body = null;
   let rawBody = null;
   if (event.body) {

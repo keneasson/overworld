@@ -78,5 +78,10 @@ export const api = {
   listAgents: (pid) => request('GET', `/api/projects/${pid}/agents`),
   createAgent: (pid, body) => request('POST', `/api/projects/${pid}/agents`, body),
   revokeAgent: (pid, id) => request('DELETE', `/api/projects/${pid}/agents/${id}`),
+  pinComment: (pid, c, body) => request('POST', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}/pin`, body),
+  photos: (pid, itemKey) => request('GET', `/api/projects/${pid}/photos/${itemKey}`),
+  photo: (pid, itemKey, id) => request('GET', `/api/projects/${pid}/photos/${itemKey}/${id}`),
+  addPhoto: (pid, body) => request('POST', `/api/projects/${pid}/photos`, body),
+  deletePhoto: (pid, p) => request('DELETE', `/api/projects/${pid}/photos/${p.itemKey}/${p.id}`),
   deleteComment: (pid, c) => request('DELETE', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}`),
 };

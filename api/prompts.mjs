@@ -6,6 +6,7 @@ import { STATUS_LABEL } from '../shared/schema.js';
 import { OTHER_CHANGES, editableOf, itemKeyOf, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { isOpen, threadsOf } from '../shared/annotations.js';
 import { skeletonLines, skeletonsOf } from './skeletons.mjs';
+import { SOURCE_WORDS, isPin, isStale, photoName, spotWords } from '../shared/photos.js';
 
 const SIBLINGS_SHOWN = 30;
 
@@ -13,7 +14,8 @@ export const quote = (s) => String(s).split('\n').map((l) => `> ${l}`).join('\n'
 export const stateWords = (status) => (STATUS_LABEL[status] ?? status).toLowerCase();
 
 /** What a comment is anchored to, in words: the first line, then any quoted words. */
-export function anchorWords(a = {}) {
+export function anchorWords(a = {}, photo = null) {
+  if (isPin(a)) return pinWords(a, photo);
   if (a.refinement) {
     const what = a.behaviour === OTHER_CHANGES ? 'the other changes (title and sections)' : `behaviour ${a.behaviour}`;
     return a.quote ? [`on these words of ${what}, as your refinement ${a.refinement} proposes it:`, quote(a.quote)] : [`on ${what}, as your refinement ${a.refinement} proposes it`];
@@ -32,6 +34,19 @@ export function anchorWords(a = {}) {
     default:
       return a.quote ? [`on these words in ${a.behaviour ? `behaviour ${a.behaviour}` : a.section}:`, quote(a.quote)] : [`on ${a.behaviour ?? a.section}`];
   }
+}
+
+/**
+ * Where a pin on a screenshot is (#16 SHOT-03): which screenshot, the spot, and whether it may be out of date. The image
+ * itself comes with the prompt that hands the pin over: the MCP server attaches it, and photo() shows it again.
+ */
+function pinWords(a, photo) {
+  const what = photo ? `"${photoName(photo)}" (photo ${a.photo}, ${SOURCE_WORDS[photo.source] ?? 'added'}, version ${photo.version})` : `"${a.quote || 'a screenshot'}" (photo ${a.photo})`;
+  return [
+    `pinned on a screenshot in its Photos, ${what}, at ${spotWords(a, photo)}.`,
+    `${photo ? 'The screenshot comes with this prompt as an image; ' : ''}photo(item, photo: "${a.photo}") shows it${photo ? ' again' : ''}, with every pin on it.`,
+    ...(photo && isStale(a, photo) ? [`The screenshot has been replaced by a newer one since this was pinned (on version ${a.version ?? 1}), so the spot may be out of date: look at the newer one before acting.`] : []),
+  ];
 }
 
 /** The item's comments still open (#15 NOTE-07), oldest first: each with what it is anchored to and its whole thread. */

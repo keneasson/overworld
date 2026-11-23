@@ -13,8 +13,11 @@ import { isOpen, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
 import { notePrompt } from './notes.mjs';
 import { behavioursOf, blockersOf, buildingOf, childrenOf, isAdopted, isFinished, keyOf, nextWork, splitOf, stateOf } from './work.mjs';
 import { skeletonsOf } from './skeletons.mjs';
+import { isStale, photoName, spotWords } from '../shared/photos.js';
 
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26'];
+// Images a tool's result carries beside its JSON (#16 SHOT-03): the screenshots its pins are on.
+const IMAGES = Symbol('images');
 const CHILDREN_SHOWN = 100;
 
 // When an agent may dismiss a comment (NOTE-05): said in HOW_TO_WORK and in the dismiss tool's description.
@@ -27,7 +30,7 @@ const HOW_TO_WORK = [
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat. But when your pull request opens, don\'t hand off: claim(behaviours, pull_request: its number), and the claim holds through review and merge and is released for you once the production deploy that carries it succeeds. Done is when people can use it.',
   'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
-  `People address you in comments with @Claude. Any tool's result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed. Nothing clears a comment by itself: it stays on the item until someone dismiss()es it into the conversation log. ${DISMISSING}`,
+  `People address you in comments with @Claude. Any tool's result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed. Nothing clears a comment by itself: it stays on the item until someone dismiss()es it into the conversation log. ${DISMISSING} Screenshots are as normal here as text: one you are given or capture goes in an item's Photos with screenshot(item), and pin() points at a spot on it; a comment pinned on one comes to you with the image and the spot.`,
   'An open question is a line in its item\'s Open questions section, with its answer written directly under it as "Answer: …". A comment is never one, wherever it is anchored, and a reply to a comment is not an answer. An answered question comes to you with a prompt: write the decision into the spec through a refinement, taking the question and its answer out of Open questions, and pass its id in propose(answers). Open questions never block proposing, marking behaviours ready, or adoption.',
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
@@ -368,7 +371,8 @@ export function createMcp({ model, agents, call, log = console }) {
       input: {},
       writes: true,
       async run({ pid, agent }) {
-        return { addressed_to_you_now: (await agents.addressed(pid, agent)).map(addressedOf) };
+        const now = await agents.addressed(pid, agent);
+        return { addressed_to_you_now: now.map(addressedOf), [IMAGES]: await imagesOf(pid, now.map((n) => n.photo)) };
       },
     },
 
@@ -381,8 +385,10 @@ export function createMcp({ model, agents, call, log = console }) {
         const node = find(nodes, args.item);
         const comments = await model.comments.list(pid, keyOf(node));
         const open = threadsOf(comments).filter((t) => isOpen(t.root));
+        const photos = new Map((await model.photos.list(pid, keyOf(node))).map((p) => [p.id, p]));
         return {
           item: keyOf(node),
+          ...(photos.size ? { photos: [...photos.values()].map(photoOf) } : {}),
           annotations: await Promise.all(open.map(async ({ root: c, replies }) => ({
             annotation: c.id,
             on: whereOf(c.anchor),
@@ -393,7 +399,8 @@ export function createMcp({ model, agents, call, log = console }) {
             ...(c.delivery ? { delivery: c.delivery.state } : {}),
             replies: replies.map((r) => ({ by: r.author, said: r.text })),
             ...(c.anchor?.refinement ? { refinement: c.anchor.refinement } : {}),
-            ...(toAgent(c) ? { prompt: notePrompt({ nodes, comments, note: c, refinement: c.anchor?.refinement ? await model.changesets.get(pid, c.anchor.refinement) : null }) } : {}),
+            ...(c.anchor?.photo ? { photo: c.anchor.photo, ...(isStale(c.anchor, photos.get(c.anchor.photo)) ? { possibly_out_of_date: true } : {}) } : {}),
+            ...(toAgent(c) ? { prompt: notePrompt({ nodes, comments, note: c, refinement: c.anchor?.refinement ? await model.changesets.get(pid, c.anchor.refinement) : null, photo: photos.get(c.anchor?.photo) }) } : {}),
           }))),
         };
       },
@@ -432,6 +439,71 @@ export function createMcp({ model, agents, call, log = console }) {
         const node = find((await mapOf(pid)).nodes, args.item);
         const { comment } = await api('POST', `/api/projects/${pid}/comments/${keyOf(node)}/${encodeURIComponent(String(args.annotation))}/dismiss`, { by: author(agent), ...(args.note ? { note: String(args.note) } : {}) });
         return { dismissed: comment.id, item: keyOf(node), by: comment.dismissed.by };
+      },
+    },
+
+    screenshot: {
+      description: 'Add a screenshot to an item\'s Photos, or a newer one in an old one\'s place (replaces: its photo id; its pins stay, marked possibly out of date). It is the same wherever it came from: a file you were given, or one you captured. Send small images as base64 in data. For a file, leave data out: you get a one-time upload_url to send the file\'s bytes to with curl, good for 15 minutes. A screenshot you capture in a browser can instead go straight into the item\'s Photos in the web app (drop it on "Add a screenshot").',
+      input: {
+        item: { ...place, description: 'The item: issue-12, 12, or a node id.' },
+        data: { type: 'string', description: 'The PNG, JPEG, WebP or GIF, base64 (a data: URL is fine). At most 4 MB. Leave out to get an upload_url instead.' },
+        caption: { type: 'string', description: 'What it shows, in a few words.' },
+        replaces: { type: 'string', description: 'The photo id of the screenshot this is a newer one of.' },
+        source: { type: 'string', enum: ['agent', 'browser'], description: 'agent: given to you, or taken by you; browser: captured in a browser. Said beside it, nothing more.' },
+        request_key: requestKey,
+      },
+      required: ['item'],
+      changes: true,
+      async run({ pid, agent, origin }, args) {
+        const node = find((await mapOf(pid)).nodes, args.item);
+        const body = { itemKey: keyOf(node), by: author(agent), source: args.source === 'browser' ? 'browser' : 'agent', ...(args.caption ? { caption: String(args.caption) } : {}), ...(args.replaces ? { replaces: String(args.replaces) } : {}) };
+        if (!args.data) {
+          const { upload, expires } = await api('POST', `/api/projects/${pid}/photos/uploads`, body);
+          const url = `${origin}${upload}`;
+          return { item: keyOf(node), upload_url: url, expires, how: `Send the file's bytes, once: curl -sS -H 'content-type: application/octet-stream' --data-binary @<file> '${url}'. The answer names its photo id; pin(item, photo, x, y, text) pins a comment on it.` };
+        }
+        const { photo } = await api('POST', `/api/projects/${pid}/photos`, { ...body, data: String(args.data) });
+        return { item: keyOf(node), ...photoOf(photo) };
+      },
+    },
+
+    photo: {
+      description: 'Look at one screenshot in an item\'s Photos: the image itself, and every open comment pinned on it, with where each sits and whether it may be out of date.',
+      input: { item: { ...place, description: 'The item: issue-12, 12, or a node id.' }, photo: { type: 'string', description: 'The photo id.' } },
+      required: ['item', 'photo'],
+      async run({ pid }, args) {
+        const node = find((await mapOf(pid)).nodes, args.item);
+        const photo = await model.photos.get(pid, { itemKey: keyOf(node), id: String(args.photo ?? '') });
+        if (!photo) throw new ValidationError(`No screenshot ${args.photo} in the Photos of ${keyOf(node)}`);
+        const pins = threadsOf(await model.comments.list(pid, keyOf(node))).filter((t) => isOpen(t.root) && t.root.anchor?.photo === photo.id);
+        return {
+          item: keyOf(node),
+          ...photoOf(photo),
+          pins: pins.map(({ root: c, replies }) => ({ annotation: c.id, at: spotWords(c.anchor, photo), spot: { x: c.anchor.x, y: c.anchor.y, ...(c.anchor.w != null ? { w: c.anchor.w, h: c.anchor.h } : {}) }, ...(isStale(c.anchor, photo) ? { possibly_out_of_date: true } : {}), by: c.author, said: c.text, replies: replies.map((r) => ({ by: r.author, said: r.text })) })),
+          [IMAGES]: await imagesOf(pid, [photo]),
+        };
+      },
+    },
+
+    pin: {
+      description: 'Pin a comment on a spot (or a region, with w and h) of a screenshot in an item\'s Photos, the way a person clicks on it: to show what you found, or ask about what is there. x and y are fractions of its width and height from the top left. @name in the text addresses someone.',
+      input: {
+        item: { ...place, description: 'The item: issue-12, 12, or a node id.' },
+        photo: { type: 'string', description: 'The photo id.' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        w: { type: 'number', description: 'For a region: its width, as a fraction.' },
+        h: { type: 'number', description: 'For a region: its height, as a fraction.' },
+        text: { type: 'string' },
+        request_key: requestKey,
+      },
+      required: ['item', 'photo', 'x', 'y', 'text'],
+      changes: true,
+      async run({ pid, agent }, args) {
+        const node = find((await mapOf(pid)).nodes, args.item);
+        const anchor = { on: 'image', photo: String(args.photo ?? ''), x: args.x, y: args.y, ...(args.w != null || args.h != null ? { w: args.w, h: args.h } : {}) };
+        const { comment } = await api('POST', `/api/projects/${pid}/comments`, { itemKey: keyOf(node), anchor, text: String(args.text ?? ''), author: author(agent), fromAgent: agent.id });
+        return { pinned: comment.id, item: keyOf(node), photo: comment.anchor.photo };
       },
     },
 
@@ -486,7 +558,22 @@ export function createMcp({ model, agents, call, log = console }) {
     annotations: { readOnlyHint: !t.changes && !t.writes, idempotentHint: !t.changes && !t.writes, openWorldHint: false },
   }));
 
-  const result = (data, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, ...(isError ? { isError: true } : {}) });
+  const result = (data, isError = false, images = []) => ({ content: [{ type: 'text', text: JSON.stringify(data) }, ...images], structuredContent: data, ...(isError ? { isError: true } : {}) });
+
+  /** A screenshot as a tool's result shows it: what it is, never its bytes. */
+  const photoOf = (p) => ({ photo: p.id, caption: photoName(p), version: p.version, width: p.width, height: p.height, source: p.source, added_by: p.addedBy, ...(p.replacedAt ? { replaced_by: p.replacedBy, replaced_at: p.replacedAt } : {}) });
+
+  /** The screenshots themselves, as images beside a result's JSON (SHOT-03): each once. */
+  async function imagesOf(pid, photos) {
+    const seen = new Set();
+    const out = [];
+    for (const p of photos) {
+      if (!p || seen.has(p.id)) continue;
+      seen.add(p.id);
+      out.push({ type: 'image', data: (await model.photos.bytes(pid, p)).toString('base64'), mimeType: p.mime });
+    }
+    return out;
+  }
 
   async function callTool(ctx, name, args = {}) {
     const tool = tools[name];
@@ -498,14 +585,16 @@ export function createMcp({ model, agents, call, log = console }) {
       const out = tool.changes
         ? await agents.once(ctx.pid, ctx.agent, args?.request_key, async () => {
             const done = await run();
-            const { request_key, ...said } = args ?? {};
-            await agents.record(ctx.pid, ctx.agent, name, { args: said, result: done });
+            // A screenshot's bytes are far too big for the action log: it says how big they were.
+            const { request_key, data, ...said } = args ?? {};
+            await agents.record(ctx.pid, ctx.agent, name, { args: data ? { ...said, data: `${String(data).length} characters of base64` } : said, result: done });
             return done;
           })
         : await run();
       // Whatever was addressed to this agent since its last call comes with this one, so it hears at once (NOTE-17).
       const now = name === 'standup' || name === 'inbox' ? [] : await agents.addressed(ctx.pid, ctx.agent);
-      return { result: result(now.length ? { ...out, addressed_to_you_now: now.map(addressedOf), first: 'Someone addressed you just now: act on addressed_to_you_now before anything else.' } : out) };
+      const images = [...(out?.[IMAGES] ?? []), ...(await imagesOf(ctx.pid, now.map((n) => n.photo)))];
+      return { result: result(now.length ? { ...out, addressed_to_you_now: now.map(addressedOf), first: 'Someone addressed you just now: act on addressed_to_you_now before anything else.' } : out, false, images) };
     } catch (err) {
       const status = err.status ?? 500;
       if (status >= 500) log.error?.(err);
@@ -553,7 +642,10 @@ export function createMcp({ model, agents, call, log = console }) {
     if (!who) return { status: 401, body: { error: 'An agent token is required: make one for your agent in the project, then send it as "Authorization: Bearer <token>"' } };
     const project = await model.projects.get(who.projectId);
     if (!project) return { status: 401, body: { error: "This token's project is gone" } };
-    const ctx = { pid: who.projectId, agent: who.agent, project };
+    // Where this server is, for links an agent follows itself (an upload link, #16 SHOT-04).
+    const host = String(headers.host ?? 'localhost');
+    const origin = `${headers['x-forwarded-proto'] ?? (/^(localhost|127\.)/.test(host) ? 'http' : 'https')}://${host}`;
+    const ctx = { pid: who.projectId, agent: who.agent, project, origin };
     const batch = Array.isArray(body);
     const replies = [];
     for (const msg of batch ? body : [body]) {
