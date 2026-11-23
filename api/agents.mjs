@@ -4,7 +4,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { ValidationError, newId } from '../shared/schema.js';
-import { nextWork, behavioursOf, blockersOf, childrenOf, isWork, keyOf, splitOf } from './work.mjs';
+import { nextWork, behavioursOf, blockersOf, childrenOf, isFinished, isWork, keyOf, splitOf } from './work.mjs';
 import { awaitsApplying, promptOf, questionsOnMap } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { notePrompt } from './notes.mjs';
@@ -143,6 +143,13 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       } else {
         // What this agent already holds it may claim again, to name its pull request, though its item is now in progress.
         const mine = new Set([...live].filter(([, c]) => c.owner === agent.id).map(([id]) => id));
+        // Naming the pull request that carries them links work already done: its item has moved on (in progress once the PR
+        // says it closes it, or needing a decision over a new question), and the claim may have run out meanwhile. Only
+        // starting work needs the item to be ready; a finished item's deploy has already released what it carried.
+        if (pull !== null) for (const id of behaviours.map(String)) {
+          const node = data.nodes.find((n) => behavioursOf(n).some((b) => b.id === id));
+          if (node && !isFinished(node)) mine.add(id);
+        }
         wanted = placeBehaviours(data.nodes, behaviours.map(String), data.project?.tested, mine);
         const held = holders(behaviours, othersHold);
         if (held.length) throw new Refused(`Already claimed: ${held.map((h) => `${h.behaviour} by ${h.agent} until ${h.until}`).join('; ')}`, { held_by: held });
