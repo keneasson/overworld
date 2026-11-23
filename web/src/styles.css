@@ -2824,7 +2824,6 @@ button.danger.armed {
   gap: 8px;
 }
 
-<<<<<<< HEAD
 /* Find (#53): the filter chips above a list of matches, and each match's markers. */
 .filter-chips {
   display: flex;
@@ -2848,7 +2847,7 @@ button.danger.armed {
 }
 .row.match.active {
   background: var(--accent-soft);
-=======
+
 /* The proof layer (#21): each behaviour's proof in its place card, and the behaviours that reach a code area's files. */
 .proof .proof-from {
   margin: 0 0 8px;
@@ -2955,5 +2954,4 @@ button.danger.armed {
 .pill-broken {
   background: #fce8e6;
   color: #a50e0e;
->>>>>>> 20a29e1 (The proof layer: only proven behaviours count as done, at every zoom (#21 PROVEN-01 to PROVEN-07))
 }
