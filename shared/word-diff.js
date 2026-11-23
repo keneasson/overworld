@@ -97,12 +97,12 @@ const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const NOTHING = /^(none|n\/a|nothing( yet)?|no open questions)\.?$/i;
 function itemsOf(text) {
   const lines = String(text ?? '').split('\n').filter((l) => l.trim());
-  if (!lines.some((l) => BULLET.test(l))) return null;
+  // Only a list throughout: a paragraph among the bullets (a Why with a few points in it) is prose, read by sentence.
+  if (!lines.some((l) => BULLET.test(l)) || lines.some((l) => !BULLET.test(l) && !/^\s{2,}/.test(l) && !NOTHING.test(l.trim()))) return null;
   const items = [];
   for (const l of lines) {
     if (BULLET.test(l) && !/^\s{2,}/.test(l)) items.push(l.replace(BULLET, ''));
-    else if (items.length) items[items.length - 1] += ` ${l}`;
-    else if (!NOTHING.test(l.trim())) items.push(l);
+    else if (items.length && !NOTHING.test(l.trim())) items[items.length - 1] += ` ${l}`;
   }
   return items.map((i) => i.replace(/\s+/g, ' ').trim());
 }
