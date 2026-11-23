@@ -173,8 +173,8 @@ export function createMcp({ model, agents, call, log = console }) {
       input: { limit: { type: 'number', description: 'How many issues, at most (default 5).' } },
       async run({ pid }, args) {
         const { project, nodes } = await mapOf(pid);
-        const { live } = await agents.liveClaims(pid);
-        const { work, blocked, needsSplit, toVerify } = nextWork(nodes, live, { tested: project?.tested });
+        const [{ live }, report] = await Promise.all([agents.liveClaims(pid), model.coverage.get(pid)]);
+        const { work, blocked, needsSplit, toVerify } = nextWork(nodes, live, { tested: project?.tested, report });
         // What people asked to be built comes first (#14 HANDOFF-10): claiming it takes the request.
         const builds = (await agents.buildRequests(pid, { nodes, live })).map(buildOf);
         const limit = Math.min(50, Math.max(1, Number(args.limit) || 5));
@@ -194,7 +194,7 @@ export function createMcp({ model, agents, call, log = console }) {
         const key = keyOf(node);
         const byId = new Map(nodes.map((n) => [n.id, n]));
         const { live } = await agents.liveClaims(pid);
-        const [comments, notes, questions] = await Promise.all([model.comments.list(pid, key), model.handoffs.list(pid, key), questionsOnMap(model, pid, [node], key)]);
+        const [comments, notes, questions, report] = await Promise.all([model.comments.list(pid, key), model.handoffs.list(pid, key), questionsOnMap(model, pid, [node], key), model.coverage.get(pid)]);
         const shape = parseIssue(editableOf(node).markdown);
         const why = sectionText(shape, 'Why');
         const parents = [];
@@ -215,7 +215,7 @@ export function createMcp({ model, agents, call, log = console }) {
           decisions: why.split(/\n\s*\n/).filter((p) => /\bdecided\b/i.test(p)).map((p) => p.trim()),
           behaviours: behavioursOf(node).map((b) => {
             const c = live.get(b.id);
-            return { id: b.id, text: b.text, state: b.fog ? 'not worked out yet' : buildingOf(node, c), ...(c ? { claimed_by: `${c.agentName} (${c.owner}) until ${c.until}` } : {}) };
+            return { id: b.id, text: b.text, state: b.fog ? 'not worked out yet' : buildingOf(node, c, b, report), ...(c ? { claimed_by: `${c.agentName} (${c.owner}) until ${c.until}` } : {}) };
           }),
           acceptance: sectionText(shape, 'Acceptance') || undefined,
           out_of_scope: sectionText(shape, 'Out of scope') || undefined,

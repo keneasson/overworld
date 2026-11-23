@@ -4,9 +4,9 @@ import { behaviourHouses, lotsOf } from './houses.js';
 import { resolveSite } from './places.js';
 import { drawMap, fitScale } from './renderer.js';
 
-/** Tree + geometry. Geometry is reused when only text changed, so the map never jumps. */
-export function buildScene(nodes, projectId, prev, projection = 'site') {
-  const tree = buildTree(nodes);
+/** Tree + geometry. Geometry is reused when only text changed, so the map never jumps. `report`: the latest coverage report (#21). */
+export function buildScene(nodes, projectId, prev, projection = 'site', report = null) {
+  const tree = buildTree(nodes, undefined, { report });
   if (!tree) return null;
   const site = projection === 'site' ? resolveSite(tree) : null;
   // Anything that moves land: structure, size, and (in the Site projection) where things sit.

@@ -904,3 +904,33 @@ test('HANDOFF-11 a builder whose claim ran out still links its pull request once
   await rest('PATCH', `/api/projects/${pid}/nodes/${zoom.id}`, { status: 'done' });
   assert.match((await b.refused('claim', { behaviours: ['ZOOM-02'], pull_request: 23 })).error, /done, not ready/);
 });
+
+test('PROVEN-06 PROVEN-07 PROVEN-05 a done behaviour is done only while its proof passes: unproven with none, broken and work again when it fails; the report says which commit it is from', async () => {
+  const { api, rest, pid, agent, model } = await setup();
+  const a = await agent('Builder');
+  const ci = (report) => api({ method: 'PUT', path: '/api/coverage', body: { commit: 'abc1234', coverage: 'behaviour', ...report }, headers: { authorization: `Bearer ${a.token}` } });
+  const fin = async () => (await a.use('context', { issue: '14' })).behaviours.find((b) => b.id === 'FIN-01').state;
+  const run = (passed) => ({ behaviours: { 'FIN-01': { passed, tests: [{ name: 'FIN-01 finishes', file: 'web/test/fin.test.mjs', passed }], files: { 'web/fin.js': '1-3' } } } });
+
+  assert.equal(await fin(), 'coded', 'with no report yet, done is what its issue says');
+  await ci({ behaviours: {} });
+  assert.equal(await fin(), 'unproven', 'nothing viewable proves it: not done, whatever its issue says');
+  assert.ok(!(await a.use('next_work')).work.some((w) => w.item === 'issue-14'));
+
+  await ci(run(false));
+  assert.equal(await fin(), 'broken');
+  const [first] = (await a.use('next_work')).work;
+  assert.deepEqual([first.item, first.broken, first.behaviours.map((b) => b.id)], ['issue-14', true, ['FIN-01']], 'offered as work again, ahead of the rest');
+  assert.deepEqual((await a.use('claim', { behaviours: ['FIN-01'] })).claimed, ['FIN-01'], 'and it can be claimed');
+  await a.use('handoff', { behaviours: ['FIN-01'], note: 'Fixed.' });
+
+  await ci(run(true));
+  assert.equal(await fin(), 'coded', 'done again once its proof passes');
+  assert.ok(!(await a.use('next_work')).work.some((w) => w.item === 'issue-14'));
+
+  await model.links.link(githubKey('octo/app'), pid);
+  assert.equal((await rest('GET', `/api/projects/${pid}/coverage`)).code, null);
+  await rest('POST', '/api/deploys', { repo: 'octo/app', sha: 'def5678aaa', outcome: 'success', pulls: [] });
+  const { coverage, code } = await rest('GET', `/api/projects/${pid}/coverage`);
+  assert.deepEqual([coverage.commit, code], ['abc1234', 'def5678aaa'], 'the report and the code each say their commit, so the map can tell the report is older');
+});

@@ -281,6 +281,52 @@ function drawBuildings(ctx, houses, k, dark) {
   ctx.lineJoin = 'round';
 }
 
+/**
+ * A house's proof from the latest report (#21 PROVEN-02), on its corner: a green tick when it passes, a red cross when it
+ * fails (broken, if its issue is done), a hollow ring when nothing proves it yet. Houses Directions lights (PROVEN-04)
+ * are outlined in the accent colour.
+ */
+function drawProof(ctx, houses, k, dark) {
+  for (const { corners, alpha, proof, lit, size } of houses) {
+    ctx.globalAlpha = alpha;
+    if (lit) {
+      ctx.beginPath();
+      corners.forEach(([hx, hy], i) => (i ? ctx.lineTo(hx, hy) : ctx.moveTo(hx, hy)));
+      ctx.closePath();
+      ctx.strokeStyle = ACCENT;
+      ctx.lineWidth = 3 / k;
+      ctx.stroke();
+    }
+    if (!proof) continue;
+    const [x, y] = corners[1];
+    const r = (size * 0.3) / k;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = proof === 'passing' ? '#1e8e3e' : proof === 'failing' ? '#d93025' : dark ? '#3c4043' : '#ffffff';
+    ctx.fill();
+    ctx.lineWidth = 1.2 / k;
+    ctx.strokeStyle = proof === 'untested' ? '#9aa0a6' : '#ffffff';
+    ctx.stroke();
+    if (proof === 'untested') continue;
+    ctx.beginPath();
+    if (proof === 'passing') {
+      ctx.moveTo(x - r * 0.45, y + r * 0.02);
+      ctx.lineTo(x - r * 0.1, y + r * 0.38);
+      ctx.lineTo(x + r * 0.48, y - r * 0.34);
+    } else {
+      ctx.moveTo(x - r * 0.38, y - r * 0.38);
+      ctx.lineTo(x + r * 0.38, y + r * 0.38);
+      ctx.moveTo(x + r * 0.38, y - r * 0.38);
+      ctx.lineTo(x - r * 0.38, y + r * 0.38);
+    }
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = r * 0.28;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
 /** A bulldozer on the lot of a house being coded (MARK-17): construction yellow, so it reads as work going on. */
 function drawBulldozer(ctx, [bx, by], size, alpha) {
   ctx.globalAlpha = alpha;
@@ -781,10 +827,20 @@ export function drawMap(ctx, scene, view, opts) {
   if (towns.length) drawTowns(ctx, towns, k, theme.dark, scene);
   if (houses.length) drawBuildings(ctx, houses, k, theme.dark);
   if (fogged.length) drawFog(ctx, fogged, k, time, theme.dark);
+  // Proof marks stand above the fog too: whether a behaviour is proven is a fact, however little else is known.
+  if (houses.length) drawProof(ctx, houses, k, theme.dark);
   // Bulldozers stand above the fog: work going on is news, however little is known about the land (MARK-17).
   for (const h of houses) if (h.bulldozer) drawBulldozer(ctx, h.bulldozer, h.size / k, h.alpha);
   for (const h of houses) if (h.waiting) drawWaiting(ctx, h.waiting, h.size / k, h.alpha, theme.dark);
 
+  // Directions (#21 PROVEN-04): the issues whose behaviours reach a file are outlined at every zoom, their houses up close.
+  if (live?.lit?.size && !thumbnail) {
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = 2.5 / k;
+    for (const id of new Set([...live.lit].map((h) => h.split('~')[0]))) if (geo.get(id)) ctx.stroke(pathFor(geo.get(id)));
+    ctx.globalAlpha = 1;
+  }
   const hovered = hoverId && (scene.nodeOf?.(hoverId) ?? tree.byId.get(hoverId));
   if (hovered && !thumbnail) {
     ctx.globalAlpha = 0.9;

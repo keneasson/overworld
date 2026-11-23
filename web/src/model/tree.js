@@ -3,6 +3,7 @@
 
 import { ROOT_ID } from '@shared/schema.js';
 import { editableOf, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
+import { doneOf, proofOf } from '@shared/proof.js';
 
 // Each behaviour an issue lists is a house on its own lot in the issue's block (#46 MARK-16), and weighs this much of
 // the map. A leaf issue's block is its scope: with few behaviours it is mostly open land, a park, and houses fill it as
@@ -10,13 +11,23 @@ import { editableOf, parseBehaviours, parseIssue, sectionText } from '@shared/is
 export const HOUSE_WEIGHT = 0.6;
 const PLACES = new Set(['project', 'area']);
 const inIdOrder = (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true });
-/** The behaviours an issue lists itself, as { id, words }, in behaviour ID order: the houses on its block. */
-const behaviourRowsOf = (n) =>
+const FOG = /^not worked out yet\b/i;
+// An issue's behaviours are adopted once it is ready (CONTRIBUTING.md): only those can be built, proven and done (#21 PROVEN-01).
+const ADOPTED = new Set(['ready', 'in_progress', 'review', 'done']);
+/**
+ * The behaviours an issue lists itself, as { id, words }, in behaviour ID order: the houses on its block. Each carries
+ * its proof from the latest coverage report (shared/proof.js) and, for a done issue, whether it is done, unproven or broken.
+ */
+const behaviourRowsOf = (n, report) =>
   n.tags.includes('code') || PLACES.has(n.kind) || n.kind === 'behavior'
     ? []
     : parseBehaviours(sectionText(parseIssue(editableOf(n).markdown), 'Behaviours'))
         .filter((r) => r.id)
-        .map((r) => ({ id: r.id, words: (r.then || r.text || r.when || r.given || '').trim(), said: [r.given, r.when, r.then, r.text].filter(Boolean).join(' ') }))
+        .map((r) => {
+          const proof = proofOf(r.id, { report, raw: r.raw });
+          const fog = FOG.test(r.text || r.given || '');
+          return { id: r.id, words: (r.then || r.text || r.when || r.given || '').trim(), said: [r.given, r.when, r.then, r.text].filter(Boolean).join(' '), fog, proof, done: doneOf(n.status === 'done', proof) };
+        })
         .sort(inIdOrder);
 const BASE_WEIGHT = { project: 8, area: 6, epic: 5, feature: 4, story: 3, task: 2, bug: 1.6, behavior: 1.2 };
 const CONTAINER = new Set(['project', 'area', 'epic', 'feature']);
@@ -41,7 +52,8 @@ export function definitionScore(n, hasKids) {
 
 const daysUntil = (date, today) => (Date.parse(date) - Date.parse(today)) / 86_400_000;
 
-export function buildTree(rawNodes, today = new Date().toISOString().slice(0, 10)) {
+/** @param {{ report?: object | null }} [o] the latest coverage report (#20): with it, only proven behaviours count as done (#21) */
+export function buildTree(rawNodes, today = new Date().toISOString().slice(0, 10), { report = null } = {}) {
   const byId = new Map();
   for (const raw of rawNodes) byId.set(raw.id, { ...raw, tags: raw.tags ?? [], links: raw.links ?? [], children: [], parent: null, depth: 0 });
   const root = byId.get(ROOT_ID) ?? [...byId.values()].find((n) => !n.parentId);
@@ -80,7 +92,7 @@ export function buildTree(rawNodes, today = new Date().toISOString().slice(0, 10
     });
   })(root, 0);
 
-  for (let i = list.length - 1; i >= 0; i--) rollup(list[i], today);
+  for (let i = list.length - 1; i >= 0; i--) rollup(list[i], today, report);
 
   const incoming = new Map();
   for (const n of list) {
@@ -100,11 +112,12 @@ export function buildTree(rawNodes, today = new Date().toISOString().slice(0, 10
   }
 
   const owners = [...new Set(list.map((n) => n.assignee).filter(Boolean))].sort();
-  return { root, byId, list, incoming, maxByDepth, owners, today };
+  return { root, byId, list, incoming, maxByDepth, owners, today, report };
 }
 
-function rollup(n, today) {
-  n.behaviourRows = behaviourRowsOf(n);
+function rollup(n, today, report) {
+  n.behaviourRows = behaviourRowsOf(n, report);
+  const adopted = ADOPTED.has(n.status) ? n.behaviourRows.filter((b) => !b.fog) : [];
   const kids = n.children;
   const leaf = kids.length === 0;
   const done = n.status === 'done';
@@ -134,6 +147,10 @@ function rollup(n, today) {
     blocked: n.status === 'blocked' ? 1 : 0,
     behaviours: n.kind === 'behavior' ? 1 : 0,
     behavioursKept: n.kind === 'behavior' && done ? 1 : 0,
+    // Adopted behaviours, and those done: built and proven (#21 PROVEN-01), or done but whose proof now fails (PROVEN-07).
+    adopted: adopted.length,
+    proven: adopted.filter((b) => b.done === 'done').length,
+    broken: adopted.filter((b) => b.done === 'broken').length,
     // The behaviours the issue lists itself, and how much of its scope isn't built into houses yet (MARK-18).
     own: n.behaviourRows.length,
     open: 0,
@@ -141,6 +158,9 @@ function rollup(n, today) {
     owner: n.assignee || '',
   };
 
+  s.measured = Boolean(report);
+  // Done, but its proof now fails: broken wherever done shows (PROVEN-07), the Lifecycle layer included.
+  if (s.broken && s.states.done) s.states = { broken: 1 };
   const houses = s.own * HOUSE_WEIGHT;
   if (leaf) {
     const est = n.estimate != null ? 0.7 + Math.min(n.estimate, 13) * 0.1 : 1;
@@ -150,7 +170,10 @@ function rollup(n, today) {
     s.raw = n.weight ?? Math.max(scope, houses);
     s.work = rejected ? 0 : s.raw;
     s.progress = { done: 1, review: 0.85, in_progress: 0.45, blocked: 0.2 }[n.status] ?? 0;
-    if (done || rejected) s.health = 'done';
+    // Measured, a done issue is as done as its proven behaviours (PROVEN-01, PROVEN-06).
+    if (done && report && s.adopted) s.progress = s.proven / s.adopted;
+    if (s.broken) s.health = 'off_track';
+    else if (done || rejected) s.health = 'done';
     else if (n.status === 'blocked' || overdue) s.health = 'off_track';
     else if (['idea', 'planned', 'ready', 'needs_decision'].includes(n.status)) s.health = 'not_started';
     if (n.due && !done && s.health !== 'off_track' && daysUntil(n.due, today) <= 7 && s.progress < 0.5) s.health = 'at_risk';
@@ -167,14 +190,14 @@ function rollup(n, today) {
       defSum += cs.defAvg * cs.raw;
       weightBy[cs.health] += cs.work;
       for (const [k, v] of Object.entries(cs.states)) s.states[k] = (s.states[k] ?? 0) + v;
-      for (const key of ['items', 'leaves', 'doneLeaves', 'openBugs', 'bugs', 'newFeatures', 'newFeaturesDone', 'poorlyDefined', 'blocked', 'behaviours', 'behavioursKept']) s[key] += cs[key];
+      for (const key of ['items', 'leaves', 'doneLeaves', 'openBugs', 'bugs', 'newFeatures', 'newFeaturesDone', 'poorlyDefined', 'blocked', 'behaviours', 'behavioursKept', 'adopted', 'proven', 'broken']) s[key] += cs[key];
       for (const [who, w] of cs.owners) s.owners.set(who, (s.owners.get(who) ?? 0) + w);
     }
     s.raw = n.weight ?? area + houses;
     s.work = rejected ? 0 : total;
-    s.progress = done || !total ? 1 : progress / total;
+    s.progress = (done && !report) || !total ? 1 : progress / total;
     s.defAvg = (def + defSum / area) / 2;
-    if (done || weightBy.done === total) s.health = 'done';
+    if ((done && !s.broken) || weightBy.done === total) s.health = 'done';
     else if (weightBy.off_track / total >= 0.25) s.health = 'off_track';
     else if (weightBy.off_track > 0 || weightBy.at_risk / total >= 0.2) s.health = 'at_risk';
     else if (weightBy.not_started === total) s.health = 'not_started';

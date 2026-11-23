@@ -5,6 +5,7 @@ import { relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TEST_PATH } from '../../api/engine/behaviours.mjs';
 
+const TRANSFORMED = /\.[jt]sx$/;
 const anchors = new Map(); // path -> where each line that isn't blank starts: { offsets, lines }, in order
 
 function anchorsOf(path) {
@@ -41,6 +42,11 @@ export function linesReached(result, root) {
   for (const script of result) {
     const rel = codePathOf(script.url, root);
     if (!rel) continue;
+    // JSX runs as the loader rewrote it, so its offsets aren't the file's: it was reached, but which lines can't be said.
+    if (TRANSFORMED.test(rel)) {
+      if (script.functions.some((f, i) => i > 0 && f.ranges[0].count > 0)) out.set(rel, new Set());
+      continue;
+    }
     let at;
     try {
       at = anchorsOf(fileURLToPath(script.url));

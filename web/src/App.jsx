@@ -65,6 +65,7 @@ function useMedia(query) {
 // A newer deploy is noticed when the app comes back to the foreground, and every few minutes (SHIP-12): on a phone
 // the map takes every touch, so pull-to-refresh can't, and an app opened from the home screen has no reload button.
 const VERSION_CHECK_MS = 5 * 60_000;
+const NO_COVERAGE = { report: null, code: null };
 const NO_BUILDS = { requests: [], buildable: {}, notes: [] };
 function useNewVersion() {
   const [newer, setNewer] = useState(false);
@@ -245,6 +246,24 @@ export function App() {
     const t = setInterval(() => document.visibilityState === 'visible' && load(), 30000);
     return () => clearInterval(t);
   }, [projectId, loadBuilds]);
+  // The latest coverage report (#20) and the commit the code is at: the proof layer (#21). CI replaces it a few times an
+  // hour at most, so look again now and then. Directions (PROVEN-04) lights up the behaviours that reach a file.
+  const [coverage, setCoverage] = useState(NO_COVERAGE);
+  const [lit, setLit] = useState(null);
+  useEffect(() => {
+    setCoverage(NO_COVERAGE);
+    setLit(null);
+    if (!projectId) return undefined;
+    const pid = projectId;
+    const load = () =>
+      api
+        .coverage(pid)
+        .then((d) => latest.current.projectId === pid && setCoverage((was) => (was.report?.commit === d.coverage?.commit && was.report?.savedAt === d.coverage?.savedAt && was.code === d.code ? was : { report: d.coverage ?? null, code: d.code ?? null })))
+        .catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === 'visible' && load(), 300000);
+    return () => clearInterval(t);
+  }, [projectId]);
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
     if (!claims.length) return undefined;
@@ -271,10 +290,10 @@ export function App() {
 
   const scene = useMemo(() => {
     if (!data) return null;
-    const s = buildScene(data.nodes, data.project.id, sceneRef.current, projection);
+    const s = buildScene(data.nodes, data.project.id, sceneRef.current, projection, coverage.report);
     sceneRef.current = s;
     return s;
-  }, [data, projection]);
+  }, [data, projection, coverage.report]);
   const tree = scene?.tree;
   const offered = LENS_BY_ID[lensId]; // the lens chosen; Review is drawn over what is waiting, below
   const selected = selectedId ? tree?.byId.get(selectedId) : null;
@@ -597,8 +616,8 @@ export function App() {
     const refinements = new Map(review.filter((e) => e.changes > 0).map((e) => [e.node.id, e.changes]));
     const agents = tree ? claimsByNode(claims, tree, clock) : new Map();
     const waiting = tree ? waitingByNode(builds.requests, tree) : new Map();
-    return { refinements, notes, agents, waiting };
-  }, [review, editing.name, editing.hasRead, tree, comments, openNotes, claims, builds, clock]);
+    return { refinements, notes, agents, waiting, lit: new Set(lit?.houses ?? []) };
+  }, [review, editing.name, editing.hasRead, tree, comments, openNotes, claims, builds, clock, lit]);
   // Agents propose through MCP while the map is open: look again when an item opens, and now and then.
   const { reloadRefinements } = editing;
   useEffect(() => {
@@ -865,6 +884,9 @@ export function App() {
                   editing={editing}
                   builds={builds}
                   claims={claims}
+                  proof={{ ...coverage, repo: data.project.githubRepo ?? null }}
+                  lit={lit}
+                  onDirections={setLit}
                   review={reviewingId === selected.id ? review : null}
                   box={box}
                   onNextReview={pickReview}

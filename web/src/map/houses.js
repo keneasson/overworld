@@ -38,11 +38,15 @@ export function behaviourHouses(tree) {
       children: [],
       tags: [],
       links: [],
-      status: n.status,
+      status: b.done === 'unproven' ? 'planned' : n.status, // unproven: not done, whatever its issue says (#21 PROVEN-06)
       // The issue's own measures, for lenses, except that a house is never fog of its own: the issue carries that.
-      stats: { ...n.stats, vague: false, own: 0, open: 0 },
+      // Its own building state, once its issue is done (#21): broken or unproven behaviours aren't done, whatever the issue says.
+      stats: { ...n.stats, vague: false, own: 0, open: 0, ...(b.done ? { states: { [{ done: 'done', broken: 'broken', unproven: 'planned' }[b.done]]: 1 } } : {}) },
       behaviour: b.id,
       issue: n,
+      // Its proof from the latest report (#21 PROVEN-02), and whether it is done, unproven or broken.
+      proof: b.proof,
+      done: b.done,
     }));
     byIssue.set(n.id, houses);
     for (const h of houses) byId.set(h.id, h);
@@ -120,7 +124,8 @@ export function waitingByNode(requests, tree) {
 /**
  * The houses drawn at this view, from the lots on screen (`lotsAt(...).grounds`): each with its footprint's corners in
  * world coordinates, how strongly it shows, and where its bulldozer stands while it is being coded (`live.agents`), or
- * its hourglass while it waits for a builder (`live.waiting`).
+ * its hourglass while it waits for a builder (`live.waiting`); its proof (untested, passing or failing), and whether
+ * Directions lights it (`live.lit`).
  */
 export function housesAt(grounds, { k, live = {} }) {
   const out = [];
@@ -151,7 +156,9 @@ export function housesAt(grounds, { k, live = {} }) {
     const spot = [cx + hw + (g.labelR - hw) * 0.45, cy + hh + (g.labelR - hh) * 0.25];
     const bulldozer = coded ? spot : null;
     const waiting = !coded && (live.waiting?.get(n.id) ?? 0) > 0 ? spot : null;
-    out.push({ n, g, alpha: show, corners, area: 4 * hw * hh, bulldozer, waiting, size: Math.max(16, Math.min(28, g.labelR * k * 0.3)) });
+    // Its proof, once there is a report (PROVEN-02): a mark on the house's corner, and lit when Directions asks (PROVEN-04).
+    const proof = n.proof?.measured ? (n.proof.state === 'failing' ? 'failing' : n.proof.proven ? 'passing' : 'untested') : null;
+    out.push({ n, g, alpha: show, corners, area: 4 * hw * hh, bulldozer, waiting, proof, lit: Boolean(live.lit?.has(n.id)), size: Math.max(16, Math.min(28, g.labelR * k * 0.3)) });
   }
   return out;
 }
