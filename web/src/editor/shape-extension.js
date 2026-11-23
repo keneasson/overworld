@@ -50,8 +50,8 @@ function marker(c, onThread, moved) {
   };
 }
 
-/** Each annotation's highlight and marker, where its anchor is now (NOTE-01, NOTE-13). */
-function notes(doc, { threads, active, onThread }) {
+/** Each annotation's highlight and marker, where its anchor is now (NOTE-01, NOTE-13): decorations for the document. */
+export function notes(doc, { threads, active = null, onThread = () => {} }) {
   const out = [];
   const texts = sectionTexts(doc);
   for (const c of threads) {

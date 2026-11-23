@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, ANSWER-07, #68), annotations addressed to agents (NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15), a comment never an open question (NOTE-22) and leaf-only work (STATE-09, STATE-10, #32) and build requests and the runner they start (HANDOFF-01, HANDOFF-05 to HANDOFF-07, HANDOFF-09, HANDOFF-10, #14), tested the way an agent uses it: JSON-RPC over HTTP.
+// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, ANSWER-07, #68), annotations addressed to agents (NOTE-07, NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15), a comment never an open question (NOTE-22) and leaf-only work (STATE-09, STATE-10, #32) and build requests and the runner they start (HANDOFF-01, HANDOFF-05 to HANDOFF-07, HANDOFF-09, HANDOFF-10, #14), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -743,6 +743,29 @@ test('HANDOFF-05 HANDOFF-01 a person chooses Build on an issue or on one behavio
   const { build_requests: [first] } = await (await agent('Builder')).use('next_work');
   assert.equal(first.item, 'issue-11');
   for (const part of ['CL-01 Given work, when claimed, then it is held.', 'CL-02 Given a claim', 'It works.', 'Out of scope', 'Its parent: Web', '#10 Zoom (issue-10)', 'claim(behaviours: ["CL-01", "CL-02"])', 'never push to main']) assert.ok(first.prompt.includes(part), `the prompt has ${part}`);
+});
+
+test('NOTE-07 an issue handed to an agent carries its comments still open, each with what it is on and its thread', async () => {
+  const { rest, pid, agent, clock } = await setup();
+  const say = (b) => rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', author: 'Ann', ...b });
+  const onWords = (await say({ anchor: { on: 'word', section: 'Why', quote: 'Because', prefix: '', suffix: '.' }, text: 'Because of what?' })).comment;
+  clock.now += 1000;
+  await say({ replyTo: onWords.id, text: 'Of the outage.', author: 'Ken' });
+  clock.now += 1000;
+  await say({ anchor: { on: 'behaviour', behaviour: 'CL-02' }, text: 'How long is a claim?' });
+  const settled = (await say({ anchor: { on: 'section', section: 'Why' }, text: 'Old news.' })).comment;
+  await rest('POST', `/api/projects/${pid}/comments/issue-11/${settled.id}/dismiss`, { by: 'Ann' });
+  await say({ itemKey: 'issue-10', anchor: { on: 'section', section: 'Why' }, text: 'On another issue.' });
+
+  await rest('POST', `/api/projects/${pid}/builds`, { item: 'issue-11', by: 'Ken' });
+  const { build_requests: [r] } = await (await agent('Builder')).use('next_work');
+  const from = r.prompt.indexOf('Its open comments (2)');
+  assert.ok(from > 0, 'the open comments are in the prompt');
+  const part = r.prompt.slice(from, r.prompt.indexOf('The item as it stands'));
+  for (const said of ['Ann, on these words in Why:', '> Because', 'Ann: Because of what?', '- Ken: Of the outage.', 'Ann, on behaviour CL-02', 'Ann: How long is a claim?']) assert.ok(part.includes(said), `the prompt has ${said}`);
+  assert.ok(part.indexOf('Because of what?') < part.indexOf('Of the outage.'), 'each with its thread, in order');
+  assert.ok(!r.prompt.includes('Old news.'), 'a dismissed comment is in the log, not the prompt');
+  assert.ok(!r.prompt.includes('On another issue.'), "another issue's comments stay there");
 });
 
 test('HANDOFF-06 HANDOFF-10 an open session takes a build request by claiming it, before other work, so nobody else builds it; one nobody takes within an hour says so', async () => {

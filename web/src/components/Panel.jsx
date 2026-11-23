@@ -15,7 +15,8 @@ import { issueRefExtension } from '../model/links.js';
 import { useLinks } from './links-context.js';
 import { reviewingAt, titleWithNumber, waitedFor, waitingWords } from '../model/review.js';
 
-DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+// Only where there is a page to sanitise for (not when the panel is read in a test).
+DOMPurify.addHook?.('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
     node.setAttribute('target', '_blank');
     node.setAttribute('rel', 'noopener noreferrer');

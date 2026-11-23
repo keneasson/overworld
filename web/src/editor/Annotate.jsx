@@ -37,7 +37,8 @@ const TextBox = lazy(() =>
 );
 
 const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const posts = (e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey);
+/** ⌘/Ctrl+Enter posts what is written (NOTE-12); the formatted box's Mod-Enter is the same key. */
+export const posts = (e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey);
 
 /** A plain box to write in: while the formatted one loads, or instead of it. */
 function PlainBox({ value, onChange, onSubmit, label, placeholder, autoFocus }) {

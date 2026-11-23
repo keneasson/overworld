@@ -4,7 +4,7 @@
 
 import { OTHER_CHANGES, compareItems, editableOf, itemKeyOf } from '../shared/issue-shape.js';
 import { isAgentAlias, isOpen, mentionsOf, threadsOf, whereOf } from '../shared/annotations.js';
-import { itemContext, quote } from './prompts.mjs';
+import { anchorWords, itemContext, quote } from './prompts.mjs';
 
 /**
  * Who a comment is addressed to: each @mention, read against the project's agents. "@Claude" is any agent; an agent's
@@ -17,27 +17,6 @@ export function addresseesOf(text, agents = []) {
     if (a) return { name: `${a.name} (${a.id})`, agent: true, agentId: a.id };
     return isAgentAlias(m) ? { name: m, agent: true } : { name: m };
   });
-}
-
-function anchorWords(a = {}) {
-  if (a.refinement) {
-    const what = a.behaviour === OTHER_CHANGES ? 'the other changes (title and sections)' : `behaviour ${a.behaviour}`;
-    return a.quote ? [`on these words of ${what}, as your refinement ${a.refinement} proposes it:`, quote(a.quote)] : [`on ${what}, as your refinement ${a.refinement} proposes it`];
-  }
-  switch (a.on) {
-    case 'place':
-      return ['on its place on the map'];
-    case 'changeset':
-      return ['on the changeset of edits in this area that are not on GitHub yet, as a whole'];
-    case 'section':
-      return [`on the whole ${a.section} section`];
-    case 'behaviour':
-      return [`on behaviour ${a.behaviour}`];
-    case 'image':
-      return [`on an image in ${a.section} (${a.src}${a.quote ? `, "${a.quote}"` : ''})`];
-    default:
-      return a.quote ? [`on these words in ${a.behaviour ? `behaviour ${a.behaviour}` : a.section}:`, quote(a.quote)] : [`on ${a.behaviour ?? a.section}`];
-  }
 }
 
 /**

@@ -311,6 +311,12 @@ export function CommentToggle({ on, onToggle }) {
   );
 }
 
+/**
+ * What Esc does on the page (NOTE-16): in a comment box, or any field, the box or field has it (a comment box closes itself and
+ * leaves the control on); otherwise it switches the Comment control off before it closes anything.
+ */
+export const escapeDoes = ({ commenting, inBox }) => (inBox ? null : commenting ? 'stop commenting' : 'close');
+
 export function MapControls({ onZoom, onOverview, children }) {
   return (
     <div className="map-controls">
