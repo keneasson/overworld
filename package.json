@@ -15,6 +15,7 @@
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
     "test": "node --import ./web/test/register.mjs --test \"api/test/*.test.mjs\" \"web/test/*.test.mjs\" \"scripts/test/*.test.mjs\" \"packages/*/test/*.test.mjs\"",
+    "coverage": "node scripts/coverage.mjs",
     "deploy": "node scripts/deploy.mjs",
     "coherence": "node scripts/coherence.mjs",
     "destroy": "node scripts/destroy.mjs"

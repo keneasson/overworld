@@ -1,5 +1,7 @@
 # SHIP-01: every pull request runs the tests and the production build. Production's deploy reuses
 # this job, so main is tested the same way. Forks run it too, with no secrets (SHIP-05).
+# The tests run once, measuring which code each behaviour's tests reach (#20). A job of its own saves
+# the report to Overworld, never for a fork, and skips saying why when the agent token isn't set.
 name: CI
 
 on:
@@ -24,5 +26,37 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test
+      - name: npm test, with coverage per behaviour (#20)
+        run: npm run coverage
+        env:
+          OVERWORLD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage
+          path: .coverage/report.json
+          if-no-files-found: ignore
+          retention-days: 1
       - run: npm run build
+
+  # COVER-03: the report, marked with its commit, replaces the one Overworld holds. It runs when tests fail
+  # too, so a behaviour whose proof fails shows it (#21).
+  coverage:
+    needs: test
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage
+      - name: Save the report to Overworld
+        env:
+          OVERWORLD_URL: ${{ vars.OVERWORLD_URL }}
+          OVERWORLD_AGENT_TOKEN: ${{ secrets.OVERWORLD_AGENT_TOKEN }}
+        run: |
+          if [ -z "$OVERWORLD_URL" ] || [ -z "$OVERWORLD_AGENT_TOKEN" ]; then
+            echo "Not saved: OVERWORLD_URL and OVERWORLD_AGENT_TOKEN aren't both set (see .github/workflows/README.md)."
+            exit 0
+          fi
+          curl -fsS -X PUT "$OVERWORLD_URL/api/coverage" -H "authorization: Bearer $OVERWORLD_AGENT_TOKEN" -H 'content-type: application/json' --data-binary @report.json
