@@ -46,3 +46,23 @@ export function inbox(table) {
     },
   };
 }
+
+// Open questions (#68) live in their item's text; this keeps what the text doesn't say: who asked and answered each, when,
+// the prompt a person changed, and whether its answer was applied. One row per question, by item.
+export function questions(table) {
+  return {
+    /** A project's questions, or one item's. Query begins_with(SK, ASK#[<itemKey>#]). */
+    async list(projectId, itemKey = '') {
+      return (await table.query(keys.questionsOf(projectId, itemKey))).map(strip);
+    },
+    /** GetItem by the question's item and id, or null. */
+    async get(projectId, ref) {
+      const it = await table.get(keys.question(projectId, ref));
+      return it ? strip(it) : null;
+    },
+    /** PutItem. */
+    async put(projectId, q) {
+      await table.put({ ...keys.question(projectId, q), entity: 'question', ...q });
+    },
+  };
+}

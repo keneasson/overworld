@@ -6,6 +6,7 @@
 //   Flag      APP             FLAG#<name>
 //   Changeset PROJECT#<id>    CHANGESET#<changesetId>
 //   Comment   PROJECT#<id>    COMMENT#<itemKey>#<commentId>
+//   Question  PROJECT#<id>    ASK#<itemKey>#<questionId>  who asked and answered an item's open question, and when (#68)
 //   Inbox     PROJECT#<id>    INBOX#<commentId>  an annotation addressed to an agent, until an agent replies (#15 NOTE-17)
 //   Node with a sync state, or new in a refinement   PENDING#<id> <itemKey>  sparse: only nodes not yet in line with their store
 //   Sync job  PROJECT#<id>    JOB#<savedAt>#<itemKey>   the outbox: a saved item still to reach its store
@@ -27,7 +28,7 @@
 //
 // A project and its nodes share a partition (an item collection): one query reads a
 // whole map, and one query finds everything to delete. The map's entities sort last: every prefix in a
-// project's partition other than NODE# (CHANGESET#, COMMENT#, JOB#, LEASE#, AUDIT#) sorts before it, and
+// project's partition other than NODE# (ASK#, CHANGESET#, COMMENT#, JOB#, LEASE#, AUDIT#) sorts before it, and
 // PROJECT after it, so opening a map is one range query from NODE# on, and never reads the changesets,
 // comments or sync's records: those load when they're asked for (DATA-02). A new entity in the partition
 // must sort before NODE#, or every map open would read it. Changesets and comments are keyed by the item
@@ -87,6 +88,8 @@ export const keys = {
   limit: (projectId, agentId, minute) => ({ PK: projectPartition(projectId), SK: `LIMIT#${agentId}#${minute}` }),
   clientError: ({ at, id }) => ({ PK: 'ERRORS', SK: `ERROR#${at}#${id}` }),
   clientErrorsSince: (at) => ({ pk: 'ERRORS', skFrom: `ERROR#${at}`, skTo: 'ERROR#~' }),
+  question: (projectId, { itemKey, id }) => ({ PK: projectPartition(projectId), SK: `ASK#${itemKey}#${id}` }),
+  questionsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `ASK#${itemKey ? `${itemKey}#` : ''}` }),
   inbox: (projectId, id) => ({ PK: projectPartition(projectId), SK: `INBOX#${id}` }),
   inboxOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: 'INBOX#' }),
   commentsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `${COMMENT_PREFIX}${itemKey ? `${itemKey}#` : ''}` }),

@@ -24,7 +24,7 @@ const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
  * project's open changeset as you type, so picking another item loses nothing; Accept applies them to the map
  * together (EDIT-03), and only Save sends anything to GitHub (SYNC-07), deciding nothing (SYNC-08).
  */
-export function useItemEditing({ projectId, tree, setComments, onAccepted, onRemoved, reloadNodes, toast, fail }) {
+export function useItemEditing({ projectId, tree, setComments, onAccepted, onAnswered, onRemoved, reloadNodes, toast, fail }) {
   const [changeset, setChangeset] = useState(null);
   const [others, setOthers] = useState([]); // open refinements by someone else: an agent or another person (ADOPT-02)
   const [drafts, setDrafts] = useState(() => new Map());
@@ -246,7 +246,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
       const res = await api.acceptChangeset(projectId, cs.id);
       onAccepted(res.nodes);
       // Adopting applies the answers it carries (ANSWER-04); the comments it acted on stay where they are (NOTE-19).
-      if (res.applied?.length) setComments((cs) => cs.map((x) => res.applied.find((r) => r.id === x.id && r.itemKey === x.itemKey) ?? x));
+      if (res.applied?.length) onAnswered?.();
       const n = res.changeset.items.length;
       toast(`Accepted ${n} edit${n === 1 ? '' : 's'}. Save to send ${n === 1 ? 'it' : 'them'} to GitHub.`);
       reset();
@@ -306,12 +306,10 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
-  // A comment (#15), or a reply in a thread (NOTE-11). A person's reply to a question is its answer, with the prompt they
-  // changed, if they did (ANSWER-01, ANSWER-05). True once it is posted.
-  async function comment(key, anchor, text, { replyTo, prompt } = {}) {
+  // A comment (#15), or a reply in a thread (NOTE-11): a reply, never an answer, wherever it is anchored (NOTE-22). True once it is posted.
+  async function comment(key, anchor, text, { replyTo } = {}) {
     try {
-      const { comment: c, thread, prompt: sent } = await api.addComment(projectId, { itemKey: key, anchor, text, author: nameNow.current, replyTo, prompt });
-      if (sent) toast('Answered. An agent applies it through a refinement for you to adopt.');
+      const { comment: c, thread } = await api.addComment(projectId, { itemKey: key, anchor, text, author: nameNow.current, replyTo });
       // A reply to @Claude also changes its thread: it is addressed to an agent again (NOTE-14).
       setComments((cs) => [...cs.map((x) => (thread && x.id === thread.id && x.itemKey === thread.itemKey ? thread : x)), c]);
       return true;
@@ -377,8 +375,36 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     }
   }
 
-  // The prompt a reply to a question goes out with, to read and change first (ANSWER-05).
-  const answerPrompt = async (c, text) => (await api.answerPrompt(projectId, c, { text, author: name })).prompt;
+  // Answer an open question (ANSWER-01): written under it in the item at once, waiting for a save like any accepted edit,
+  // with the prompt the person changed, if they did (ANSWER-05). Your draft of the item gets the answer too. True once written.
+  async function answer(key, question, text, prompt) {
+    try {
+      await flush();
+      const res = await api.answerQuestion(projectId, key, question.id, { text, by: name, prompt });
+      onAccepted([res.node]);
+      const yours = res.changesets?.find((cs) => cs.id === mine.current);
+      if (yours) {
+        setChangeset(yours);
+        csPromise.current = Promise.resolve(yours);
+        const it = yours.items.find((x) => x.key === key);
+        setDrafts((d) => {
+          const next = new Map(d);
+          if (it?.after) next.set(key, it.after);
+          else next.delete(key);
+          return next;
+        });
+      }
+      setGeneration((g) => g + 1);
+      onAnswered?.();
+      toast('Answered. An agent applies it through a refinement for you to adopt.');
+      return true;
+    } catch (err) {
+      fail(err);
+      return false;
+    }
+  }
+  // The prompt an answer goes out with, to read and change first (ANSWER-05).
+  const answerPrompt = async (key, question, text) => (await api.questionPrompt(projectId, key, question.id, { text, by: name })).prompt;
 
   const setName = (v) => {
     nameNow.current = v;
@@ -386,5 +412,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
     storage.set(NAME, v || null);
   };
 
-  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, split, splitOf, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, answerPrompt, hasRead, markRead, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, split, splitOf, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, answer, answerPrompt, hasRead, markRead, flush };
 }

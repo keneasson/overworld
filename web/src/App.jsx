@@ -181,14 +181,21 @@ export function App() {
   // pays for every thread up front. `commentsFor` remembers which items it has asked for.
   const commentsFor = useRef(new Set());
   const [openNotes, setOpenNotes] = useState({}); // comments not dismissed by item, and who has read them all, for the map's badges (NOTE-04)
+  const [openQuestions, setOpenQuestions] = useState({}); // open questions waiting on someone, by item (#62 REVIEW-02)
+  const notesFrom = (pid) => (d) => {
+    if (latest.current.projectId !== pid) return;
+    setOpenNotes(d.open);
+    setOpenQuestions(d.questions ?? {});
+  };
   useEffect(() => {
     setComments([]);
     setOpenNotes({});
+    setOpenQuestions({});
     commentsFor.current = new Set();
     if (!projectId) return;
     api
       .openNotes(projectId)
-      .then((d) => latest.current.projectId === projectId && setOpenNotes(d.open))
+      .then(notesFrom(projectId))
       .catch(() => {});
   }, [projectId]);
   // Questions waiting on someone change while the map is open (#62 REVIEW-02): look again with the refinements.
@@ -197,9 +204,9 @@ export function App() {
     if (!pid) return;
     api
       .openNotes(pid)
-      .then((d) => latest.current.projectId === pid && setOpenNotes(d.open))
+      .then(notesFrom(pid))
       .catch(() => {});
-  }, [projectId]);
+  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Live claims (MCP-04): a house being coded has a bulldozer on its lot (#46 MARK-17), and the item an agent badge. Agents
   // claim through MCP while the map is open, so look again now and then; a claim that ends takes its bulldozer with it.
   // Build requests (#14 HANDOFF-05) come with them: what waits for a builder, and what the card can offer to build.
@@ -445,6 +452,7 @@ export function App() {
     setComments,
     toast,
     fail,
+    onAnswered: reloadNotes,
     onAccepted: (nodes) => {
       const byId = new Map(nodes.map((n) => [n.id, n]));
       replaceNodes((ns) => [...ns.map((n) => byId.get(n.id) ?? n), ...nodes.filter((n) => !ns.some((x) => x.id === n.id))]);
@@ -496,7 +504,7 @@ export function App() {
   }, [boxArea, loadComments]);
 
   // Everything waiting on someone's review (#62): the Review lens, its list and the "to review" marker.
-  const review = useMemo(() => waitingForReview({ changesets: editing.others, notes: openNotes, tree }), [editing.others, openNotes, tree]);
+  const review = useMemo(() => waitingForReview({ changesets: editing.others, notes: openQuestions, tree }), [editing.others, openQuestions, tree]);
   const approval = useMemo(() => needsApproval(review), [review]);
   const lenses = useMemo(() => lensesWith(approval), [approval]);
   const lens = lensId === approval.id ? approval : offered;

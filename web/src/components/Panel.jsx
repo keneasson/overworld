@@ -6,7 +6,8 @@ import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
 import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
-import { Composer, Thread } from '../editor/Annotate.jsx';
+import { AnswerBox, Composer, Thread } from '../editor/Annotate.jsx';
+import { questionsIn } from '@shared/questions.js';
 import { clausesOf, isDismissed, locate, piecesOf, quoteOf, refinementThreads, threadsOf } from '@shared/annotations.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
@@ -335,7 +336,6 @@ function useTalk({ cs, item, on, label, text = '', threads, editing }) {
               quote={t.root.anchor?.quote}
               moved={Boolean(t.root.anchor?.quote && text && !locate(text, t.root.anchor))}
               thread={t}
-              you={editing.name}
               onReply={(said) => editing.comment(item.key, t.root.anchor, said, { replyTo: t.root.id })}
               onDismiss={editing.dismiss}
               onClose={() => setShut((s) => new Set([...s, t.root.id]))}
@@ -568,6 +568,47 @@ function claimWords({ agent, ids, pr }) {
   if (pr.deploy?.state === 'failed') return { text: `${who}: pull request #${pr.number} is merged, but the deploy of ${pr.deploy.sha.slice(0, 7)} failed, ${ago(pr.deploy.at)}. The claim stays with its builder.`, warn: true };
   if (pr.state === 'merged') return { text: `${who}: pull request #${pr.number} is merged, waiting for the deploy to production.` };
   return { text: `${who}: pull request #${pr.number} was closed without merging, ${ago(pr.at)}. The claim stays with its builder for now.`, warn: true };
+}
+
+/**
+ * The item's open questions, each with its own Answer control (ANSWER-01), so nobody types the convention: the answer is
+ * written directly under its question. They are read from the item as it is on the map; one only in your draft is
+ * answered here once it is accepted.
+ */
+function OpenQuestions({ node, editing }) {
+  const key = itemKeyOf(node);
+  const questions = useMemo(() => questionsIn(key, editableOf(node).markdown), [key, node.body]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [answering, setAnswering] = useState(null);
+  if (!questions.length) return null;
+  return (
+    <section className="open-questions" aria-label="Open questions">
+      <h3>Open questions</h3>
+      <ul>
+        {questions.map((q) => (
+          <li key={q.id}>
+            <p className="question-text">
+              <span className="question-mark" aria-hidden="true">
+                ?
+              </span>
+              <span>{q.text}</span>
+            </p>
+            {q.answer && (
+              <p className="question-answer">
+                <strong>Answer:</strong> {q.answer}
+              </p>
+            )}
+            {answering === q.id ? (
+              <AnswerBox question={q} onPrompt={(t) => editing.answerPrompt(key, q, t)} onAnswer={(t, p) => editing.answer(key, q, t, p)} onCancel={() => setAnswering(null)} />
+            ) : (
+              <button type="button" className="link-btn" onClick={() => setAnswering(q.id)}>
+                {q.answer ? 'Change the answer' : 'Answer'}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 function BuildBar({ node, atBehaviour, builds, claims = [], onBuild }) {
@@ -838,8 +879,6 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
               onPromote={editing.promote}
               onDismiss={editing.dismiss}
               onRestore={editing.restore}
-              onAnswerPrompt={editing.answerPrompt}
-              you={editing.name}
               hasRead={editing.hasRead}
               onRead={editing.markRead}
             />
@@ -848,6 +887,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
           readOnly
         )}
       </div>
+      {editable && <OpenQuestions node={node} editing={editing} />}
       <EditBar editing={editing} box={box} comments={comments} onPick={onPick} />
 
       <section>

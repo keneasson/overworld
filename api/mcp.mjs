@@ -8,8 +8,8 @@ import { APP_NAME } from '../shared/brand.js';
 import { ROOT_ID, ValidationError } from '../shared/schema.js';
 import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { Refused, buildOf, noteOf as addressedOf } from './agents.mjs';
-import { awaitsApplying } from './answers.mjs';
-import { isOpen, isQuestion, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
+import { awaitsApplying, questionsOnMap } from './answers.mjs';
+import { isOpen, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
 import { notePrompt } from './notes.mjs';
 import { behavioursOf, blockersOf, buildingOf, childrenOf, isFinished, keyOf, nextWork, splitOf, stateOf } from './work.mjs';
 
@@ -26,8 +26,8 @@ const HOW_TO_WORK = [
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat. But when your pull request opens, don\'t hand off: claim(behaviours, pull_request: its number), and the claim holds through review and merge and is released for you once the production deploy that carries it succeeds. Done is when people can use it.',
   'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
-  'People address you in comments with @Claude. Any tool\'s result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed.',
-  `A person's reply to a question is its answer: write it into the spec through a refinement, and reply() in the thread with what you changed. Open questions never block proposing, marking behaviours ready, or adoption. Nothing clears a comment by itself: it stays on the item until someone dismiss()es it into the conversation log. ${DISMISSING}`,
+  `People address you in comments with @Claude. Any tool's result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed. Nothing clears a comment by itself: it stays on the item until someone dismiss()es it into the conversation log. ${DISMISSING}`,
+  'An open question is a line in its item\'s Open questions section, with its answer written directly under it as "Answer: …". A comment is never one, wherever it is anchored, and a reply to a comment is not an answer. An answered question comes to you with a prompt: write the decision into the spec through a refinement, taking the question and its answer out of Open questions, and pass its id in propose(answers). Open questions never block proposing, marking behaviours ready, or adoption.',
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
 
@@ -193,7 +193,7 @@ export function createMcp({ model, agents, call, log = console }) {
         const key = keyOf(node);
         const byId = new Map(nodes.map((n) => [n.id, n]));
         const { live } = await agents.liveClaims(pid);
-        const [comments, notes] = await Promise.all([model.comments.list(pid, key), model.handoffs.list(pid, key)]);
+        const [comments, notes, questions] = await Promise.all([model.comments.list(pid, key), model.handoffs.list(pid, key), questionsOnMap(model, pid, [node], key)]);
         const shape = parseIssue(editableOf(node).markdown);
         const why = sectionText(shape, 'Why');
         const parents = [];
@@ -203,7 +203,6 @@ export function createMcp({ model, agents, call, log = console }) {
         const threads = threadsOf(comments);
         const open = threads.map((t) => t.root).filter(isOpen);
         const dismissed = threads.length - open.length;
-        const asking = (c) => isQuestion(c) && !c.answer?.appliedAt; // a question still waiting on its answer
         return {
           issue: { key, kind: node.kind, title: node.title, state: stateOf(node), priority: node.priority || undefined, url: node.url || undefined, summary: node.summary || undefined },
           parents,
@@ -219,10 +218,11 @@ export function createMcp({ model, agents, call, log = console }) {
           }),
           acceptance: sectionText(shape, 'Acceptance') || undefined,
           out_of_scope: sectionText(shape, 'Out of scope') || undefined,
-          open_questions: [sectionText(shape, 'Open questions'), ...open.filter(asking).map((c) => `${c.text} (${c.author})${awaitsApplying(c) ? ': answered, waiting to be applied' : ''}`)].filter((q) => q && !/^none\.?$/i.test(q)),
-          ...(open.some(awaitsApplying) ? { answers_to_apply: (await agents.answersToApply(pid, { nodes, comments })).map(answerOf) } : {}),
+          // The questions in its Open questions section, each saying whether it is answered (ANSWER-01); comments are discussion (NOTE-22).
+          open_questions: questions.map((q) => ({ question_id: q.id, question: q.text, ...(q.asked ? { asked_by: q.asked.by } : {}), ...(q.answer ? { answered: true, answer: q.answer, ...(q.answered ? { answered_by: q.answered.by } : {}), ...(q.applied ? { applied: true } : {}) } : { answered: false }) })),
+          ...(questions.some((q) => awaitsApplying(q, node)) ? { answers_to_apply: (await agents.answersToApply(pid, { nodes })).filter((a) => a.question.itemKey === key).map(answerOf) } : {}),
           discussion: {
-            open: open.filter((c) => !asking(c)).slice(-10).map((c) => ({ annotation: c.id, on: whereOf(c.anchor), ...(c.anchor?.quote ? { quoting: c.anchor.quote.slice(0, 300) } : {}), by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
+            open: open.slice(-10).map((c) => ({ annotation: c.id, on: whereOf(c.anchor), ...(c.anchor?.quote ? { quoting: c.anchor.quote.slice(0, 300) } : {}), by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
             ...(dismissed ? { dismissed: `${dismissed} dismissed comment${dismissed === 1 ? '' : 's'}, in the conversation log` } : {}),
           },
           handoff_notes: notes.slice(-5).map(noteOf),
@@ -257,14 +257,14 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     ask: {
-      description: 'Raise an open question on a place on the map. A person answers it by replying in its thread; the answer comes back to you to apply. The thread stays there until someone dismisses it.',
+      description: 'Raise an open question on a place on the map: it is added at once as a line in that item\'s Open questions section, in place of "None.", and reaches GitHub with the next save. A person answers it under the question, and the answer comes back to you, at your standup, with a prompt to apply it. For a remark that isn\'t a question for the spec, comment instead.',
       input: { place, question: { type: 'string' }, request_key: requestKey },
       required: ['place', 'question'],
       changes: true,
       async run({ pid, agent }, args) {
         const node = find((await mapOf(pid)).nodes, args.place);
-        const { comment } = await api('POST', `/api/projects/${pid}/comments`, { itemKey: keyOf(node), anchor: { section: 'Open questions' }, text: String(args.question ?? ''), author: author(agent) });
-        return { question: comment.id, place: keyOf(node), title: node.title };
+        const { question } = await api('POST', `/api/projects/${pid}/questions`, { itemKey: keyOf(node), text: String(args.question ?? ''), author: author(agent), agentId: agent.id });
+        return { question: question.id, place: keyOf(node), title: node.title };
       },
     },
 
@@ -306,7 +306,7 @@ export function createMcp({ model, agents, call, log = console }) {
         title: { type: 'string', description: 'Leave out to keep it.' },
         markdown: { type: 'string', description: 'The full new markdown. Leave out to keep it.' },
         ready_for_adoption: ids('Behaviour IDs whose conversation has converged.'),
-        answers: ids('Ids of the answered questions this proposal applies; adopting it records the answers as applied. reply() in each thread with what you changed.'),
+        answers: ids('Ids of the answered open questions this proposal applies (question_id, from the prompt or context()); take each question and its answer out of Open questions in the markdown. Adopting it records the answers as applied.'),
         annotations: ids('Ids of the comments this proposal acts on, linked from it for the log and your reply; adopting it doesn\'t dismiss them. reply() in each thread with what you changed.'),
         item_ready: { type: 'boolean', description: 'With answers: the item is ready once adopted, because nothing else is open.' },
         request_key: requestKey,
@@ -521,7 +521,7 @@ export function createMcp({ model, agents, call, log = console }) {
 
 const list = (v) => (Array.isArray(v) ? v.map(String).filter(Boolean) : v ? [String(v)] : []);
 
-const answerOf = (a) => ({ item: a.question.itemKey, question_id: a.question.id, question: a.question.text, answer: a.question.answer.text, answered_by: a.question.answer.by, ...(a.asker && !a.forAnyone ? { held_for: a.asker } : {}), prompt: a.prompt() });
+const answerOf = (a) => ({ item: a.question.itemKey, question_id: a.question.id, question: a.question.text, answer: a.question.answer, ...(a.question.answered ? { answered_by: a.question.answered.by } : {}), ...(a.asker && !a.forAnyone ? { held_for: a.asker } : {}), prompt: a.prompt() });
 
 const noteOf = (n) => ({ item: n.itemKey, at: n.at, by: `${n.agentName} (${n.agentId})`, behaviours: n.behaviours, ...(n.reason === 'expired' ? { expired: true } : {}), note: n.note });
 

@@ -5,14 +5,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ValidationError, newId } from '../shared/schema.js';
 import { nextWork, behavioursOf, blockersOf, childrenOf, isWork, keyOf, splitOf } from './work.mjs';
-import { awaitsApplying, isQuestion, promptOf } from './answers.mjs';
+import { awaitsApplying, promptOf, questionsOnMap } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { notePrompt } from './notes.mjs';
 import { buildPrompt } from './prompts.mjs';
 import { isDismissed } from '../shared/annotations.js';
 
-/** A question settled for its asker: its answer applied, or the thread dismissed. */
-const settled = (c) => isDismissed(c) || Boolean(c.answer?.appliedAt);
 
 const CALLS_PER_MINUTE = 120;
 const CLAIM_MINUTES = { default: 120, max: 480 };
@@ -363,40 +361,45 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
    * after it was answered or last handed to that agent; after that, or when a person asked it, it is any agent's work.
    * One already being applied in an open refinement is nobody else's.
    */
-  async function answersToApply(projectId, { nodes, comments, changesets } = {}) {
-    [nodes, comments, changesets] = await Promise.all([nodes ?? model.projects.getWithNodes(projectId).then((d) => d.nodes), comments ?? model.comments.list(projectId), changesets ?? model.changesets.list(projectId)]);
+  async function answersToApply(projectId, { nodes, changesets } = {}) {
+    [nodes, changesets] = await Promise.all([nodes ?? model.projects.getWithNodes(projectId).then((d) => d.nodes), changesets ?? model.changesets.list(projectId)]);
     const open = new Set(changesets.filter((cs) => cs.status === 'open').map((cs) => cs.id));
     const agentIds = new Set((await model.agents.list(projectId)).map((a) => a.id));
+    const byKey = new Map(nodes.map((n) => [keyOf(n), n]));
     const hold = CLAIM_MINUTES.default * 60_000;
-    return comments.filter((c) => awaitsApplying(c) && !open.has(c.answer.refinement)).map((c) => {
-      const askedBy = c.author.match(/\((a[\w-]+)\)$/)?.[1];
-      const asker = agentIds.has(askedBy) ? askedBy : null;
-      const heldUntil = asker ? Date.parse(c.answer.handedAt ?? c.answer.at) + hold : 0;
-      return { question: c, asker, forAnyone: clock() > heldUntil, prompt: () => promptOf({ nodes, comments: comments.filter((x) => x.itemKey === c.itemKey), question: c }) };
+    return (await questionsOnMap(model, projectId, nodes)).filter((q) => awaitsApplying(q, byKey.get(q.itemKey)) && !open.has(q.refinement)).map((q) => {
+      const asker = agentIds.has(q.asked?.agentId) ? q.asked.agentId : null;
+      const heldUntil = asker ? Date.parse(q.handedAt ?? q.answered?.at ?? byKey.get(q.itemKey).updatedAt) + hold : 0;
+      return { question: q, asker, forAnyone: clock() > heldUntil, prompt: () => promptOf({ nodes, question: q }) };
     });
   }
 
   /**
-   * A proposal that applies answers (ANSWER-04): it names the questions it settles, and can ask for the item to be ready.
-   * Adopting it applies them (answers.mjs, settleAnswers). Returns what the proposal now applies.
+   * A proposal that applies answers (ANSWER-04): it names the questions it settles, by id, and can ask for the item to be
+   * ready. Adopting it applies them (answers.mjs, settleAnswers). Returns what the proposal now applies.
    */
   async function applyAnswers(projectId, changeset, item, { answers = [], ready } = {}) {
     if (!answers.length && ready == null) return {};
     if (!item) throw new Refused('Nothing is proposed for this item, so it applies no answer');
+    const { nodes } = await model.projects.getWithNodes(projectId);
+    const questions = await questionsOnMap(model, projectId, nodes, item.key);
     const live = new Set((await model.changesets.list(projectId)).filter((cs) => cs.status === 'open').map((cs) => cs.id));
     const taken = [];
     for (const id of answers) {
-      const c = await model.comments.get(projectId, { itemKey: item.key, id });
-      if (!c || !awaitsApplying(c)) throw new ValidationError(`${id} isn't an answered question on this item`);
-      if (c.answer.refinement && c.answer.refinement !== changeset.id && live.has(c.answer.refinement)) throw new Refused(`${id} is already being applied in refinement ${c.answer.refinement}`);
-      taken.push(c);
+      const q = questions.find((x) => x.id === id);
+      if (!q || !q.answer || q.applied) throw new ValidationError(`${id} isn't an answered question in this item's Open questions`);
+      if (q.refinement && q.refinement !== changeset.id && live.has(q.refinement)) throw new Refused(`${id} is already being applied in refinement ${q.refinement}`);
+      taken.push(q);
     }
     // A new item (#26) keeps its text on its node, and adopting it already holds it back while questions are open.
     if (ready && item.after && openQuestions(item.after.markdown)) throw new Refused('Its Open questions section still has something in it, so it can\'t be ready');
     item.answers = [...new Set([...(item.answers ?? []), ...answers])];
     if (ready != null) item.itemReady = Boolean(ready);
     await model.changesets.put(projectId, changeset);
-    for (const c of taken) await model.comments.put(projectId, { ...c, answer: { ...c.answer, refinement: changeset.id } });
+    for (const q of taken) {
+      const meta = (await model.questions.get(projectId, { itemKey: item.key, id: q.id })) ?? { itemKey: item.key, id: q.id, text: q.text };
+      await model.questions.put(projectId, { ...meta, refinement: changeset.id });
+    }
     return { answers: item.answers, item_ready: Boolean(item.itemReady) };
   }
 
@@ -507,18 +510,21 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       last ? model.actions.since(projectId, last.at) : [],
     ]);
     const held = [...new Set(mine.map((c) => c.item))];
-    // Items this agent cares about: what it holds now, what it held last time, and where it asked questions.
-    const asked = comments.filter((c) => c.author === me && isQuestion(c));
+    // Items this agent cares about: what it holds now, what it held last time, and where it asked questions. A question
+    // is settled for its asker once its answer is applied, or it has left its item's Open questions.
+    const [metas, onMap] = await Promise.all([model.questions.list(projectId), questionsOnMap(model, projectId, data.nodes)]);
+    const asked = metas.filter((q) => q.asked?.agentId === agent.id);
+    const settled = (q) => Boolean(q.applied) || !onMap.some((x) => x.itemKey === q.itemKey && x.id === q.id);
     const watched = new Set([...held, ...(last?.items ?? []), ...asked.map((c) => c.itemKey)]);
     const notesOn = Object.fromEntries(await Promise.all([...watched].map(async (i) => [i, await model.handoffs.list(projectId, i)])));
     const title = (key) => data.nodes.find((n) => keyOf(n) === key)?.title ?? key;
 
     // Answered and waiting to be applied: addressed to the agent that asked, with the prompt, until it is (ANSWER-03).
     // It is handed over again each standup, so it stays this agent's for a claim's length after it last came back.
-    const toApply = (await answersToApply(projectId, { nodes: data.nodes, comments, changesets })).filter((a) => a.asker === agent.id);
-    for (const a of toApply) await model.comments.put(projectId, { ...a.question, answer: { ...a.question.answer, handedAt: iso(now) } });
+    const toApply = (await answersToApply(projectId, { nodes: data.nodes, changesets })).filter((a) => a.asker === agent.id);
+    for (const a of toApply) await model.questions.put(projectId, { ...metas.find((m) => m.itemKey === a.question.itemKey && m.id === a.question.id), handedAt: iso(now) });
     // Settled: open at the last standup, or asked since, and settled now. Each is reported once.
-    const resolvedNow = last ? asked.filter((c) => settled(c) && ((last.openQuestions ?? []).includes(c.id) || c.createdAt > last.at)) : [];
+    const resolvedNow = last ? asked.filter((q) => settled(q) && ((last.openQuestions ?? []).includes(q.id) || q.asked.at > last.at)) : [];
     const answered = [...toApply.map((a) => ({ c: a.question, prompt: a.prompt() })), ...resolvedNow.map((c) => ({ c }))];
     // Annotations addressed to agents with @ (NOTE-17): the standup is where one waits when no agent was connected.
     const notes = await addressed(projectId, agent, { fresh: false });
@@ -549,7 +555,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       ...(last ? { last_connected: last.at, away: span(now - Date.parse(last.at)) } : {}),
       addressed_to_you: {
         ...(notes.length ? { annotations: notes.map(noteOf) } : {}),
-        ...(answered.length ? { answered: answered.map(({ c, prompt }) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text, ...(prompt ? { question_id: c.id, answer: c.answer.text, answered_by: c.answer.by, prompt } : {}) })) } : {}),
+        ...(answered.length ? { answered: answered.map(({ c, prompt }) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text, ...(prompt ? { question_id: c.id, answer: c.answer, ...(c.answered ? { answered_by: c.answered.by } : {}), prompt } : {}) })) } : {}),
         ...(decided.length ? { your_refinements_decided: decided.slice(-SHOWN) } : {}),
         ...(fresh.filter((c) => watched.has(c.itemKey)).length ? { new_comments: fresh.filter((c) => watched.has(c.itemKey)).slice(-SHOWN).map((c) => ({ item: c.itemKey, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })) } : {}),
       },
