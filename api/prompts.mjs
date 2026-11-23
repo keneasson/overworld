@@ -5,6 +5,7 @@
 import { STATUS_LABEL } from '../shared/schema.js';
 import { OTHER_CHANGES, editableOf, itemKeyOf, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { isOpen, threadsOf } from '../shared/annotations.js';
+import { skeletonLines, skeletonsOf } from './skeletons.mjs';
 
 const SIBLINGS_SHOWN = 30;
 
@@ -69,10 +70,11 @@ export function itemContext(nodes, node) {
 /**
  * The prompt a build goes out with (#14 HANDOFF-01): the behaviours to build, the issue's acceptance and out of scope, and
  * the map around it, its parent, its neighbours and its roads, so a builder needs no chat history.
- * Its comments still open come with it (#15 NOTE-07).
- * @param {{ nodes: object[], node: object, behaviours: { id: string, text: string }[], comments?: object[] }} o
+ * Its comments still open come with it (#15 NOTE-07). Behaviours with no test yet come with their test skeletons, which
+ * must pass (#23 SKETCH-02); those with one point to it (SKETCH-03).
+ * @param {{ nodes: object[], node: object, behaviours: { id: string, text: string }[], comments?: object[], testing?: object|null, tested?: string[] }} o testing: the project's tests, as the mapper read them
  */
-export function buildPrompt({ nodes, node, behaviours, comments = [] }) {
+export function buildPrompt({ nodes, node, behaviours, comments = [], testing = null, tested = [] }) {
   const key = itemKeyOf(node);
   const issue = parseIssue(editableOf(node).markdown);
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -91,6 +93,7 @@ export function buildPrompt({ nodes, node, behaviours, comments = [] }) {
     ...(section('Out of scope') ? ['', 'Out of scope, so leave it alone:', section('Out of scope')] : []),
     ...openComments(comments, key),
     '',
+    ...skeletonLines(skeletonsOf({ node, testing, tested, ids: behaviours.map((b) => b.id) })),
     ...itemContext(nodes, node),
     ...(roads.length ? ['Its roads:', ...roads] : ['It has no roads to other items.']),
     '',

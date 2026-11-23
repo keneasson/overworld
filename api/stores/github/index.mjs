@@ -71,7 +71,7 @@ export function githubStore({ repo, strict = true, app = null, fetchImpl = fetch
     async mapAgain({ token, previous = null } = {}) {
       if (!token && app) token = await app.token().catch(() => undefined); // private repositories need the App; public ones read without it
       const data = await importGitHub({ repo, token, previous }, fetchImpl);
-      return { nodes: data.nodes, project: { strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested, airports: data.airports, waste: data.waste } };
+      return { nodes: data.nodes, project: { strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested, airports: data.airports, waste: data.waste, testing: data.testing } };
     },
   };
 }

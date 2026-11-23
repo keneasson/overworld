@@ -36,6 +36,9 @@ export const isFinished = (node) => FINISHED.has(node.status);
 /** Is this item work an agent may pick up: adopted behaviours, nothing left undecided? A new item isn't in the spec until its refinement is adopted (NEW-03). */
 export const isWork = (node) => node.status === 'ready' && !NOT_WORK.has(node.kind) && !node.refinement;
 
+/** Are this item's behaviours adopted: ready, or past it on the way to done? A test skeleton is written only for those (#23 SKETCH-01). */
+export const isAdopted = (node) => ['ready', 'in_progress', 'review', 'blocked', 'done'].includes(node.status) && !NOT_WORK.has(node.kind) && !node.refinement;
+
 /** Each item's child issues, by parent id. */
 export function childrenOf(nodes) {
   const kids = new Map();
