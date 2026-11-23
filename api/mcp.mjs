@@ -11,7 +11,8 @@ import { Refused, buildOf, noteOf as addressedOf } from './agents.mjs';
 import { awaitsApplying, questionsOnMap } from './answers.mjs';
 import { isOpen, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
 import { notePrompt } from './notes.mjs';
-import { behavioursOf, blockersOf, buildingOf, childrenOf, isFinished, keyOf, nextWork, splitOf, stateOf } from './work.mjs';
+import { behavioursOf, blockersOf, buildingOf, childrenOf, isAdopted, isFinished, keyOf, nextWork, splitOf, stateOf } from './work.mjs';
+import { skeletonsOf } from './skeletons.mjs';
 
 const PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const CHILDREN_SHOWN = 100;
@@ -233,6 +234,22 @@ export function createMcp({ model, agents, call, log = console }) {
           ...((split) => (split ? { needs_split: split } : {}))(splitOf(node, childrenOf(nodes).get(node.id) ?? [], new Set(project?.tested ?? []))),
           links: (node.links ?? []).filter((l) => l.type !== 'depends' && byId.has(l.to)).map((l) => ({ type: l.type, key: keyOf(byId.get(l.to)), title: byId.get(l.to).title })),
         };
+      },
+    },
+
+    skeletons: {
+      description: "Test skeletons for an issue's adopted behaviours (#23): a test per behaviour, named by its ID, with its Given / When / Then, in the style of the project's existing tests (best practice for its language if it has none), failing until you fill it in. Write the body; keep the name. A behaviour that already has a test points to it instead.",
+      input: { issue: { ...place, description: 'The issue: issue-12, 12, or a node id.' }, behaviours: ids('Behaviour IDs to sketch; leave out for all of the issue\'s.') },
+      required: ['issue'],
+      async run({ pid }, args) {
+        const { project, nodes } = await mapOf(pid);
+        const node = find(nodes, args.issue);
+        if (!isAdopted(node)) throw new Refused(`${node.title} is ${stateOf(node)}: its behaviours aren't adopted yet, so there is nothing to sketch a test for`);
+        const own = behavioursOf(node).filter((b) => !b.fog).map((b) => b.id);
+        const stray = list(args.behaviours).filter((id) => !own.includes(id));
+        if (stray.length) throw new Refused(`${stray.join(', ')} ${stray.length === 1 ? "isn't a behaviour" : "aren't behaviours"} of ${node.title} that are worked out`);
+        const { how, skeletons, existing } = skeletonsOf({ node, testing: project?.testing, tested: project?.tested, ids: list(args.behaviours) });
+        return { issue: keyOf(node), style: how, skeletons, ...(existing.length ? { already_tested: existing } : {}) };
       },
     },
 

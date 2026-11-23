@@ -13,6 +13,7 @@ import { ValidationError } from '../shared/schema.js';
 import { parseSpec, SPEC_PATH, TEST_PATH, testedIdsOf } from './engine/behaviours.mjs';
 import { buildProject } from './engine/project.mjs';
 import { SCANNED, clearedSince, wastelandOf, wasteIndex } from './engine/wasteland.mjs';
+import { testingOf } from './engine/tests.mjs';
 
 const API = 'https://api.github.com';
 const RAW = 'https://raw.githubusercontent.com';
@@ -108,7 +109,9 @@ export async function importGitHub({ repo, token, previous = null }, fetchImpl =
   for (const c of cleared.fresh) if (repairedBy.get(c.path)) c.pr = repairedBy.get(c.path);
 
   const built = buildProject({ repo: info, paths, manifests, specs, sources, issues, waste, cleared: cleared.all, now, pulls: (Array.isArray(pulls) ? pulls : []).map((p) => ({ number: p.number, title: p.title, body: p.body ?? '' })) });
-  return { ...built, tested, waste: { marks: wasteIndex(waste), cleared: cleared.all }, guide: await guideFor(paths, raw) };
+  // Where each behaviour's tests are and the style they're written in, for test skeletons (#23).
+  const testing = testingOf({ paths, manifests, tests: testPaths.map((p, i) => [p, texts[manifestPaths.length + specPaths.length + i]]) });
+  return { ...built, tested, testing, waste: { marks: wasteIndex(waste), cleared: cleared.all }, guide: await guideFor(paths, raw) };
 }
 
 /** The merged pull request of the last commit that changed a file: the one that repaired it, or null if GitHub can't say. */

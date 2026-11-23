@@ -291,7 +291,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       by: said(by ?? '', 80, 'by'),
       at: iso(),
       state: 'waiting',
-      prompt: buildPrompt({ nodes: data.nodes, node, behaviours: own.filter((b) => fresh.includes(b.id)), comments: await model.comments.list(projectId, item) }),
+      prompt: buildPrompt({ nodes: data.nodes, node, behaviours: own.filter((b) => fresh.includes(b.id)), comments: await model.comments.list(projectId, item), testing: data.project?.testing, tested: data.project?.tested }),
     };
     await model.builds.put(projectId, request);
     return { request: { ...request, waiting: fresh, stale: false } };
