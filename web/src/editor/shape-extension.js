@@ -1,5 +1,5 @@
-// The strict shape, kept by the document rather than by forms (EDIT-02, EDIT-07): headings outside the
-// shape and behaviours without an ID are marked where they are, Given / When / Then are picked out, Enter
+// The strict shape, kept by the document rather than by forms (EDIT-02, EDIT-07): a missing section and a behaviour
+// without an ID are marked where they are, Given / When / Then are picked out, Enter
 // at the end of a behaviour starts the next one with its ID, and each annotation (#15) is a marker with its
 // author's initials at the words it is about, which stay highlighted (NOTE-13). Nothing here ever blocks typing.
 // A section's heading holds only its name (EDIT-16): every section has a line to type on, and words typed, pasted or
@@ -13,6 +13,7 @@ import { SECTIONS, hasOpenQuestions } from '@shared/issue-shape.js';
 import { initials } from '@shared/annotations.js';
 import { sectionAt } from './document.js';
 import { rangeOf, sectionTexts } from './targets.js';
+import { addSection, missingSections } from './sections.js';
 
 const KEY = new PluginKey('issueShape');
 const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-\d+)\b/;
@@ -84,8 +85,50 @@ export function hintAt(doc, node, pos) {
   return HINTS[sectionAt(doc, pos)] ?? '';
 }
 
+/**
+ * Where a document departs from the shape (EDIT-07): each section it is missing, where it belongs, and each behaviour written
+ * without an ID. Shown in the document, never enforced.
+ */
+export function gaps(doc) {
+  const out = missingSections(doc).map(({ name, pos }) => ({ on: 'section', name, pos }));
+  let section = null;
+  doc.forEach((node, offset) => {
+    if (node.type.name === 'heading' && node.attrs.level === 2) section = canonical(node.textContent.trim());
+    if (section !== 'Behaviours' || node.type.name !== 'bulletList') return;
+    node.forEach((item, itemOffset) => {
+      const text = item.firstChild?.isTextblock ? item.firstChild.textContent : '';
+      if (text.trim() && !ID.test(text)) out.push({ on: 'behaviour', from: offset + 1 + itemOffset, to: offset + 1 + itemOffset + item.nodeSize });
+    });
+  });
+  return out;
+}
+
+// A missing section's place, marked in the text: pressing it adds the section there (EDIT-25 is the same from a right-click).
+function sectionGap(name) {
+  return (view) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.contentEditable = 'false';
+    b.className = 'section-gap';
+    b.textContent = `+ ${name}`;
+    b.title = `This item has no ${name} section. Add it here`;
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tr = addSection(view.state, name);
+      if (tr) view.dispatch(tr);
+      view.focus();
+    });
+    return b;
+  };
+}
+
 function decorate(doc, opts) {
   const out = notes(doc, opts);
+  for (const g of gaps(doc)) {
+    if (g.on === 'section') out.push(Decoration.widget(g.pos, sectionGap(g.name), { side: -1, key: `gap:${g.name}`, ignoreSelection: true, stopEvent: () => true }));
+    else out.push(Decoration.node(g.from, g.to, { class: 'no-id', title: 'No behaviour ID: tests and comments have nothing to hold on to' }));
+  }
   let section = null;
   let questions = null;
   let questionText = '';
@@ -103,10 +146,7 @@ function decorate(doc, opts) {
       if (!para?.isTextblock) return;
       const { text, at } = flatten(para, itemPos + 2);
       const id = text.match(ID);
-      if (!id) {
-        if (text.trim()) out.push(Decoration.node(itemPos, itemPos + item.nodeSize, { class: 'no-id', title: 'No behaviour ID: tests and comments have nothing to hold on to' }));
-        return;
-      }
+      if (!id) return; // marked as a gap (EDIT-07)
       out.push(Decoration.inline(at[0], at[id[1].length - 1] + 1, { class: 'bid' }));
       const g = text.match(GWT);
       if (g) for (const [s, e] of g.indices.slice(1)) out.push(Decoration.inline(at[s], at[e - 1] + 1, { class: 'kw' }));

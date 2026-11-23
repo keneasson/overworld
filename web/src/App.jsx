@@ -24,6 +24,7 @@ import { claimsByNode, openedBy, waitingByNode } from './map/houses.js';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import { waitingForReview } from './model/review.js';
 import { changesetContents } from './model/changesets.js';
+import { afterHandle, fitWidth, isWide, keepMapStill, PANEL_MIN, readWidth, rememberWidth, sheetAfter, wideWidth } from './model/panel.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -38,18 +39,13 @@ function readHash() {
   };
 }
 
-const PANEL_KEY = 'projectmap.panelWidth';
-const PANEL_MIN = 400;
-const maxWidth = () => Math.max(PANEL_MIN, window.innerWidth - 220);
-const wideWidth = () => Math.min(900, maxWidth());
-function readWidth() {
+const browserStore = () => {
   try {
-    const w = Number(localStorage.getItem(PANEL_KEY));
-    return w >= PANEL_MIN ? Math.min(w, maxWidth()) : PANEL_MIN;
+    return localStorage;
   } catch {
-    return PANEL_MIN;
+    return null;
   }
-}
+};
 
 function useMedia(query) {
   const [match, setMatch] = useState(() => matchMedia(query).matches);
@@ -132,7 +128,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [sheetFull, setSheetFull] = useState(false);
-  const [panelW, setPanelW] = useState(() => readWidth());
+  const [panelW, setPanelW] = useState(() => readWidth(browserStore(), window.innerWidth));
   const [hint, setHint] = useState(() => !storage.get('projectmap.hint'));
   const mapRef = useRef(null);
   const sceneRef = useRef(null);
@@ -644,13 +640,9 @@ export function App() {
 
   // The panel's expand handle (EDIT-10): drag to any width, or click to switch between narrow and wide.
   const setWidth = (w) => {
-    const next = Math.round(Math.min(Math.max(w, PANEL_MIN), maxWidth()));
+    const next = fitWidth(w, window.innerWidth);
     setPanelW(next);
-    try {
-      localStorage.setItem(PANEL_KEY, String(next));
-    } catch {
-      // Not remembered in a private window; the panel still works.
-    }
+    rememberWidth(browserStore(), next);
   };
   const onHandleDown = (e) => {
     e.preventDefault();
@@ -659,25 +651,28 @@ export function App() {
     let moved = false;
     const move = (ev) => {
       if (Math.abs(ev.clientX - startX) > 3) moved = true;
-      if (moved) setPanelW(Math.round(Math.min(Math.max(startW + ev.clientX - startX, PANEL_MIN), maxWidth())));
+      if (moved) setPanelW(fitWidth(startW + ev.clientX - startX, window.innerWidth));
     };
     const up = (ev) => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
-      setWidth(moved ? startW + ev.clientX - startX : startW > PANEL_MIN + 40 ? PANEL_MIN : wideWidth());
+      setWidth(afterHandle({ startW, dx: ev.clientX - startX, moved }, window.innerWidth));
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
+
+  // Scrolling or pinching in the panel never moves the map (EDIT-23).
+  const panelRef = useRef(null);
+  const panelShown = Boolean(panelMode && tree);
+  useEffect(() => (panelShown && panelRef.current ? keepMapStill(panelRef.current) : undefined), [panelShown]);
 
   // The bottom sheet on a phone (EDIT-12): pull it up to edit full screen, down to see the map.
   const onSheetDown = (e) => {
     const startY = e.clientY;
     const up = (ev) => {
       window.removeEventListener('pointerup', up);
-      const dy = ev.clientY - startY;
-      if (Math.abs(dy) < 8) setSheetFull((f) => !f);
-      else setSheetFull(dy < 0);
+      setSheetFull((f) => sheetAfter(ev.clientY - startY, f));
     };
     window.addEventListener('pointerup', up);
   };
@@ -864,7 +859,7 @@ export function App() {
       </div>
 
       {panelMode && tree && (
-        <aside className="panel" aria-label="Details" style={mobile ? undefined : { width: panelW }} onClick={onPanelClick}>
+        <aside className="panel" ref={panelRef} aria-label="Details" style={mobile ? undefined : { width: panelW }} onClick={onPanelClick}>
           {mobile && (
             <button className="sheet-handle" onPointerDown={onSheetDown} aria-label={sheetFull ? 'Show the map' : 'Pull up to edit'}>
               <span />
@@ -951,9 +946,9 @@ export function App() {
               onKeyDown={(e) => {
                 if (e.key === 'ArrowRight') setWidth(panelW + 40);
                 else if (e.key === 'ArrowLeft') setWidth(panelW - 40);
-                else if (e.key === 'Enter' || e.key === ' ') setWidth(panelW > PANEL_MIN + 40 ? PANEL_MIN : wideWidth());
+                else if (e.key === 'Enter' || e.key === ' ') setWidth(isWide(panelW) ? PANEL_MIN : wideWidth(window.innerWidth));
               }}
-              aria-label={panelW > PANEL_MIN + 40 ? 'Narrow the panel' : 'Widen the panel'}
+              aria-label={isWide(panelW) ? 'Narrow the panel' : 'Widen the panel'}
               title="Drag to resize, click to widen or narrow"
             >
               <span />

@@ -12,6 +12,7 @@ import { IssueShape, hintAt, openWithBodies, refreshNotes } from './shape-extens
 import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './targets.js';
 import { Composer, Thread, dismissedWords } from './Annotate.jsx';
 import { SelectionMenu } from './SelectionMenu.jsx';
+import { SectionMenu } from './SectionMenu.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { useLinks } from '../components/links-context.js';
 import { IssueLinks, linkAt } from './issue-links.js';
@@ -312,6 +313,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
         </details>
       )}
       {editor && <SelectionMenu editor={editor} hidden={() => live.current.commenting} />}
+      {editor && <SectionMenu editor={editor} within={wrap} hidden={() => live.current.commenting} />}
       <EditorContent editor={editor} />
       <div className="note-layer" aria-hidden="true">
         {hover && !picked && <Outline rects={hover.rects} />}
