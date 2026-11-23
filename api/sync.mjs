@@ -327,7 +327,7 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
   async function reconcileProject(project, store) {
     const at = iso();
     const before = await model.projects.getWithNodes(project.id);
-    const data = await store.mapAgain();
+    const data = await store.mapAgain({ previous: project });
     const kept = keepPending(data.nodes, await model.nodes.pending(project.id), store);
     const old = new Map(before.nodes.map((n) => [n.id, n]));
     const fresh = new Map(kept.nodes.map((n) => [n.id, n]));

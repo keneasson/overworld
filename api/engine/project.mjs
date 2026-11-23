@@ -8,6 +8,7 @@ import { explain, makeLocator } from './placement.mjs';
 import { epicness, nestByReferences, referencesIn } from './references.mjs';
 import { closedByOpenPrs, lifecycleOf, usesLifecycle } from './lifecycle.mjs';
 import { mapAirports } from './airports.mjs';
+import { wasteFields } from './wasteland.mjs';
 
 const BUG_TITLE =
   /\b(bug|crash(es|ed)?|broken|breaks|fails?|failing|error|500|leak|regression|cut off|unusable|dead end|wrong|rotted|not (invalidated|enforced|sendable|working)|never (enforced|applied)|silently)\b/i;
@@ -42,6 +43,8 @@ const md = (s) => s.replace(/[[\]*_`]/g, '\\$&');
  * @param {object[]} input.specs     parsed behaviour specs (see behaviours.mjs)
  * @param {object[]} input.issues    { number, title, body, state, stateReason, url, labels, milestone, assignees, type, parent, prs: [{ number, files }] }
  * @param {object[]} input.pulls     open pull requests { number, title, body }
+ * @param {Map<string, object[]>} input.waste  each marked file's wasteland marks (wasteland.mjs)
+ * @param {object[]} input.cleared   wasteland marks repaired since earlier mappings
  */
 /** The id of an issue's node on the map. */
 export const issueNodeId = (number) => `issue-${number}`;
@@ -79,7 +82,7 @@ export function issueFields(i, { lifecycle, note, placement = [], kind }) {
   };
 }
 
-export function buildProject({ repo, paths = [], manifests = new Map(), specs = [], sources = new Map(), issues = [], pulls = [], now = new Date().toISOString(), makeId = newId }) {
+export function buildProject({ repo, paths = [], manifests = new Map(), specs = [], sources = new Map(), issues = [], pulls = [], waste = new Map(), cleared = [], now = new Date().toISOString(), makeId = newId }) {
   const branch = repo.default_branch ?? 'main';
   const arch = mapArchitecture({ paths, manifests, mentions: issues.map((i) => `${i.title}\n${i.body}`) });
   const locate = makeLocator(arch);
@@ -217,6 +220,7 @@ export function buildProject({ repo, paths = [], manifests = new Map(), specs = 
       place: r.place,
       surface: r.parent ? 'auto' : r.surface,
       region: r.key,
+      ...wasteFields(files, { waste, issues, cleared, blob }),
     });
   }
 
@@ -348,6 +352,8 @@ export function buildProject({ repo, paths = [], manifests = new Map(), specs = 
     status: 'in_progress',
     tags: ['github'],
     url: repo.html_url,
+    // Repairs to files no part of the map holds any more (deleted, say) are still history, on the project.
+    ...wasteFields([...new Set(cleared.map((c) => c.path))].filter((f) => ![...arch.regions.values()].some((r) => r.files.includes(f))), { waste: new Map(), cleared, blob }),
   });
 
   return { title: repo.full_name, summary: nodes[0].summary, nodes, airports: mapAirports({ paths, sources, manifests }), strictLifecycle: lifecycle.strict, stats: { ...stats, regions: arch.regions.size, behaviours } };

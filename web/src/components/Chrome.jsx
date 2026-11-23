@@ -173,7 +173,7 @@ export function Legend({ lens, tree, live }) {
           <ul>
             {items.map((it) => (
               <li key={it.label}>
-                <span className={`swatch${it.dot ? ' dot' : ''}${it.hatch ? ' hatch' : ''}${it.fog ? ' fog' : ''}`} style={{ background: it.color }} />
+                <span className={`swatch${it.dot ? ' dot' : ''}${it.hatch ? ' hatch' : ''}${it.fog ? ' fog' : ''}${it.cracks ? ' cracks' : ''}`} style={{ background: it.color }} />
                 {it.label}
               </li>
             ))}

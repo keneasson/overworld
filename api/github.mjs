@@ -12,6 +12,7 @@
 import { ValidationError } from '../shared/schema.js';
 import { parseSpec, SPEC_PATH, TEST_PATH, testedIdsOf } from './engine/behaviours.mjs';
 import { buildProject } from './engine/project.mjs';
+import { SCANNED, clearedSince, wastelandOf, wasteIndex } from './engine/wasteland.mjs';
 
 const API = 'https://api.github.com';
 const RAW = 'https://raw.githubusercontent.com';
@@ -22,6 +23,9 @@ const MAX_TESTS = 80;
 const MAX_SOURCES = 250; // code read for airports and flights (#36 AIR-01): routes first, then the shallowest files
 const SOURCE = /\.(m?js|cjs|jsx|tsx?)$/;
 const SKIP = /(^|\/)(node_modules|dist|build|out|coverage|vendor|\.next|\.expo|\.turbo|\.vercel|public|static)\/|\.(d\.ts|min\.js|config\.[cm]?[jt]s)$/;
+const MAX_WASTE_SOURCES = 400; // the code read for wasteland marks (#24), any language; files read for airports are reused
+const MAX_REPAIRS = 5; // repaired files a mapping asks GitHub about, for the pull request that repaired them
+const NOT_SOURCE = /(^|\/)(node_modules|dist|build|out|coverage|vendor|\.next|\.expo|\.turbo|\.yarn|\.vercel|public|static|assets|__snapshots__)(\/|$)|\.min\.|(^|\/)[\w-]*lock\.ya?ml$/;
 
 export function parseRepo(input) {
   const m = String(input ?? '')
@@ -31,7 +35,10 @@ export function parseRepo(input) {
   return { owner: m[1], name: m[2] };
 }
 
-export async function importGitHub({ repo, token }, fetchImpl = fetch) {
+/**
+ * @param {object} [o.previous] the project as it was last mapped, if it was: its `waste` tells what has been repaired since
+ */
+export async function importGitHub({ repo, token, previous = null }, fetchImpl = fetch) {
   const { owner, name } = parseRepo(repo);
   const headers = {
     accept: 'application/vnd.github+json',
@@ -74,6 +81,9 @@ export async function importGitHub({ repo, token }, fetchImpl = fetch) {
     .sort((a, b) => routeFirst(a) - routeFirst(b) || a.split('/').length - b.split('/').length || (a < b ? -1 : 1))
     .slice(0, MAX_SOURCES);
   const texts = await inBatches([...manifestPaths, ...specPaths, ...testPaths, ...sourcePaths], 16, (p) => raw(p).catch(() => null));
+  const read = new Set(sourcePaths);
+  const wastePaths = paths.filter((p) => SCANNED.test(p) && !NOT_SOURCE.test(p) && !read.has(p)).slice(0, Math.max(0, MAX_WASTE_SOURCES - sourcePaths.length));
+  const wasteTexts = await inBatches(wastePaths, 16, (p) => raw(p).catch(() => null));
   const manifests = new Map();
   manifestPaths.forEach((p, i) => {
     try {
@@ -88,8 +98,31 @@ export async function importGitHub({ repo, token }, fetchImpl = fetch) {
 
   // Open pull requests saying "Closes #N" put issue N in progress. One page is plenty for most repositories.
   const pulls = await rest(`/repos/${owner}/${name}/pulls?state=open&per_page=100`).catch(() => []);
-  const built = buildProject({ repo: info, paths, manifests, specs, sources, issues, pulls: (Array.isArray(pulls) ? pulls : []).map((p) => ({ number: p.number, title: p.title, body: p.body ?? '' })) });
-  return { ...built, tested, guide: await guideFor(paths, raw) };
+
+  // Wasteland (#24): marks read from the code, and what was repaired since the last mapping, with the pull request that did it.
+  const waste = wastelandOf([...[...sources].filter(([p]) => SCANNED.test(p) && !NOT_SOURCE.test(p)), ...wastePaths.map((p, i) => [p, wasteTexts[i]])]);
+  const now = new Date().toISOString();
+  const cleared = clearedSince(previous?.waste, waste, now);
+  const repairedBy = new Map();
+  for (const path of [...new Set(cleared.fresh.map((c) => c.path))].slice(0, MAX_REPAIRS)) repairedBy.set(path, await repairOf(path, rest, `/repos/${owner}/${name}`));
+  for (const c of cleared.fresh) if (repairedBy.get(c.path)) c.pr = repairedBy.get(c.path);
+
+  const built = buildProject({ repo: info, paths, manifests, specs, sources, issues, waste, cleared: cleared.all, now, pulls: (Array.isArray(pulls) ? pulls : []).map((p) => ({ number: p.number, title: p.title, body: p.body ?? '' })) });
+  return { ...built, tested, waste: { marks: wasteIndex(waste), cleared: cleared.all }, guide: await guideFor(paths, raw) };
+}
+
+/** The merged pull request of the last commit that changed a file: the one that repaired it, or null if GitHub can't say. */
+async function repairOf(path, rest, base) {
+  try {
+    const commits = await rest(`${base}/commits?path=${encodeURIComponent(path)}&per_page=1`);
+    const sha = Array.isArray(commits) ? commits[0]?.sha : null;
+    if (!sha) return null;
+    const prs = await rest(`${base}/commits/${sha}/pulls`);
+    const pr = Array.isArray(prs) ? prs.find((p) => p.merged_at) ?? prs[0] : null;
+    return pr?.number ? { number: pr.number, url: pr.html_url ?? '', title: String(pr.title ?? '').slice(0, 200) } : null;
+  } catch {
+    return null;
+  }
 }
 
 const GUIDES = ['CONTRIBUTING.md', 'CLAUDE.md', 'AGENTS.md'];

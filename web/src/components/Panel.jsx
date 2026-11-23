@@ -6,7 +6,7 @@ import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
 import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
-import { AnswerBox, Composer, Thread } from '../editor/Annotate.jsx';
+import { AnswerBox, Composer, Thread, useAskName } from '../editor/Annotate.jsx';
 import { questionsIn } from '@shared/questions.js';
 import { clausesOf, isDismissed, locate, piecesOf, quoteOf, refinementThreads, threadsOf } from '@shared/annotations.js';
 import { AddLink, Properties } from './Properties.jsx';
@@ -14,6 +14,7 @@ import { syncBadge } from '../model/sync.js';
 import { issueRefExtension } from '../model/links.js';
 import { useLinks } from './links-context.js';
 import { reviewingAt, titleWithNumber, waitedFor, waitingWords } from '../model/review.js';
+import { wasteCard } from '../map/wasteland.js';
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'A') {
@@ -611,6 +612,98 @@ function OpenQuestions({ node, editing }) {
   );
 }
 
+/**
+ * Wasteland (#24 WASTE-03, WASTE-04): why this ground is waste and which mark said so, the behaviours that cross it, the
+ * repair handed to an agent as a comment addressed to it (handed over at once, #15 NOTE-17) with those behaviours' tests as
+ * the safety net, and the repairs already made with the pull request that made each.
+ */
+// A label starts a sentence; mid-sentence only its first letter is lowered, so an acronym in it keeps its case.
+const lower = (label) => label.charAt(0).toLowerCase() + label.slice(1);
+function WasteBar({ node, tree, editing }) {
+  const [asked, setAsked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const card = useMemo(() => wasteCard(node, tree), [node, tree]);
+  const ask = useAskName();
+  if (!card) return null;
+  const hand = async () => {
+    setBusy(true);
+    ask.save();
+    if (await editing.comment(itemKeyOf(node), { on: 'place' }, card.prompt)) setAsked(true);
+    setBusy(false);
+  };
+  return (
+    <section className="waste-bar" aria-label="Wasteland">
+      {card.marks.length > 0 && (
+        <>
+          <p>
+            <strong>Wasteland.</strong> This code is in use but marked as technical debt: {card.kinds.map(lower).join('; ')}.
+          </p>
+          <ul className="waste-marks">
+            {card.marks.map((m) => (
+              <li key={`${m.path}:${m.line}:${m.mark}`}>
+                <span className="waste-kind">{m.label}</span>{' '}
+                <a href={m.url} target="_blank" rel="noopener noreferrer">
+                  {m.path}:{m.line}
+                </a>
+                <span className="waste-text">{m.text}</span>
+              </li>
+            ))}
+          </ul>
+          <p>
+            {card.behaviours.length ? (
+              <>
+                Crossed by{' '}
+                {card.behaviours.map((b, i) => (
+                  <span key={b.id} title={`${b.title}: ${b.words}`}>
+                    {i ? ', ' : ''}
+                    {b.id}
+                  </span>
+                ))}
+                : their tests are the safety net for the repair.
+              </>
+            ) : (
+              'No behaviour crosses it yet, so no test guards a repair.'
+            )}
+          </p>
+          {asked ? (
+            <p className="build-note" role="status">
+              Handed to an agent: the comment on this place reaches the next agent session.
+            </p>
+          ) : (
+            <div className="build-actions">
+              {ask.field}
+              <button type="button" disabled={busy || !ask.named} onClick={hand} title="Address a comment on this place to an agent, asking for the repair">
+                <Icon name="build" size={16} /> Hand the repair to an agent
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      {card.cleared.length > 0 && (
+        <ul className="waste-cleared" aria-label="Repaired">
+          {card.cleared.map((c) => (
+            <li key={`${c.path}:${c.mark}:${c.text}:${c.at}`}>
+              Cleared {c.at.slice(0, 10)}
+              {c.pr ? (
+                <>
+                  {' '}by{' '}
+                  <a href={c.pr.url} target="_blank" rel="noopener noreferrer">
+                    #{c.pr.number}
+                  </a>
+                  {c.pr.title ? ` ${c.pr.title}` : ''}
+                </>
+              ) : (
+                ''
+              )}
+              : {lower(c.label)} in {c.path}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function BuildBar({ node, atBehaviour, builds, claims = [], onBuild }) {
   const [busy, setBusy] = useState(false);
   const key = itemKeyOf(node);
@@ -819,6 +912,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
 
       <SplitBar node={node} editing={editing} onPick={onPick} />
       <BuildBar node={node} atBehaviour={atBehaviour} builds={builds} claims={claims} onBuild={onBuild} />
+      <WasteBar node={node} tree={tree} editing={editing} />
 
       <div className="actions quiet">
         <button onClick={() => onFly(node.id)}>

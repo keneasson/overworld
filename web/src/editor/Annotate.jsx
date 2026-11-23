@@ -12,7 +12,7 @@ import { useLinks } from '../components/links-context.js';
 // before posting, so no comment shows as "Someone". Sign-in replaces this (#52 AUTH-07).
 export const YouContext = createContext({ you: '', setYou: null });
 
-function useAskName() {
+export function useAskName() {
   const { you, setYou } = useContext(YouContext);
   const [who, setWho] = useState('');
   const asking = !you?.trim() && Boolean(setYou);
