@@ -718,7 +718,7 @@ test('HANDOFF-05 HANDOFF-01 a person chooses Build on an issue or on one behavio
   const { api, rest, pid, agent, clock } = await setup();
   const build = (b) => api({ method: 'POST', path: `/api/projects/${pid}/builds`, body: b, headers: { 'x-projectmap-key': 'k' } });
   const before = await rest('GET', `/api/projects/${pid}/builds`);
-  assert.deepEqual(before, { requests: [], notes: [], buildable: { 'issue-11': ['CL-01', 'CL-02'], 'issue-10': ['ZOOM-01', 'ZOOM-02'] } }, 'only new, unclaimed, unblocked behaviours can be built');
+  assert.deepEqual([before.requests, before.notes, before.buildable], [[], [], { 'issue-11': ['CL-01', 'CL-02'], 'issue-10': ['ZOOM-01', 'ZOOM-02'] }], 'only new, unclaimed, unblocked behaviours can be built');
 
   const whole = await build({ item: 'issue-11', by: 'Ken' });
   assert.equal(whole.status, 201);
@@ -768,6 +768,47 @@ test('NOTE-07 an issue handed to an agent carries its comments still open, each 
   assert.ok(part.indexOf('Because of what?') < part.indexOf('Of the outage.'), 'each with its thread, in order');
   assert.ok(!r.prompt.includes('Old news.'), 'a dismissed comment is in the log, not the prompt');
   assert.ok(!r.prompt.includes('On another issue.'), "another issue's comments stay there");
+});
+
+test('HANDOFF-02 the person reads the prompt before it goes, and the builder gets it as they changed it', async () => {
+  const { api, rest, pid, agent } = await setup();
+  const shown = await rest('POST', `/api/projects/${pid}/builds/prompt`, { item: 'issue-10', behaviours: ['ZOOM-01'] });
+  assert.deepEqual(shown.behaviours, ['ZOOM-01']);
+  assert.match(shown.prompt, /^Build this behaviour of #10 Zoom \(issue-10\)/);
+  assert.deepEqual((await rest('GET', `/api/projects/${pid}/builds`)).requests, [], 'seeing the prompt asks for nothing');
+  const changed = `${shown.prompt}\n\nKeep the zoom animation under 300 ms.`;
+  await rest('POST', `/api/projects/${pid}/builds`, { item: 'issue-10', behaviours: ['ZOOM-01'], prompt: changed, by: 'Ken' });
+  await rest('POST', `/api/projects/${pid}/builds`, { item: 'issue-11', by: 'Ken' });
+  const { build_requests: asked } = await (await agent('Builder')).use('next_work');
+  assert.equal(asked.find((r) => r.item === 'issue-10').prompt, changed, 'the builder gets the prompt as the person left it');
+  assert.match(asked.find((r) => r.item === 'issue-11').prompt, /^Build these behaviours of #11 Claims/, 'one left alone is the one Overworld built');
+  const byAgent = await api({ method: 'POST', path: `/api/projects/${pid}/builds/prompt`, body: { item: 'issue-10' }, trusted: true });
+  assert.equal(byAgent.status, 403, 'an agent gets the prompt with the request, not before it');
+  assert.equal((await api({ method: 'POST', path: `/api/projects/${pid}/builds/prompt`, body: { item: 'issue-13' }, headers: { 'x-projectmap-key': 'k' } })).status, 409, 'what cannot be built has no prompt');
+});
+
+test('HANDOFF-03 an issue with nothing adopted and new offers no Build, and its card says what is missing', async () => {
+  const { rest } = await setup();
+  const pid = (await rest('POST', '/api/import/json', {
+    nodes: [
+      { id: 'root', title: 'App', kind: 'project' },
+      { id: 'web', parentId: 'root', title: 'Web', kind: 'area' },
+      issue(40, 'Asking', { body: body({ behaviours: ['AS-01 Given a question, when open, then wait.'], questions: '- Which way?' }) }),
+      issue(41, 'Planned', { status: 'planned', body: body({ behaviours: ['PL-01 Given a plan, when unready, then wait.'] }) }),
+      issue(42, 'Empty', { body: body({ behaviours: [] }) }),
+      issue(43, 'Foggy', { body: body({ behaviours: ['FG-01 Not worked out yet.'] }) }),
+      issue(44, 'Parent', { body: body({ behaviours: ['PA-01 Given a parent, when big, then split.'] }) }),
+      issue(45, 'Child', { parentId: 'i44', body: body({ behaviours: ['CH-01 Given a child, when small, then built.'] }) }),
+      issue(46, 'Waiting', { body: body({ behaviours: ['WT-01 Given a dependency, when unfinished, then wait.'] }), links: [{ to: 'i41', type: 'depends' }] }),
+      issue(47, 'Finished', { status: 'done', body: body({ behaviours: ['FI-01 Given done, when looked at, then done.'] }) }),
+    ],
+  })).project.id;
+  const { buildable, missing } = await rest('GET', `/api/projects/${pid}/builds`);
+  assert.deepEqual(Object.keys(buildable), ['issue-45'], 'only what is adopted and new is offered');
+  assert.deepEqual(Object.keys(missing).sort(), ['issue-40', 'issue-41', 'issue-42', 'issue-43', 'issue-44', 'issue-46'], 'nothing is said about work, places or what is finished');
+  for (const [key, says] of [['issue-40', /open questions/], ['issue-41', /planned, not ready: its behaviours still need improvement/], ['issue-42', /no behaviours yet/], ['issue-43', /FG-01 isn't worked out yet/], ['issue-44', /needs a split/], ['issue-46', /waits on #41 Planned \(planned\)/]]) {
+    assert.ok(missing[key].some((m) => says.test(m)), `${key}: ${missing[key].join(' ')}`);
+  }
 });
 
 test('HANDOFF-06 HANDOFF-10 an open session takes a build request by claiming it, before other work, so nobody else builds it; one nobody takes within an hour says so', async () => {

@@ -20,6 +20,7 @@ import { behavioursReaching, isStale, linesOf } from '@shared/proof.js';
 import { houseId } from '../map/houses.js';
 import { provenSummary } from '../map/lenses.js';
 import { Photos } from './Photos.jsx';
+import { BUILD_FOG, buildOffer } from '../model/build.js';
 
 // Only where there is a page to sanitise for (not when the panel is read in a test).
 DOMPurify.addHook?.('afterSanitizeAttributes', (node) => {
@@ -558,12 +559,6 @@ const ago = (iso) => {
 };
 
 /**
- * Build (#14 HANDOFF-05): offered for the behaviours that are new and unclaimed, all of them or the one whose house opened
- * the card; once asked for, the card says they wait for a builder, and says so plainly after an hour (HANDOFF-06), and
- * whether the project's runner was started (HANDOFF-07). A builder that stopped says why, or where its pull request is
- * (HANDOFF-09). The server decides what can be built, and only a person can ask.
- */
-/**
  * Where each claim on the item has got to (#14 HANDOFF-11): being built, in a pull request, merged and waiting for the
  * deploy, or back with its builder because the pull request closed unmerged or the deploy failed. A claim ends when the
  * deploy that carries it succeeds, and the agent badge with it (HANDOFF-04).
@@ -710,10 +705,19 @@ function WasteBar({ node, tree, editing }) {
   );
 }
 
-function BuildBar({ node, atBehaviour, builds, claims = [], onBuild }) {
+/**
+ * Build (#14 HANDOFF-05): offered for the behaviours that are new and unclaimed, all of them or the one whose house opened
+ * the card, when the issue is under the fog line (HANDOFF-12); otherwise the card says what is missing (HANDOFF-03) and
+ * what to define. Build shows the prompt first, to read, change or copy before it goes (HANDOFF-02). Once asked for, the
+ * card says they wait for a builder, and says so plainly after an hour (HANDOFF-06), and whether the project's runner was
+ * started (HANDOFF-07). A builder that stopped says why, or where its pull request is (HANDOFF-09). The server decides
+ * what can be built, and only a person can ask.
+ */
+function BuildBar({ node, atBehaviour, builds, claims = [], onBuild, onBuildPrompt }) {
   const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState(null); // { behaviours, built, prompt } while the prompt is being read
   const key = itemKeyOf(node);
-  const offer = builds?.buildable?.[key] ?? [];
+  const { fog, offer, foggy, missing, why } = buildOffer(node, builds);
   const asked = (builds?.requests ?? []).filter((r) => r.itemKey === key);
   const said = (builds?.notes ?? []).filter((n) => n.itemKey === key);
   // Grouped by hand, not with Object.groupBy: Safari before 17.4 has none, and the card must open everywhere.
@@ -724,25 +728,72 @@ function BuildBar({ node, atBehaviour, builds, claims = [], onBuild }) {
     groups.set(g, [...(groups.get(g) ?? []), c]);
   }
   const held = [...groups.values()].map((cs) => ({ agent: `${cs[0].agentName} (${cs[0].owner})`, ids: cs.map((c) => c.behaviour), pr: cs[0].pr }));
-  if (!onBuild || (!offer.length && !asked.length && !said.length && !held.length)) return null;
-  const go = async (behaviours) => {
+  // Nothing to build, nothing going on: say what it lacks, unless that is nothing a person could add.
+  const lacking = !offer.length && !asked.length && !held.length && (missing.length > 0 || foggy);
+  if (!onBuild || !onBuildPrompt || (!offer.length && !asked.length && !said.length && !held.length && !lacking)) return null;
+  const look = async (behaviours) => {
     setBusy(true);
-    await onBuild(node, behaviours);
+    const built = await onBuildPrompt(node, behaviours);
+    setBusy(false);
+    if (built != null) setDraft({ behaviours, built, prompt: built });
+  };
+  const send = async (behaviours, prompt) => {
+    setBusy(true);
+    if (await onBuild(node, behaviours, prompt)) setDraft(null);
     setBusy(false);
   };
   const one = atBehaviour && offer.includes(atBehaviour) && offer.length > 1;
   return (
     <section className="build-bar" aria-label="Build">
-      {offer.length > 0 && (
+      {offer.length > 0 && !draft && (
         <div className="build-actions">
           {one && (
-            <button type="button" className="primary" disabled={busy} onClick={() => go([atBehaviour])} title={`Ask for a builder for ${atBehaviour}`}>
+            <button type="button" className="primary" disabled={busy} onClick={() => look([atBehaviour])} title={`See the prompt for ${atBehaviour}, then ask for a builder`}>
               <Icon name="build" size={16} /> Build {atBehaviour}
             </button>
           )}
-          <button type="button" className={one ? '' : 'primary'} disabled={busy} onClick={() => go(null)} title={`Ask for a builder for ${offer.join(', ')}`}>
+          <button type="button" className={one ? '' : 'primary'} disabled={busy} onClick={() => look(null)} title={`See the prompt for ${offer.join(', ')}, then ask for a builder`}>
             <Icon name="build" size={16} /> Build {offer.length === 1 ? offer[0] : `all ${offer.length}`}
           </button>
+        </div>
+      )}
+      {draft && (
+        <div className="build-prompt">
+          <label>
+            <span>The prompt the builder gets. Read it, and change it if you like.</span>
+            <textarea aria-label="The prompt the builder gets" rows={12} value={draft.prompt} maxLength={40000} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} />
+          </label>
+          <div className="build-actions">
+            <button type="button" className="primary" disabled={busy || !draft.prompt.trim()} onClick={() => send(draft.behaviours, draft.prompt !== draft.built ? draft.prompt : null)}>
+              <Icon name="build" size={16} /> Ask for a builder
+            </button>
+            <CopyPrompt text={draft.prompt} />
+            {draft.prompt !== draft.built && (
+              <button type="button" className="link-btn" disabled={busy} onClick={() => setDraft({ ...draft, prompt: draft.built })}>
+                Undo my changes
+              </button>
+            )}
+            <button type="button" className="link-btn" disabled={busy} onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {lacking && (
+        <div className="build-missing" role="status">
+          <p>Not ready to build yet.</p>
+          <ul>
+            {missing.map((m) => (
+              <li key={m}>{m}</li>
+            ))}
+            {/* A leaf with no behaviours, or none worked out, is all fog: the server has already said so. */}
+            {fog >= BUILD_FOG && !(fog === 100 && !node.children.length && missing.length > 0) && (
+              <li>
+                It is {fog}% fog{node.children.length ? '' : ` (${why[0]})`}: Build is offered only under {BUILD_FOG}% fog, when its behaviours are worked out.
+                {node.children.length > 0 && why.length > 0 && ` Foggiest: ${why.join('; ')}.`}
+              </li>
+            )}
+          </ul>
         </div>
       )}
       {asked.map((r) => (
@@ -939,7 +990,28 @@ export function FileProof({ node, tree, proof, lit, onPick, onDirections }) {
   );
 }
 
-export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], review = null, box = null, onNextReview = null, onBuild = null, commenting = false, commentControl = null, back = null, proof = NO_PROOF, lit = null, onDirections = () => {}, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+/** Copies the prompt, for anyone who would rather paste it into their own agent's chat (#14). */
+function CopyPrompt({ text }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setDone(true);
+          setTimeout(() => setDone(false), 1500);
+        } catch {
+          // no clipboard (an insecure page): the text is still there to select
+        }
+      }}
+    >
+      <Icon name={done ? 'check' : 'copy'} size={16} /> {done ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], review = null, box = null, onNextReview = null, onBuild = null, onBuildPrompt = null, commenting = false, commentControl = null, back = null, proof = NO_PROOF, lit = null, onDirections = () => {}, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const docRef = useRef(null);
   const rootRef = useRef(null);
@@ -1041,7 +1113,12 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         )}
         {!node.refinement && saysMore(node, s.health) && <HealthPill health={s.health} />}
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
-        {s.fog > 0.005 && <span className="pill pill-fog">{fogReason(node)}</span>}
+        {/* Always as a number, with its reason (HANDOFF-12, FOG-06), so people learn what the build line looks like. */}
+        {!isRoot && (
+          <span className={`pill ${s.fog > 0.005 ? 'pill-fog' : 'pill-fog-level'}`} title={`How foggy it is, as the Fog lens shows it. Build is offered under ${BUILD_FOG}%.`}>
+            {buildOffer(node, builds).fog}% fog{s.fog > 0.005 ? `: ${fogReason(node)}` : ''}
+          </span>
+        )}
         {node.refinement && (
           <span className="pill pill-new" title={theirs ? 'New in someone else’s refinement: adopt or decline it below.' : 'New in your refinement: Accept adopts it, Discard drops it.'}>
             New
@@ -1056,7 +1133,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       </div>
 
       <SplitBar node={node} editing={editing} onPick={onPick} />
-      <BuildBar node={node} atBehaviour={atBehaviour} builds={builds} claims={claims} onBuild={onBuild} />
+      <BuildBar node={node} atBehaviour={atBehaviour} builds={builds} claims={claims} onBuild={onBuild} onBuildPrompt={onBuildPrompt} />
       <WasteBar node={node} tree={tree} editing={editing} />
 
       <div className="actions quiet">

@@ -62,7 +62,7 @@ function useMedia(query) {
 // the map takes every touch, so pull-to-refresh can't, and an app opened from the home screen has no reload button.
 const VERSION_CHECK_MS = 5 * 60_000;
 const NO_COVERAGE = { report: null, code: null };
-const NO_BUILDS = { requests: [], buildable: {}, notes: [] };
+const NO_BUILDS = { requests: [], buildable: {}, missing: {}, notes: [] };
 function useNewVersion() {
   const [newer, setNewer] = useState(false);
   useEffect(() => {
@@ -232,7 +232,7 @@ export function App() {
     (pid) =>
       api
         .builds(pid)
-        .then((d) => latest.current.projectId === pid && setBuilds({ requests: d.requests ?? [], buildable: d.buildable ?? {}, notes: d.notes ?? [] }))
+        .then((d) => latest.current.projectId === pid && setBuilds({ requests: d.requests ?? [], buildable: d.buildable ?? {}, missing: d.missing ?? {}, notes: d.notes ?? [] }))
         .catch(() => {}),
     [],
   );
@@ -512,18 +512,33 @@ export function App() {
       return d.nodes;
     },
   });
+  // A changed prompt goes with the request (HANDOFF-02); one left as it was is built again by the server.
   const build = useCallback(
-    async (node, behaviours) => {
+    async (node, behaviours, prompt) => {
       const pid = projectId;
+      let ok = false;
       try {
-        const { request, already } = await api.requestBuild(pid, { item: itemKeyOf(node), ...(behaviours ? { behaviours } : {}), by: editing.name || undefined });
+        const { request, already } = await api.requestBuild(pid, { item: itemKeyOf(node), ...(behaviours ? { behaviours } : {}), ...(prompt ? { prompt } : {}), by: editing.name || undefined });
         toast(already ? 'Already waiting for a builder' : `Build asked for: ${request.behaviours.join(', ')}`);
+        ok = true;
       } catch (err) {
         toast(err.message);
       }
       await loadBuilds(pid);
+      return ok;
     },
     [projectId, editing.name, loadBuilds, toast],
+  );
+  const buildPrompt = useCallback(
+    async (node, behaviours) => {
+      try {
+        return (await api.buildPrompt(projectId, { item: itemKeyOf(node), ...(behaviours ? { behaviours } : {}) })).prompt;
+      } catch (err) {
+        toast(err.message);
+        return null;
+      }
+    },
+    [projectId, toast],
   );
   const update = useCallback(async () => {
     await editing.flush();
@@ -909,6 +924,7 @@ export function App() {
                   box={box}
                   onNextReview={pickReview}
                   onBuild={build}
+                  onBuildPrompt={buildPrompt}
                   commenting={commenting}
                   commentControl={inSheet ? commentControl : null}
                   back={trail && { label: trail.id && tree.byId.get(trail.id) ? `Back to ${tree.byId.get(trail.id).title}` : 'Back', go: () => history.back() }}

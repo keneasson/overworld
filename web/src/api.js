@@ -87,6 +87,7 @@ export const api = {
   requestBuild: (pid, body) => request('POST', `/api/projects/${pid}/builds`, body),
   splitOf: (pid, key) => request('GET', `/api/projects/${pid}/items/${key}/split`),
   splitItem: (pid, key, body) => request('POST', `/api/projects/${pid}/items/${key}/split`, body),
+  buildPrompt: (pid, body) => request('POST', `/api/projects/${pid}/builds/prompt`, body),
   listAgents: (pid) => request('GET', `/api/projects/${pid}/agents`),
   createAgent: (pid, body) => request('POST', `/api/projects/${pid}/agents`, body),
   revokeAgent: (pid, id) => request('DELETE', `/api/projects/${pid}/agents/${id}`),
