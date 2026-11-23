@@ -566,6 +566,41 @@ function BuildBar({ node, atBehaviour, builds, claims = [], onBuild }) {
   );
 }
 
+// An item that needs a split before it can be built (#32 STATE-10), and the way to do it (STATE-14): what it still has to
+// build moves into a child task, in your changeset. Agents see the same in their standup.
+function SplitBar({ node, editing, onPick }) {
+  const [split, setSplit] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const key = itemKeyOf(node);
+  useEffect(() => {
+    let live = true;
+    setSplit(null);
+    if (!editing?.splitOf || node.refinement) return;
+    editing.splitOf(node).then((s) => live && setSplit(s));
+    return () => {
+      live = false;
+    };
+  }, [key, editing?.generation]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!split) return null;
+  const go = async () => {
+    setBusy(true);
+    const child = await editing.split(node);
+    setBusy(false);
+    if (child) setSplit(null);
+  };
+  return (
+    <section className="split-bar" aria-label="Needs a split">
+      <p>
+        <strong>Needs a split.</strong> {split.reason}
+        {split.looks_built.length > 0 && <> Built: {split.looks_built.join(', ')}.</>} Still to build: {split.still_to_build.join(', ')}.
+      </p>
+      <button type="button" className="primary" disabled={busy || editing.busy} onClick={go} title={`Move ${split.still_to_build.join(', ')} into a new child task, in your changeset`}>
+        <Icon name="split" size={16} /> Split what's left into a child
+      </button>
+    </section>
+  );
+}
+
 export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], review = null, onNextReview = null, onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const docRef = useRef(null);
@@ -677,6 +712,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         <SyncBadge node={node} />
       </div>
 
+      <SplitBar node={node} editing={editing} onPick={onPick} />
       <BuildBar node={node} atBehaviour={atBehaviour} builds={builds} claims={claims} onBuild={onBuild} />
 
       <div className="actions quiet">

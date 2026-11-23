@@ -280,6 +280,22 @@ export function createMcp({ model, agents, call, log = console }) {
       },
     },
 
+    split: {
+      description: "Split an item that needs it before it can be built (it is partly built, or has child issues and behaviours of its own still to build): the behaviours it still has to build move, word for word with their IDs, into a new child task, and the item keeps what's built and says where the rest went. Both go into your refinement for a person to adopt. Then build the child.",
+      input: {
+        refinement: { type: 'string', description: 'From refine().' },
+        item: { ...place, description: 'The item that needs a split.' },
+        request_key: requestKey,
+      },
+      required: ['refinement', 'item'],
+      changes: true,
+      async run({ pid, agent }, args) {
+        const node = find((await mapOf(pid)).nodes, args.item);
+        const res = await api('POST', `/api/projects/${pid}/items/${keyOf(node)}/split`, { changeset: String(args.refinement), by: author(agent) });
+        return { refinement: res.changeset.id, item: keyOf(node), child: keyOf(res.node), title: res.node.title, moved: res.moved };
+      },
+    },
+
     propose: {
       description: "Propose an item's new text inside a refinement: its title and the whole markdown, in the strict issue shape. Optionally mark behaviours ready for adoption. Nothing changes in the spec until a person adopts it. To propose a new item, give `parent` and `kind` in place of `item`: it appears on the map at once, in the refinement, needing improvement.",
       input: {
