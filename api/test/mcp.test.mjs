@@ -889,3 +889,16 @@ test('COVER-03 CI saves the coverage report, marked with its commit, with the pr
   assert.deepEqual(coverage.behaviours['ZOOM-01'].files, { 'web/zoom.js': '1-4,9' });
   assert.ok(coverage.savedAt);
 });
+
+test('HANDOFF-11 a builder whose claim ran out still links its pull request once the item has moved on, unless someone else holds it or it is finished', async () => {
+  const { rest, pid, agent } = await setup();
+  const a = await agent('Builder');
+  const b = await agent('Other');
+  const zoom = (await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title === '#10 Zoom');
+  await rest('PATCH', `/api/projects/${pid}/nodes/${zoom.id}`, { status: 'in_progress' }); // the pull request said it closes it
+  assert.equal((await a.use('claim', { behaviours: ['ZOOM-01'], pull_request: 21 })).pull_request, 21);
+  assert.match((await b.refused('claim', { behaviours: ['ZOOM-01'], pull_request: 22 })).error, /Already claimed: ZOOM-01/);
+  assert.match((await b.refused('claim', { behaviours: ['ZOOM-02'] })).error, /in progress, not ready/, 'starting work still needs it ready');
+  await rest('PATCH', `/api/projects/${pid}/nodes/${zoom.id}`, { status: 'done' });
+  assert.match((await b.refused('claim', { behaviours: ['ZOOM-02'], pull_request: 23 })).error, /done, not ready/);
+});
