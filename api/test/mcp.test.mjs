@@ -399,7 +399,7 @@ test('ANSWER-01 ANSWER-02 ANSWER-05 an answer is written directly under its ques
   assert.doesNotMatch(await bodyOf(), /Ken/, 'who answered is not in the text');
   const seen = await rest('POST', `${path}/prompt`, { text: 'Two hours, renewable.', by: 'Ken' });
   assert.equal(seen.prompt, sent.prompt, 'the person sees the prompt that goes');
-  for (const part of [/How long should a claim last\?/, /in its Open questions section, asked by Builder/, /Two hours, renewable\./, /from Ken/, /## Behaviours\n\n- CL-01/, /parent: Web/, /#10 Zoom \(issue-10\), ready/, /would be ready/, /Write the decision where it belongs/, /Take the question and its answer out of Open questions/, /behaviours to add/, /Mark the item ready/, new RegExp(`answers: \\["${question}"\\]`)]) assert.match(sent.prompt, part);
+  for (const part of [/How long should a claim last\?/, /in its Open questions section, asked by Builder/, /Two hours, renewable\./, /from Ken/, /## Behaviours\n\n- CL-01/, /parent: Web/, /#10 Zoom \(issue-10\), ready/, /would be ready/, /Write the decision where it belongs/, /Take the question and its answer out of Open questions/, /behaviours to add/, /Still needs refining if anything is unclear/, /ready_for_adoption: \[every behaviour ID in it\]/, new RegExp(`answers: \\["${question}"\\]`)]) assert.match(sent.prompt, part);
   assert.deepEqual((await a.use('context', { issue: 'issue-11' })).open_questions, [{ question_id: question, question: 'How long should a claim last?', asked_by: `Builder (${a.id})`, answered: true, answer: 'Two hours, renewable.', answered_by: 'Ken' }]);
   // Answered again, the new answer takes the old one's place.
   await rest('POST', `${path}/answer`, { text: 'A day.', by: 'Ken' });
