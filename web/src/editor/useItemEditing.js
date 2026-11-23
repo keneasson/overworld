@@ -33,6 +33,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(0);
   const [name, setNameState] = useState(() => storage.get(NAME) ?? '');
+  const nameNow = useRef(name); // a name saved just before a post is the one the post carries (NOTE-21)
   const [readHere, setReadHere] = useState(readHereAtFirst);
   const timers = useRef(new Map());
   const pending = useRef(new Map());
@@ -280,7 +281,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
   // changed, if they did (ANSWER-01, ANSWER-05). True once it is posted.
   async function comment(key, anchor, text, { replyTo, prompt } = {}) {
     try {
-      const { comment: c, thread, prompt: sent } = await api.addComment(projectId, { itemKey: key, anchor, text, author: name, replyTo, prompt });
+      const { comment: c, thread, prompt: sent } = await api.addComment(projectId, { itemKey: key, anchor, text, author: nameNow.current, replyTo, prompt });
       if (sent) toast('Answered. An agent applies it through a refinement for you to adopt.');
       // A reply to @Claude also changes its thread: it is addressed to an agent again (NOTE-14).
       setComments((cs) => [...cs.map((x) => (thread && x.id === thread.id && x.itemKey === thread.itemKey ? thread : x)), c]);
@@ -351,6 +352,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onRem
   const answerPrompt = async (c, text) => (await api.answerPrompt(projectId, c, { text, author: name })).prompt;
 
   const setName = (v) => {
+    nameNow.current = v;
     setNameState(v);
     storage.set(NAME, v || null);
   };

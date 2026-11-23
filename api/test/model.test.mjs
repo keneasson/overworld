@@ -47,7 +47,7 @@ async function fullProject(call, mcp) {
   const pid = project.id;
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: nodes[0].id })).body.changeset;
   await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-5', title: 'Think about the vibe', markdown: 'Ours.' });
-  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.' });
+  await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-4', anchor: { section: 'Why' }, text: 'Agreed.', author: 'Ann' });
   const { token } = (await call('POST', `/api/projects/${pid}/agents`, { name: 'Builder' })).body;
   await call('POST', `/api/projects/${pid}/facts`, { text: 'Keep it small.' });
   await mcp(token, 'ask', { place: 'issue-4', question: 'Which card provider?', request_key: 'q1' });
@@ -67,7 +67,7 @@ test('DATA-01 no request the API serves scans the table', async () => {
   const { pid, cs, token } = await fullProject(call, mcp);
   for (const tool of ['prime', 'zoom', 'next_work']) await mcp(token, tool);
   await call('GET', `/api/projects/${pid}/claims`);
-  const c = (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-3', text: 'Hm.' })).body.comment;
+  const c = (await call('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-3', text: 'Hm.', author: 'Ann' })).body.comment;
   await call('PATCH', `/api/projects/${pid}/comments/issue-3/${c.id}`, { resolved: true });
   await call('DELETE', `/api/projects/${pid}/comments/issue-3/${c.id}`);
   await call('GET', `/api/projects/${pid}/comments`);

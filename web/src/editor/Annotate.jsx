@@ -2,11 +2,30 @@
 // comment goes and quotes what was picked (NOTE-10); a comment is just a comment, with no kinds (NOTE-01). It posts
 // with ⌘/Ctrl+Enter (NOTE-12). Everything said is written and shown like the document (EDIT-15).
 
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, createContext, lazy, useContext, useState } from 'react';
 import { answers, initials, isDismissed } from '@shared/annotations.js';
 import { Icon } from '../components/Icon.jsx';
 import { commentHtml } from './comment-text.js';
 import { useLinks } from '../components/links-context.js';
+
+// Who is commenting (#15 NOTE-21): the name saved in this browser, and how to save one. With none saved, the box asks for it
+// before posting, so no comment shows as "Someone". Sign-in replaces this (#52 AUTH-07).
+export const YouContext = createContext({ you: '', setYou: null });
+
+function useAskName() {
+  const { you, setYou } = useContext(YouContext);
+  const [who, setWho] = useState('');
+  const asking = !you?.trim() && Boolean(setYou);
+  const field = asking ? (
+    <input className="your-name" aria-label="Your name" placeholder="Your name, shown on what you write" value={who} onChange={(e) => setWho(e.target.value)} maxLength={80} />
+  ) : null;
+  return {
+    named: !asking || Boolean(who.trim()),
+    field,
+    // Saved before the post goes out, so the post carries it.
+    save: () => asking && setYou(who.trim()),
+  };
+}
 
 // A copy of the app on an older version may find the formatted box gone after a deploy: the plain box does the same job,
 // and the app offers Update (#71 SHIP-13).
@@ -67,10 +86,12 @@ function About({ heading, quote, what, src }) {
 export function Composer({ heading, quote, what, src, onPost, onCancel }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const ready = Boolean(text.trim()) && !busy;
+  const name = useAskName();
+  const ready = Boolean(text.trim()) && !busy && name.named;
   const post = async (e) => {
     e?.preventDefault();
     if (!ready) return;
+    name.save();
     setBusy(true);
     const ok = await onPost(text.trim());
     setBusy(false);
@@ -97,6 +118,7 @@ export function Composer({ heading, quote, what, src, onPost, onCancel }) {
         onSubmit={post}
         placeholder="Comment… @Claude hands it to an agent"
       />
+      {name.field}
       <div className="answer-actions">
         <span className="note-keys">⌘/Ctrl+Enter</span>
         <button type="button" className="link-btn" onClick={onCancel}>
@@ -159,6 +181,7 @@ export function Thread({ heading, quote, what, src, moved, thread, you, onReply,
   const [prompt, setPrompt] = useState(null);
   const [built, setBuilt] = useState(null);
   const [busy, setBusy] = useState(false);
+  const name = useAskName();
   const answering = answers(root, you || 'Someone') && Boolean(onAnswerPrompt);
   const showPrompt = async () => {
     setBusy(true);
@@ -174,7 +197,8 @@ export function Thread({ heading, quote, what, src, moved, thread, you, onReply,
   };
   const reply = async (e) => {
     e?.preventDefault();
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy || !name.named) return;
+    name.save();
     setBusy(true);
     const changed = answering && prompt != null && prompt !== built ? prompt : undefined;
     if (await onReply(text.trim(), changed)) {
@@ -229,7 +253,8 @@ export function Thread({ heading, quote, what, src, moved, thread, you, onReply,
           onSubmit={reply}
           placeholder={answering ? 'Answer… goes to an agent to apply (⌘/Ctrl+Enter posts)' : 'Reply… (⌘/Ctrl+Enter posts)'}
         />
-        <button type="submit" disabled={!text.trim() || busy}>
+        {name.field}
+        <button type="submit" disabled={!text.trim() || busy || !name.named}>
           Reply
         </button>
       </form>
