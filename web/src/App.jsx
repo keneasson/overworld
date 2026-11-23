@@ -99,7 +99,8 @@ function useNewVersion() {
 
 export function App() {
   const initial = useRef(readHash()).current;
-  const [locked, setLocked] = useState(false);
+  const [locked, setLocked] = useState(false); // false, or how to get in: { signIn, notLetIn, message }
+  const [person, setPerson] = useState(null); // who is signed in (#52), if anyone
   const [unlockError, setUnlockError] = useState('');
   const [projects, setProjects] = useState(null);
   const [projectId, setProjectId] = useState(initial.p);
@@ -143,7 +144,7 @@ export function App() {
 
   const fail = useCallback(
     (err) => {
-      if (err instanceof AuthError) setLocked(true);
+      if (err instanceof AuthError) setLocked({ signIn: err.signIn, notLetIn: err.notLetIn, message: err.message });
       else toast(err.message, 'error');
     },
     [toast],
@@ -164,6 +165,15 @@ export function App() {
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
+
+  // Who is signed in (#52 AUTH-07): what they write carries their name, so the app no longer asks for one.
+  useEffect(() => {
+    if (!projects) return;
+    api
+      .session()
+      .then(({ person }) => setPerson(person ?? null))
+      .catch(() => setPerson(null));
+  }, [projects]);
 
   useEffect(() => {
     if (!projects) return;
@@ -802,10 +812,23 @@ export function App() {
     }
   }
 
-  if (locked) return <Unlock onSubmit={unlock} error={unlockError} />;
+  async function signOut() {
+    await api.signOut().catch(() => {});
+    setPerson(null);
+    setDrawerOpen(false);
+    loadProjects();
+  }
 
-  // Who is commenting, and how to save a name when none is (#15 NOTE-21).
-  const you = useMemo(() => ({ you: editing.name, setYou: editing.setName }), [editing.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Signed in, the name is the person's (AUTH-07): the changeset and the comments they write carry it.
+  useEffect(() => {
+    if (person?.name && editing.name !== person.name) editing.setName(person.name);
+  }, [person?.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Who is commenting, and how to save a name when none is (#15 NOTE-21). Signed in, nobody is asked.
+  const you = useMemo(() => (person ? { you: person.name, setYou: null } : { you: editing.name, setYou: editing.setName }), [editing.name, person]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (locked) return <Unlock onSubmit={unlock} error={unlockError} signIn={locked.signIn ?? []} notLetIn={locked.notLetIn} message={locked.message} onSignOut={signOut} />;
+
   const classes = ['app', mobile && 'mobile', panelMode && 'panel-open', sheetFull && 'sheet-full', lens.theme.dark && 'night', commenting && 'commenting'].filter(Boolean).join(' ');
   // One Comment control: on the map's controls, or at the top of the sheet on a phone, where the sheet covers them.
   const commentControl = tree && <CommentToggle on={commenting} onToggle={() => setCommenting((c) => !c)} />;
@@ -1048,10 +1071,12 @@ export function App() {
             setDrawerOpen(false);
             setConnectOpen(true);
           }}
+          person={person}
+          onSignOut={signOut}
           onLock={() => {
             setAccessKey('');
             setDrawerOpen(false);
-            setLocked(true);
+            loadProjects();
           }}
         />
       )}

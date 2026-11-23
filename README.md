@@ -149,6 +149,18 @@ npm run deploy     # builds, bundles, and runs sam deploy (first time: npm run d
 npm run destroy    # removes the stack (the table is kept; the command to drop it is printed)
 ```
 
+People sign in with GitHub once the stack has a GitHub OAuth App (#52); until then the access key opens the app, and
+after it the key is only for scripts (health checks, migrations). To turn sign-in on:
+
+1. Make a GitHub OAuth App whose callback is `<app URL>/api/auth/github/callback`.
+2. Put its client secret in `.conf/github-oauth-secret`, then `node scripts/sign-in-secrets.mjs --push` (it makes the bridge
+   secret and puts both into SSM under `/<stack>/sign-in/`).
+3. Write `.conf/sign-in.json` as `{ "githubClientId": "…", "allowed": "your-login" }` for a local deploy, or set the repository
+   variables `SIGN_IN_GITHUB_CLIENT_ID` and `SIGN_IN_ALLOWED` for CI. Only the GitHub logins in `allowed` get in, until the
+   store decides who may reach a project (#56). CI's role also needs `infra/ci-bootstrap.yaml` redeployed, for Cognito.
+
+`SIGN_IN=stub npm run dev` tries the sign-in screens locally, with Cognito and GitHub stood in.
+
 `deploy` uses `AWS_PROFILE`, `AWS_REGION` and `STACK_NAME` when set. On the first deploy it
 generates an access key and writes it, with the URL, to `.conf/deploy.json`. Set
 `PROJECTMAP_ACCESS_KEY` to choose your own key. Secrets and machine-local settings all live in

@@ -47,3 +47,37 @@ export function awsSync(env = process.env) {
     seenFunction: (arn) => (functionArn ??= arn?.split(':').slice(0, 7).join(':') ?? null),
   };
 }
+
+// Sign-in with GitHub (#52), once deployed with it: the Cognito pool the stack made, the GitHub OAuth App's client id, and two
+// secrets in SSM (the OAuth App's client secret and the bridge secret, put there once by scripts/sign-in-secrets.mjs). Cognito's
+// own client secret is read from Cognito. Each secret is read once and kept in memory, never logged. Without the client id,
+// sign-in is off and the access key stays the way in.
+export function awsSignIn(env = process.env) {
+  const prefix = env.SIGN_IN_SSM_PREFIX;
+  const enabled = Boolean(prefix && env.SIGN_IN_POOL_ID && env.SIGN_IN_CLIENT_ID && env.SIGN_IN_GITHUB_CLIENT_ID);
+  const parameter = (name) =>
+    once(async () => {
+      const { SSMClient, GetParameterCommand } = await import('@aws-sdk/client-ssm');
+      const res = await new SSMClient({}).send(new GetParameterCommand({ Name: `${prefix}/${name}`, WithDecryption: true }));
+      return res.Parameter.Value;
+    });
+  const poolSecret = once(async () => {
+    const { CognitoIdentityProviderClient, DescribeUserPoolClientCommand } = await import('@aws-sdk/client-cognito-identity-provider');
+    const res = await new CognitoIdentityProviderClient({}).send(new DescribeUserPoolClientCommand({ UserPoolId: env.SIGN_IN_POOL_ID, ClientId: env.SIGN_IN_CLIENT_ID }));
+    return res.UserPoolClient.ClientSecret;
+  });
+  return {
+    enabled,
+    baseUrl: env.SIGN_IN_BASE_URL || null,
+    pool: { userPoolId: env.SIGN_IN_POOL_ID, clientId: env.SIGN_IN_CLIENT_ID, clientSecret: poolSecret },
+    github: { clientId: env.SIGN_IN_GITHUB_CLIENT_ID, clientSecret: parameter('github-client-secret') },
+    bridgeSecret: parameter('bridge-secret'),
+    allowed: allowedLogins(env.SIGN_IN_ALLOWED),
+  };
+}
+
+/** GitHub logins let in, until the store decides who may reach a project (#56): "ada, bob" -> person => boolean. */
+export function allowedLogins(list = '') {
+  const logins = new Set(String(list ?? '').split(/[\s,]+/).map((l) => l.trim().toLowerCase()).filter(Boolean));
+  return (person) => Boolean(person?.profile?.login && logins.has(String(person.profile.login).toLowerCase()));
+}

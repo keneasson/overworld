@@ -16,7 +16,7 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, wr
 import { randomBytes } from 'node:crypto';
 import { build } from 'esbuild';
 import { APP_NAME } from '../shared/brand.js';
-import { readDeployConfig, readGitHubApp, writeDeployConfig } from './local-config.mjs';
+import { readDeployConfig, readGitHubApp, readSignIn, writeDeployConfig } from './local-config.mjs';
 import { previousAssets } from './previous-assets.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
@@ -93,6 +93,15 @@ const sync = [
   ['GitHubInstallationId', process.env.SYNC_INSTALLATION_ID],
   ['GitHubAppSlug', process.env.SYNC_APP_SLUG],
 ].filter(([name, value]) => value && new RegExp(`\\n  ${name}:\\n`).test(declared)).map(([name, value]) => `${name}=${value}`);
+// Sign-in with GitHub (#52): the OAuth App's client id, the logins let in and where the app is served. None is secret; the
+// OAuth App's secret goes to SSM once (scripts/sign-in-secrets.mjs). CI passes them in the environment, a local deploy reads
+// .conf/sign-in.json, and one left out keeps its previous value.
+const people = readSignIn();
+const signIn = [
+  ['SignInGitHubClientId', process.env.SIGN_IN_GITHUB_CLIENT_ID ?? people?.githubClientId],
+  ['SignInAllowed', process.env.SIGN_IN_ALLOWED ?? people?.allowed],
+  ['SignInBaseUrl', process.env.SIGN_IN_BASE_URL ?? people?.baseUrl],
+].filter(([name, value]) => value && new RegExp(`\\n  ${name}:\\n`).test(declared)).map(([name, value]) => `${name}=${value}`);
 
 console.log('→ sam deploy');
 run('sam', [
@@ -111,6 +120,7 @@ run('sam', [
   ...(process.env.PERMISSIONS_BOUNDARY ? [`PermissionsBoundary=${process.env.PERMISSIONS_BOUNDARY}`] : []),
   // CI passes the App's ids in the environment; a local deploy reads them from .conf/.
   ...(sync.length ? sync : appParams),
+  ...signIn,
   ...profileArgs,
 ]);
 

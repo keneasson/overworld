@@ -91,6 +91,16 @@ Resources:
           - Effect: Allow
             Action: 'lambda:InvokeFunction'
             Resource: [!Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:projectmap*']
+          # Sign-in with GitHub (#52): the bridge's calls on the stack's pool. Pools are named by id, not by stack, so this is per account.
+          - Effect: Allow
+            Action:
+              - cognito-idp:AdminCreateUser
+              - cognito-idp:AdminSetUserPassword
+              - cognito-idp:AdminInitiateAuth
+              - cognito-idp:AdminRespondToAuthChallenge
+              - cognito-idp:RevokeToken
+              - cognito-idp:DescribeUserPoolClient
+            Resource: [!Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*']
 
   DeployRole:
     Type: AWS::IAM::Role
@@ -177,6 +187,13 @@ Resources:
               - Effect: Allow
                 Action: ['sqs:CreateQueue', 'sqs:DeleteQueue', 'sqs:GetQueueAttributes', 'sqs:SetQueueAttributes', 'sqs:TagQueue', 'sqs:UntagQueue', 'sqs:ListQueueTags']
                 Resource: [!Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:projectmap*']
+              # Sign-in with GitHub (#52): the stack's Cognito pool and its client. Creating a pool can't be scoped to a name.
+              - Effect: Allow
+                Action: ['cognito-idp:CreateUserPool', 'cognito-idp:TagResource', 'cognito-idp:UntagResource', 'cognito-idp:ListTagsForResource']
+                Resource: '*'
+              - Effect: Allow
+                Action: ['cognito-idp:UpdateUserPool', 'cognito-idp:DescribeUserPool', 'cognito-idp:DeleteUserPool', 'cognito-idp:CreateUserPoolClient', 'cognito-idp:UpdateUserPoolClient', 'cognito-idp:DescribeUserPoolClient', 'cognito-idp:DeleteUserPoolClient', 'cognito-idp:GetUserPoolMfaConfig', 'cognito-idp:SetUserPoolMfaConfig']
+                Resource: [!Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*']
               - Effect: Allow
                 Action: ['s3:PutObject', 's3:GetObject']
                 Resource: [!Sub '${ArtifactBucket.Arn}/*']
