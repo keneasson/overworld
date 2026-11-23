@@ -137,6 +137,11 @@ test('ADOPT-17 ADOPT-18 a refinement shows only what it changed: a behaviour as 
     { kind: 'ins', text: '#22 STRAY-01 says,' },
     { kind: 'same', text: ' because' },
   ]);
+  const { changeSummary } = await import('@shared/word-diff.js');
+  const asked = '- Which vault? It matters.\n  Two sentences here.\n- How long? Two hours.\n- Who pays?';
+  assert.equal(changeSummary({ name: 'Open questions', change: 'changed', before: asked, after: '- How long? Two hours.' }), '2 questions removed', 'a list counts its items');
+  assert.equal(changeSummary({ name: 'Acceptance', change: 'changed', before: '- It holds.', after: '- It holds firm.\n- It ships.' }), '1 item reworded, 1 added');
+  assert.equal(changeSummary({ name: 'Open questions', change: 'changed', before: asked, after: 'None' }), 'emptied');
   const why = Array.from({ length: 40 }, (_, i) => `Word${i}`).join(' ');
   const base = { title: 'Proof', markdown: `Part of #1\n\n## Why\n\n${why}.\n\n## Behaviours\n\n- PR-01 Given a test, when it runs, then it shows as Fog, because nobody knows.\n\n## Open questions\n\nNone\n` };
   const after = { title: 'Proof', markdown: base.markdown.replace('as Fog,', 'as #22 STRAY-01 says,').replace('Word20', 'Twenty') };
