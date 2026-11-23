@@ -4,6 +4,7 @@ import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
 import { HEALTH_COLOR, HEALTH_LABEL, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
+import { fogReason } from '../map/fog.js';
 import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
 import { AnswerBox, Composer, Thread, useAskName } from '../editor/Annotate.jsx';
@@ -1039,7 +1040,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         )}
         {!node.refinement && saysMore(node, s.health) && <HealthPill health={s.health} />}
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
-        {s.vague && <span className="pill pill-fog">Poorly defined</span>}
+        {s.fog > 0.005 && <span className="pill pill-fog">{fogReason(node)}</span>}
         {node.refinement && (
           <span className="pill pill-new" title={theirs ? 'New in someone else’s refinement: adopt or decline it below.' : 'New in your refinement: Accept adopts it, Discard drops it.'}>
             New
@@ -1158,7 +1159,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
           <dd>{s.newFeatures}</dd>
         </div>
         <div className={s.poorlyDefined ? 'fog' : ''}>
-          <dt>Vague</dt>
+          <dt>In the Fog</dt>
           <dd>{s.poorlyDefined}</dd>
         </div>
         <div className={s.blocked ? 'warn' : ''}>
@@ -1166,8 +1167,8 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
           <dd>{s.blocked}</dd>
         </div>
         <div>
-          <dt>Defined</dt>
-          <dd>{pct(s.def)}</dd>
+          <dt>Fog</dt>
+          <dd title={fogReason(node)}>{pct(s.fog)}</dd>
         </div>
       </dl>
 

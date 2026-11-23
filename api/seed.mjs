@@ -494,15 +494,37 @@ const tree = {
   ],
 };
 
+// Fog is behaviour nobody knows yet (#44 FOG-05), so the demo's work is written as behaviours (without IDs, so the
+// demo's blocks stay open land rather than streets of houses): a well-defined item's
+// acceptance criteria (or its summary) become behaviours in Given, When, Then; one with a summary but no estimate still
+// has a part nobody has worked out; one with no summary has none at all and lies under full fog. Uncharted work was
+// last touched weeks ago, so the oldest of it has sat long enough for lightning (FOG-04).
+const PLACES = new Set(['project', 'area']);
+function withBehaviours(n) {
+  const expected = (n.body ?? '').match(/^\*\*Expected:\*\* (.+)$/m)?.[1];
+  if (PLACES.has(n.kind) || n.children?.length || !(n.summary || expected)) return n;
+  const criteria = [...(n.body ?? '').matchAll(/^- \[[ xX]\] (.+)$/gm)].map((m) => m[1]);
+  const thens = criteria.length ? criteria : expected ? [expected] : [n.summary.replace(/\.$/, '')];
+  const rows = thens.map((t) => `- Given "${n.title}", when it ships, then ${t.charAt(0).toLowerCase()}${t.slice(1)}.`);
+  const sized = n.estimate != null || (n.kind === 'bug' && n.priority);
+  if (!sized) rows.push(`- Not worked out yet: what it does at the edges.`);
+  return { ...n, body: `${n.body ? `${n.body}\n\n` : ''}## Behaviours\n\n${rows.join('\n')}` };
+}
+
 /** Flatten the demo tree into stored nodes with fresh ids and resolved links. */
 export function demoProject() {
   const nodes = [];
   const keys = new Map();
   const pendingLinks = [];
   const now = new Date().toISOString();
+  let uncharted = 0;
 
-  (function walk(n, parentId, order) {
+  (function walk(item, parentId, order) {
+    const n = withBehaviours(item);
     const { children = [], key, links = [], ...fields } = n;
+    // Work nobody has written down yet was last touched a month or more ago.
+    const fog = !PLACES.has(n.kind) && !children.length && !/## Behaviours/.test(n.body ?? '');
+    const touched = fog ? new Date(Date.now() - (30 + 3 * uncharted++) * day).toISOString() : now;
     const id = parentId ? newId() : ROOT_ID;
     if (key) keys.set(key, id);
     const stored = {
@@ -525,8 +547,8 @@ export function demoProject() {
       parentId,
       order,
       links: [],
-      createdAt: now,
-      updatedAt: now,
+      createdAt: touched,
+      updatedAt: touched,
     };
     nodes.push(stored);
     for (const [type, to] of links) pendingLinks.push([stored, type, to]);

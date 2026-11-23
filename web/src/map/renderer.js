@@ -16,6 +16,9 @@ import { lotsAt } from './lots.js';
 import { HOUSE, housesAt, isHouse, lotsOf } from './houses.js';
 import { placeNames } from './names.js';
 import { rectsOverlap, smoothstep } from './geometry.js';
+import { drawFog, drawLightning, fogPatches, staleFog } from './fog.js';
+
+export { fogPatches };
 
 export const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif';
 const ACCENT = '#1a73e8';
@@ -355,96 +358,6 @@ function drawWaiting(ctx, [bx, by], size, alpha, dark) {
   ctx.globalAlpha = 1;
 }
 
-// ---------- fog ----------
-// Uncharted work is under cloud: soft, seamless cloud tiles in two layers that drift at different speeds,
-// so the fog reads as weather moving over the land. Drawn over fills and borders, under every label and pin.
-const fogTiles = new Map();
-function fogTile(dark, seed) {
-  const key = `${dark}|${seed}`;
-  if (!fogTiles.has(key)) {
-    const S = 512;
-    const c = document.createElement('canvas');
-    c.width = c.height = S;
-    const g = c.getContext('2d');
-    let r = seed;
-    const rand = () => (r = (r * 9301 + 49297) % 233280) / 233280;
-    const tone = dark ? '205,214,228' : '255,255,255';
-    const shade = dark ? '40,46,58' : '118,128,146';
-    for (let i = 0; i < 30; i++) {
-      const x = rand() * S;
-      const y = rand() * S;
-      const rad = S * (0.09 + rand() * 0.2);
-      const a = 0.6 + rand() * 0.4;
-      // Every blob is drawn wrapped around the edges, so the tile repeats without a seam.
-      for (const dx of [-S, 0, S])
-        for (const dy of [-S, 0, S]) {
-          const cx = x + dx;
-          const cy = y + dy;
-          if (cx + rad < 0 || cx - rad > S || cy + rad < 0 || cy - rad > S) continue;
-          // A shadowed underside, then the lit top: what makes a soft blob read as cloud.
-          for (const [ox, oy, rgb, aa] of [
-            [0.22, 0.3, shade, a * 0.7],
-            [0, 0, tone, a],
-          ]) {
-            const px = cx + ox * rad;
-            const py = cy + oy * rad;
-            const gr = g.createRadialGradient(px, py, 0, px, py, rad);
-            gr.addColorStop(0, `rgba(${rgb},${aa})`);
-            gr.addColorStop(0.55, `rgba(${rgb},${aa * 0.45})`);
-            gr.addColorStop(1, `rgba(${rgb},0)`);
-            g.fillStyle = gr;
-            g.fillRect(px - rad, py - rad, rad * 2, rad * 2);
-          }
-        }
-    }
-    fogTiles.set(key, c);
-  }
-  return fogTiles.get(key);
-}
-// Screen pixels per second: slow enough to notice only when you look.
-const FOG_LAYERS = [
-  { seed: 11, scale: 1, vx: 11, vy: 3.5, alpha: 1 },
-  { seed: 71, scale: 2.4, vx: -6, vy: 2, alpha: 0.9 },
-];
-
-/**
- * Where the fog over a region lies (FOG-01): over the land of the parts nobody knows yet, not spread across all of it.
- * A region that is a third fog shows cloud over that third of its land, at any zoom; each patch is as thick as its
- * own part is uncharted. A part goes down to its own parts until it is all fog, or too small on screen to tell apart.
- * @returns {{ n, g, w }[]}  the parts, their geometry and how thick their fog is
- */
-export function fogPatches(n, { fog, geo, k, inView = () => true }) {
-  const out = [];
-  (function visit(m) {
-    const w = fog(m);
-    const g = geo.get(m.id);
-    if (w <= 0.02 || !inView(g.bbox)) return;
-    if (!m.children.length || w >= 0.98 || g.size * k < 6) out.push({ n: m, g, w });
-    else for (const c of m.children) visit(c);
-  })(n);
-  return out;
-}
-
-function drawFog(ctx, items, k, t, dark) {
-  // A veil under the clouds, so even a gap between them still reads as fog.
-  ctx.fillStyle = dark ? '#8d99ab' : '#eef1f5';
-  for (const { g, w } of items) {
-    ctx.globalAlpha = Math.min(1, w * 0.62);
-    ctx.fill(pathFor(g));
-  }
-  for (const layer of FOG_LAYERS) {
-    const p = ctx.createPattern(fogTile(dark, layer.seed), 'repeat');
-    ctx.fillStyle = p;
-    for (const { g, w, s } of items) {
-      // Clouds shrink with the region on screen, so a small region zoomed out still shows whole clouds, not a tint.
-      const f = Math.min(1, Math.max(0.18, s / 900)) * layer.scale;
-      p.setTransform(new DOMMatrix().translate((t * layer.vx * f) / k, (t * layer.vy * f) / k).scale(f / k));
-      ctx.globalAlpha = Math.min(1, w * layer.alpha);
-      ctx.fill(pathFor(g));
-    }
-  }
-}
-
 // ---------- text helpers ----------
 
 const wrapCache = new Map();
@@ -713,6 +626,23 @@ export function placeInView(scene, view, { center, T = thresholds(view.width, vi
   return focus;
 }
 
+// ---------- stale fog ----------
+
+// Which places are stale is worked out once per tree and hour: it changes only when the project does, or as days pass.
+const staleCache = new WeakMap();
+function stormsOnScreen(scene, inView) {
+  const hour = Math.floor(Date.now() / 3_600_000);
+  let hit = staleCache.get(scene.tree);
+  if (!hit || hit.hour !== hour) staleCache.set(scene.tree, (hit = { hour, ids: staleFog(scene.tree) }));
+  const out = [];
+  for (const id of hit.ids) {
+    const n = scene.tree.byId.get(id);
+    const g = n && scene.geo.get(id);
+    if (g && inView(g.bbox)) out.push({ n, g, alpha: 1 });
+  }
+  return out;
+}
+
 // ---------- main draw ----------
 
 /**
@@ -722,7 +652,7 @@ export function placeInView(scene, view, { center, T = thresholds(view.width, vi
 export function drawMap(ctx, scene, view, opts) {
   const { tree, geo } = scene;
   const { x, y, k, width: W, height: H, dpr } = view;
-  const { lens, selectedId = null, hoverId = null, marked = null, showLinks = false, thumbnail = false, live, time = 0 } = opts;
+  const { lens, selectedId = null, hoverId = null, marked = null, showLinks = false, thumbnail = false, live, time = 0, reducedMotion = false } = opts;
   const theme = lens.theme;
   const T = opts.T ?? thresholds(W, H);
   const sizeOf = (n) => geo.get(n.id).size * k;
@@ -786,7 +716,8 @@ export function drawMap(ctx, scene, view, opts) {
     // Houses and fog belong to what you can see: a region hands them to its children as they fade in.
     if (here > 0.02 && !thumbnail) towns.push({ n, g, w: here });
     // Fog lies over the unknown parts of what you can see, wherever they are inside it (FOG-01).
-    if (lens.fog && here > 0.02) for (const f of fogPatches(n, { fog: lens.fog, geo, k, inView })) fogged.push({ g: f.g, s, w: here * f.w });
+    // At street zoom it lies over the houses of the behaviours not worked out yet, not over the whole block (FOG-06).
+    if (lens.fog && here > 0.02) for (const f of fogPatches(n, { fog: lens.fog, geo, k, inView, kidsOf: scene.kidsOf })) fogged.push({ g: f.g, s, w: here * f.w });
   }
   // A big issue's open land is park green in every lens (MARK-18).
   for (const p of parks) {
@@ -826,7 +757,10 @@ export function drawMap(ctx, scene, view, opts) {
   for (const t of towns) t.w *= 1 - (built.get(t.n.id) ?? 0);
   if (towns.length) drawTowns(ctx, towns, k, theme.dark, scene);
   if (houses.length) drawBuildings(ctx, houses, k, theme.dark);
-  if (fogged.length) drawFog(ctx, fogged, k, time, theme.dark);
+  if (fogged.length) drawFog(ctx, fogged, { k, t: time, dark: theme.dark, pathFor });
+  // Lightning in the cloud over fog that has sat too long, at every zoom over the part that is stale (FOG-04).
+  const storms = lens.storms && !thumbnail ? stormsOnScreen(scene, inView) : [];
+  if (storms.length) drawLightning(ctx, storms, { k, t: time, dark: theme.dark, reducedMotion, pathFor });
   // Proof marks stand above the fog too: whether a behaviour is proven is a fact, however little else is known.
   if (houses.length) drawProof(ctx, houses, k, theme.dark);
   // Bulldozers stand above the fog: work going on is news, however little is known about the land (MARK-17).
@@ -1060,7 +994,7 @@ export function drawMap(ctx, scene, view, opts) {
   }
 
   const focus = placeInView(scene, view, { center: opts.center, T });
-  return { labels, focusId: focus?.id ?? null, drifting: fogged.length > 0 };
+  return { labels, focusId: focus?.id ?? null, drifting: fogged.length > 0 || storms.length > 0 };
 }
 
 /**

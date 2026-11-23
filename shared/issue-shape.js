@@ -195,6 +195,9 @@ function readItem(text) {
 
 export const isGwt = (row) => Boolean(row.given || row.when || row.then) || !row.text;
 
+/** A behaviour still in the Fog: written as `AREA-NN Not worked out yet: …` (#32 STATE-04). */
+export const notWorkedOut = (row) => /^not worked out yet\b/i.test(row.text || row.given || '');
+
 /** The markdown for one row: as it was written if untouched, otherwise in the shape's own words. */
 export function writeBehaviour(row) {
   if (row.raw != null && !row.dirty) return row.raw;

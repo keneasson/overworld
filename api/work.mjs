@@ -15,12 +15,11 @@
 // A new item in an open refinement (NEW-03) needs improvement, and is never work, until a person adopts it.
 // When #32 lands, only this file changes.
 
-import { editableOf, itemKeyOf, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { editableOf, itemKeyOf, notWorkedOut, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { doneOf, proofOf } from '../shared/proof.js';
 
 const NOT_WORK = new Set(['project', 'area', 'epic']);
 const NOT_ITEMS = new Set(['project', 'area', 'behavior']); // places and spec rows: what an issue holds without being a parent
-const FOG = /^not worked out yet\b/i;
 const FINISHED = new Set(['done', 'rejected']);
 const PRIORITY = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
@@ -32,7 +31,7 @@ export function behavioursOf(node) {
   const content = sectionText(parseIssue(editableOf(node).markdown), 'Behaviours');
   return parseBehaviours(content)
     .filter((r) => r.id)
-    .map((r) => ({ id: r.id, text: r.raw.replace(/^\s*[-*]\s+/, '').replace(new RegExp(`^[*\`]*${r.id}[*\`:]*\\s*`), '').replace(/\s+/g, ' ').trim(), fog: FOG.test(r.text || r.given), raw: r.raw }));
+    .map((r) => ({ id: r.id, text: r.raw.replace(/^\s*[-*]\s+/, '').replace(new RegExp(`^[*\`]*${r.id}[*\`:]*\\s*`), '').replace(/\s+/g, ' ').trim(), fog: notWorkedOut(r), raw: r.raw }));
 }
 
 export const isFinished = (node) => FINISHED.has(node.status);

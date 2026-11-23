@@ -15,7 +15,9 @@ import { HOUSE, claimsByNode, houseId, housesAt, isHouse, openedBy, waitingByNod
 import { LENSES } from '../src/map/lenses.js';
 
 const root = { id: 'root', parentId: null, title: 'Project', kind: 'project', status: 'planned' };
-const CLEAR = { summary: 'A clear piece of work', body: 'Enough detail to say what this is and why it matters.\n\n## Acceptance\n- [ ] it works', estimate: 2 };
+// Worked out: a behaviour written in Given, When, Then is charted, so it lies under no fog (#44 FOG-05).
+const DETAIL = 'Enough detail to say what this is and why it matters.';
+const CLEAR = { summary: 'A clear piece of work', body: `${DETAIL}\n\n## Behaviours\n\n- CLR-01 Given this, when that, then it works.`, estimate: 2 };
 const item = (id, parentId, extra = {}) => ({ id, parentId, title: id, kind: parentId === 'root' ? 'epic' : 'task', status: 'ready', ...CLEAR, ...extra });
 const types = (markers) => Object.fromEntries(markers.map((m) => [m.type, m.count]));
 
@@ -34,7 +36,8 @@ test('MARK-01 every region big enough is named at every zoom, until its items\' 
     const size = (n) => scene.geo.get(n.id).size * k;
     for (const n of scene.tree.list) {
       // Which kinds are named at which zoom, and when a region hands its name over, is MARK-13's.
-      if (!n.depth || n.children.some((c) => c.children.some((gc) => size(gc) >= 36))) continue;
+      // Its items' items include the houses of its items' behaviours (MARK-16).
+      if (!n.depth || scene.kidsOf(n).some((c) => scene.kidsOf(c).some((gc) => size(gc) >= 36))) continue;
       // Drawn: every ancestor is big enough that its children's land has fully faded in.
       let drawn = true;
       for (let a = n.parent; a; a = a.parent) if (size(a) < T.sub * 1.25) drawn = false;
@@ -342,7 +345,7 @@ test('MARK-15 an item whose outline can be read is its own lot, apart from its s
 
 // A street like #15: an issue with nineteen behaviours, one of them grown into a child issue of its own when `split`; a
 // small child issue with three; a plain issue with none; and a big issue (`big`) with only a few behaviours so far.
-const behaviours = (prefix, ids) => `${CLEAR.body}\n\n## Behaviours\n\n${ids.map((i) => `- ${prefix}-${String(i).padStart(2, '0')} Given this, when that, then note ${i} is kept.`).join('\n')}`;
+const behaviours = (prefix, ids) => `${DETAIL}\n\n## Behaviours\n\n${ids.map((i) => `- ${prefix}-${String(i).padStart(2, '0')} Given this, when that, then note ${i} is kept.`).join('\n')}`;
 const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 const street = ({ split = false, big = 2 } = {}) => [
   root,
@@ -350,8 +353,8 @@ const street = ({ split = false, big = 2 } = {}) => [
   ...(split ? [item('n7', 'comments', { title: 'Note seven, grown', body: behaviours('NOTE', [7, 20, 21]) })] : []),
   item('threads', 'root', { kind: 'feature', body: behaviours('THR', [1, 2]) }),
   item('replies', 'threads', { body: behaviours('REP', [1, 2, 3]) }),
-  item('plain', 'root', { kind: 'feature' }),
-  item('big', 'root', { kind: 'feature', body: big ? behaviours('BIG', range(1, big)) : CLEAR.body }),
+  item('plain', 'root', { kind: 'feature', body: DETAIL }),
+  item('big', 'root', { kind: 'feature', body: big ? behaviours('BIG', range(1, big)) : DETAIL }),
 ];
 const viewOn = (scene, id, k) => {
   const [x0, y0, x1, y1] = scene.geo.get(id).bbox;

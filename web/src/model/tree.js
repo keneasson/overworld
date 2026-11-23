@@ -2,7 +2,7 @@
 // zoom level needs: weight (map area), progress, health, bugs, definition…
 
 import { ROOT_ID } from '@shared/schema.js';
-import { editableOf, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
+import { editableOf, notWorkedOut, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
 import { doneOf, proofOf } from '@shared/proof.js';
 
 // Each behaviour an issue lists is a house on its own lot in the issue's block (#46 MARK-16), and weighs this much of
@@ -11,44 +11,32 @@ import { doneOf, proofOf } from '@shared/proof.js';
 export const HOUSE_WEIGHT = 0.6;
 const PLACES = new Set(['project', 'area']);
 const inIdOrder = (a, b) => a.id.localeCompare(b.id, undefined, { numeric: true });
-const FOG = /^not worked out yet\b/i;
 // An issue's behaviours are adopted once it is ready (CONTRIBUTING.md): only those can be built, proven and done (#21 PROVEN-01).
 const ADOPTED = new Set(['ready', 'in_progress', 'review', 'done']);
 /**
- * The behaviours an issue lists itself, as { id, words }, in behaviour ID order: the houses on its block. Each carries
- * its proof from the latest coverage report (shared/proof.js) and, for a done issue, whether it is done, unproven or broken.
+ * Every behaviour an issue lists itself, as { id, words, fog }: each one written as an item of its Behaviours list. Each
+ * with an ID carries its proof from the latest coverage report (shared/proof.js) and, for a done issue, whether it is
+ * done, unproven or broken.
  */
-const behaviourRowsOf = (n, report) =>
+const specOf = (n, report) =>
   n.tags.includes('code') || PLACES.has(n.kind) || n.kind === 'behavior'
     ? []
     : parseBehaviours(sectionText(parseIssue(editableOf(n).markdown), 'Behaviours'))
-        .filter((r) => r.id)
+        .filter((r) => /^\s*[-*]\s/.test(r.raw ?? ''))
         .map((r) => {
+          const row = { id: r.id, words: (r.then || r.text || r.when || r.given || '').trim(), said: [r.given, r.when, r.then, r.text].filter(Boolean).join(' '), fog: notWorkedOut(r) };
+          if (!r.id) return row;
           const proof = proofOf(r.id, { report, raw: r.raw });
-          const fog = FOG.test(r.text || r.given || '');
-          return { id: r.id, words: (r.then || r.text || r.when || r.given || '').trim(), said: [r.given, r.when, r.then, r.text].filter(Boolean).join(' '), fog, proof, done: doneOf(n.status === 'done', proof) };
-        })
-        .sort(inIdOrder);
+          return { ...row, proof, done: doneOf(n.status === 'done', proof) };
+        });
 const BASE_WEIGHT = { project: 8, area: 6, epic: 5, feature: 4, story: 3, task: 2, bug: 1.6, behavior: 1.2 };
-const CONTAINER = new Set(['project', 'area', 'epic', 'feature']);
 const SEVERITY = { off_track: 4, at_risk: 3, on_track: 2, not_started: 1, done: 0 };
 
 export const isNewFeature = (n) => n.kind === 'story' && (n.tags?.includes('new-feature') || n.tags?.includes('new'));
 export const isOpen = (n) => n.status !== 'done';
 
-export function definitionScore(n, hasKids) {
-  if (n.definition === 'clear') return 1;
-  if (n.definition === 'vague') return 0.15;
-  const summary = (n.summary ?? '').trim().length >= 8;
-  // Open questions are a badge, never terrain (#10 SYM-03): writing one down doesn't make an item look better defined.
-  const body = (n.body ?? '').replace(/^##\s+Open questions\s*$[\s\S]*?(?=^##\s|^---\s*$|(?![\s\S]))/im, '').trim();
-  if (hasKids || CONTAINER.has(n.kind)) {
-    return (summary ? 0.4 : 0) + (body.length >= 40 ? 0.2 : 0) + (hasKids ? 0.4 : 0);
-  }
-  const criteria = /- \[[ xX]\]|acceptance|steps to reproduce|expected/i.test(body);
-  const sized = n.estimate != null || (n.kind === 'bug' && n.priority);
-  return (summary ? 0.3 : 0) + (body.length >= 60 ? 0.2 : 0) + (criteria ? 0.3 : 0) + (sized ? 0.2 : 0);
-}
+/** Is this an issue, the only thing whose behaviours can be unknown? Places, code mapped from the repository and behaviours aren't. */
+const isIssue = (n) => n.depth > 0 && !PLACES.has(n.kind) && n.kind !== 'behavior' && !n.tags.includes('code');
 
 const daysUntil = (date, today) => (Date.parse(date) - Date.parse(today)) / 86_400_000;
 
@@ -116,7 +104,9 @@ export function buildTree(rawNodes, today = new Date().toISOString().slice(0, 10
 }
 
 function rollup(n, today, report) {
-  n.behaviourRows = behaviourRowsOf(n, report);
+  const spec = specOf(n, report);
+  // The behaviours with an ID, in ID order, are the houses on its block.
+  n.behaviourRows = spec.filter((r) => r.id).sort(inIdOrder);
   const adopted = ADOPTED.has(n.status) ? n.behaviourRows.filter((b) => !b.fog) : [];
   const kids = n.children;
   const leaf = kids.length === 0;
@@ -124,7 +114,26 @@ function rollup(n, today, report) {
   // Rejected work stays on the map as a ruin, but no longer counts as work to do.
   const rejected = n.status === 'rejected';
   const overdue = Boolean(n.due) && n.due < today && !done;
-  const def = definitionScore(n, !leaf);
+  // Fog is behaviour nobody knows yet, measured from the behaviours alone (#44 FOG-05): an issue with none is all fog,
+  // and otherwise its fog is the share of its behaviours marked "Not worked out yet". Estimates, summaries, body length
+  // and checklists never count, and open questions are their own "?" badge.
+  const foggyOwn = spec.filter((b) => b.fog).length;
+  const own = spec.length;
+  let fog = 0;
+  if (rejected) fog = 0;
+  else if (n.kind === 'behavior') fog = n.definition === 'vague' ? 1 : 0;
+  else if (leaf) fog = isIssue(n) ? (own ? foggyOwn / own : 1) : 0;
+  else {
+    // A parent's fog is the size-weighted average of its children's and its own behaviours' (FOG-01): land for land.
+    let sum = foggyOwn * HOUSE_WEIGHT, weight = own * HOUSE_WEIGHT;
+    for (const c of kids) {
+      sum += c.stats.fog * c.stats.raw;
+      weight += c.stats.raw;
+    }
+    fog = weight ? sum / weight : 0;
+  }
+  // In the Fog of its own: an issue with no behaviours, or with one not worked out yet.
+  const vague = !rejected && (leaf ? fog > 0 : foggyOwn > 0);
   const s = {
     raw: 0,
     work: 0,
@@ -133,9 +142,12 @@ function rollup(n, today, report) {
     progress: 0,
     health: 'on_track',
     overdue,
-    def,
-    defAvg: def,
-    vague: def < 0.5,
+    fog,
+    foggy: foggyOwn,
+    // Behaviours written without an ID have no house, so their fog lies over the whole block.
+    unhoused: own - n.behaviourRows.length,
+    behaviourCount: own,
+    vague,
     items: 1,
     leaves: leaf ? 1 : 0,
     doneLeaves: leaf && done ? 1 : 0,
@@ -143,7 +155,7 @@ function rollup(n, today, report) {
     bugs: n.kind === 'bug' ? 1 : 0,
     newFeatures: isNewFeature(n) && !done ? 1 : 0,
     newFeaturesDone: isNewFeature(n) && done ? 1 : 0,
-    poorlyDefined: def < 0.5 ? 1 : 0,
+    poorlyDefined: vague ? 1 : 0,
     blocked: n.status === 'blocked' ? 1 : 0,
     behaviours: n.kind === 'behavior' ? 1 : 0,
     behavioursKept: n.kind === 'behavior' && done ? 1 : 0,
@@ -179,7 +191,7 @@ function rollup(n, today, report) {
     if (n.due && !done && s.health !== 'off_track' && daysUntil(n.due, today) <= 7 && s.progress < 0.5) s.health = 'at_risk';
     if (n.assignee) s.owners.set(n.assignee, s.raw);
   } else {
-    let total = 0, progress = 0, defSum = 0;
+    let total = 0, progress = 0;
     const weightBy = { off_track: 0, at_risk: 0, on_track: 0, not_started: 0, done: 0 };
     let area = 0;
     for (const c of kids) {
@@ -187,7 +199,6 @@ function rollup(n, today, report) {
       area += cs.raw;
       total += cs.work;
       progress += cs.progress * cs.work;
-      defSum += cs.defAvg * cs.raw;
       weightBy[cs.health] += cs.work;
       for (const [k, v] of Object.entries(cs.states)) s.states[k] = (s.states[k] ?? 0) + v;
       for (const key of ['items', 'leaves', 'doneLeaves', 'openBugs', 'bugs', 'newFeatures', 'newFeaturesDone', 'poorlyDefined', 'blocked', 'behaviours', 'behavioursKept', 'adopted', 'proven', 'broken']) s[key] += cs[key];
@@ -196,7 +207,6 @@ function rollup(n, today, report) {
     s.raw = n.weight ?? area + houses;
     s.work = rejected ? 0 : total;
     s.progress = (done && !report) || !total ? 1 : progress / total;
-    s.defAvg = (def + defSum / area) / 2;
     if ((done && !s.broken) || weightBy.done === total) s.health = 'done';
     else if (weightBy.off_track / total >= 0.25) s.health = 'off_track';
     else if (weightBy.off_track > 0 || weightBy.at_risk / total >= 0.2) s.health = 'at_risk';
