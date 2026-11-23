@@ -91,15 +91,39 @@ const sentencesOf = (text) =>
     .filter(Boolean);
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** What a change to a section did, in a few words: "1 sentence reworded", "2 sentences added, 1 removed", "emptied". */
-export function changeSummary({ change, before = '', after = '' }) {
+// A section written as a list (Open questions, Acceptance, Out of scope) changes by its items: each bullet with the lines
+// under it, as said. "None" and the like are no item. Null when the text isn't a list.
+const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/;
+const NOTHING = /^(none|n\/a|nothing( yet)?|no open questions)\.?$/i;
+function itemsOf(text) {
+  const lines = String(text ?? '').split('\n').filter((l) => l.trim());
+  if (!lines.some((l) => BULLET.test(l))) return null;
+  const items = [];
+  for (const l of lines) {
+    if (BULLET.test(l) && !/^\s{2,}/.test(l)) items.push(l.replace(BULLET, ''));
+    else if (items.length) items[items.length - 1] += ` ${l}`;
+    else if (!NOTHING.test(l.trim())) items.push(l);
+  }
+  return items.map((i) => i.replace(/\s+/g, ' ').trim());
+}
+const asList = (text) => itemsOf(text) ?? (NOTHING.test(String(text ?? '').trim()) ? [] : null);
+
+/**
+ * What a change to a section did, in a few words: "1 sentence reworded", "2 sentences added, 1 removed", "emptied". A list
+ * counts its items, as questions in Open questions: "3 questions removed".
+ */
+export function changeSummary({ name = '', change, before = '', after = '' }) {
   if (change === 'added') return 'added';
   if (change === 'removed' || !String(after).trim()) return 'emptied';
-  const was = sentencesOf(before), now = sentencesOf(after);
+  const lists = [asList(before), asList(after)];
+  const listed = lists.every(Boolean) && (itemsOf(before) || itemsOf(after));
+  if (listed && !lists[1].length) return 'emptied';
+  const [was, now] = listed ? lists : [sentencesOf(before), sentencesOf(after)];
+  const unit = !listed ? 'sentence' : name === 'Open questions' ? 'question' : 'item';
   const gone = was.filter((s) => !now.includes(s)).length, fresh = now.filter((s) => !was.includes(s)).length;
   const reworded = Math.min(gone, fresh);
   const parts = [reworded && 'reworded', fresh - reworded && 'added', gone - reworded && 'removed'].filter(Boolean);
   if (!parts.length) return 'reordered';
   const counts = { reworded, added: fresh - reworded, removed: gone - reworded };
-  return parts.map((p, i) => (i === 0 ? `${plural(counts[p], 'sentence')} ${p}` : `${counts[p]} ${p}`)).join(', ');
+  return parts.map((p, i) => (i === 0 ? `${plural(counts[p], unit)} ${p}` : `${counts[p]} ${p}`)).join(', ');
 }
