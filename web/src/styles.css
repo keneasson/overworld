@@ -2847,6 +2847,7 @@ button.danger.armed {
 }
 .row.match.active {
   background: var(--accent-soft);
+}
 
 /* The proof layer (#21): each behaviour's proof in its place card, and the behaviours that reach a code area's files. */
 .proof .proof-from {
