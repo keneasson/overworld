@@ -17,7 +17,7 @@ import { questionId, questionsIn, withAnswer, withQuestion } from '../shared/que
 import { addresseesOf } from './notes.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
-import { behavioursOf, childrenOf, keyOf, nextWork, splitOf } from './work.mjs';
+import { behavioursOf, childrenOf, keyOf, missingOf, nextWork, splitOf } from './work.mjs';
 import { VOCABULARY, duplicateIds, pairKey, textHash, vocabularyDrift } from '../shared/coherence.js';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { imageInfo } from './photos.mjs';
@@ -1227,12 +1227,40 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       const [requests, notes] = await Promise.all([agents.buildRequests(pid, { nodes, live }), agents.buildNotes(pid, { live })]);
       const asked = new Set(requests.flatMap((r) => r.waiting));
       const buildable = {};
-      for (const w of nextWork(nodes, live, { tested: project?.tested, report: await model.coverage.get(pid) }).work) {
+      const { work } = nextWork(nodes, live, { tested: project?.tested, report: await model.coverage.get(pid) });
+      for (const w of work) {
         const open = w.behaviours.map((b) => b.id).filter((id) => !asked.has(id));
         if (open.length) buildable[w.item] = open;
       }
-      return { requests: requests.map(({ prompt, ...r }) => r), buildable, notes };
+      // What each item that can't be built lacks, so its card says so instead of offering nothing (HANDOFF-03).
+      const missing = {};
+      const kids = childrenOf(nodes);
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const tested = new Set(project?.tested ?? []);
+      const offered = new Set(work.map((w) => w.item));
+      for (const n of nodes) {
+        if (offered.has(keyOf(n))) continue;
+        const lacks = missingOf(n, { kids: kids.get(n.id) ?? [], tested, byId });
+        if (lacks.length) missing[keyOf(n)] = lacks;
+      }
+      return { requests: requests.map(({ prompt, ...r }) => r), buildable, missing, notes };
     }],
+
+    // The prompt a build would go out with (HANDOFF-02), for the person to read and change before they send it.
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/builds\/prompt$/,
+      async ({ params: [pid], body }) => {
+        const key = String(body?.item ?? '');
+        if (!KEY.test(key)) throw new ValidationError('item: expected an item key');
+        const behaviours = body?.behaviours == null ? [] : Array.isArray(body.behaviours) ? body.behaviours.map(String) : null;
+        if (!behaviours) throw new ValidationError('behaviours: expected a list of behaviour IDs');
+        await loadProjectHead(pid);
+        const { title, behaviours: ids, prompt } = await agents.buildPlan(pid, { item: key, behaviours });
+        return { item: key, title, behaviours: ids, prompt };
+      },
+      { people: true },
+    ],
 
     // Only people choose Build: an agent's call through MCP is refused. Anyone with the project's access key may, since that
     // is who can change it today; checking the person's own write access to the repository comes with #52 (Sign in with GitHub).
@@ -1245,7 +1273,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const behaviours = body?.behaviours == null ? [] : Array.isArray(body.behaviours) ? body.behaviours.map(String) : null;
         if (!behaviours) throw new ValidationError('behaviours: expected a list of behaviour IDs');
         const project = await loadProjectHead(pid);
-        let { request, already } = await agents.requestBuild(pid, { item: key, behaviours, by: author(body?.by) });
+        let { request, already } = await agents.requestBuild(pid, { item: key, behaviours, by: author(body?.by), prompt: body?.prompt });
         // A new request starts the project's runner, its own GitHub Actions (HANDOFF-07). If it can't be started, the request
         // still waits for an open session (HANDOFF-10), and the card says why the runner didn't start.
         const store = !already && stores.forProject(project);

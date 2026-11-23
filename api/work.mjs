@@ -2,7 +2,7 @@
 //
 // #32 will give every behaviour an agreement state (needs improvement, ready for adoption, adopted) and a building
 // state (new, being coded, coded). Until it's decided, this reads today's lifecycle (CONTRIBUTING.md):
-//   adopted       the behaviours of an issue that is Ready and isn't an epic
+//   adopted       the behaviours of an issue that is Ready and isn't an epic, and lists no open questions
 //   new           adopted, and nobody holds a claim on it
 //   being coded   a live claim (MCP-04)
 //   coded         its issue is done and its proof passes (#21 PROVEN-01); that issue is a leaf, an independent unit of
@@ -15,7 +15,7 @@
 // A new item in an open refinement (NEW-03) needs improvement, and is never work, until a person adopts it.
 // When #32 lands, only this file changes.
 
-import { editableOf, itemKeyOf, notWorkedOut, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { editableOf, hasOpenQuestions, itemKeyOf, notWorkedOut, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { doneOf, proofOf } from '../shared/proof.js';
 
 const NOT_WORK = new Set(['project', 'area', 'epic']);
@@ -37,7 +37,10 @@ export function behavioursOf(node) {
 export const isFinished = (node) => FINISHED.has(node.status);
 
 /** Is this item work an agent may pick up: adopted behaviours, nothing left undecided? A new item isn't in the spec until its refinement is adopted (NEW-03). */
-export const isWork = (node) => node.status === 'ready' && !NOT_WORK.has(node.kind) && !node.refinement;
+export const isWork = (node) => node.status === 'ready' && !NOT_WORK.has(node.kind) && !node.refinement && !questionsOf(node);
+
+/** Whether the item has open questions still listed: undecided, whatever its label says (#14 HANDOFF-12). */
+const questionsOf = (node) => hasOpenQuestions(sectionText(parseIssue(editableOf(node).markdown), 'Open questions'));
 
 /** Are this item's behaviours adopted: ready, or past it on the way to done? A test skeleton is written only for those (#23 SKETCH-01). */
 export const isAdopted = (node) => ['ready', 'in_progress', 'review', 'blocked', 'done'].includes(node.status) && !NOT_WORK.has(node.kind) && !node.refinement;
@@ -72,6 +75,32 @@ export function blockersOf(node, byId) {
     .map((l) => byId.get(l.to))
     .filter((dep) => dep && !isFinished(dep))
     .map((dep) => ({ key: keyOf(dep), title: dep.title, state: stateOf(dep) }));
+}
+
+/**
+ * What an unfinished item lacks before it can be built (#14 HANDOFF-03), in words a person reads on its card. Empty when
+ * it is work, or when nothing it could be given would make it work (a place, a finished item, land mapped from code).
+ * @param {{ kids?: object[], tested?: Set<string>, byId?: Map<string, object> }} o
+ */
+export function missingOf(node, { kids = [], tested = new Set(), byId = new Map() } = {}) {
+  if (isFinished(node) || NOT_ITEMS.has(node.kind) || node.tags?.includes('code')) return [];
+  const all = behavioursOf(node);
+  const out = [];
+  if (node.refinement) out.push('It is new in a refinement: a person adopts it first.');
+  if (node.kind === 'epic') out.push("An epic isn't built itself: its child issues are.");
+  const questions = questionsOf(node);
+  if (questions) out.push('It has open questions to answer.');
+  if (!node.refinement && node.kind !== 'epic' && node.status !== 'ready' && !questions) out.push(`It is ${stateOf(node).replace('_', ' ')}, not ready: its behaviours still need improvement, and adopting.`);
+  if (!all.length && !kids.length) out.push('It has no behaviours yet: write them.');
+  const foggy = all.filter((b) => b.fog).map((b) => b.id);
+  if (foggy.length && foggy.length === all.length) out.push(`${foggy.join(', ')} ${foggy.length === 1 ? "isn't" : "aren't"} worked out yet.`);
+  const split = splitOf(node, kids, tested);
+  if (split) out.push(`It needs a split. ${split.reason}`);
+  else if (kids.length && node.kind !== 'epic') out.push('Its child issues are the work: build those.');
+  for (const b of blockersOf(node, byId)) out.push(`It waits on ${b.title} (${b.state.replace('_', ' ')}).`);
+  const own = all.filter((b) => !b.fog);
+  if (!out.length && own.length && own.every((b) => tested.has(b.id))) out.push('Every behaviour has a test: it is to verify, not to build.');
+  return out;
 }
 
 /** An item's state, in words an agent reads. A new item in an open refinement needs improvement until it is adopted (NEW-03). */

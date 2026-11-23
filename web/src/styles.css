@@ -778,6 +778,12 @@ button {
 .pill-fog {
   background: #80868b;
 }
+/* How foggy an item is, always as a number (HANDOFF-12): quiet, since it is a measure, not an alarm. */
+.pill-fog-level {
+  background: transparent;
+  color: var(--muted);
+  box-shadow: inset 0 0 0 1.5px var(--border);
+}
 .pill-new {
   background: transparent;
   color: var(--accent, #1a73e8);
@@ -2849,6 +2855,42 @@ button.danger.armed {
 .build-note.stale,
 .build-claim.stale {
   border-left-color: var(--danger);
+}
+/* What an item lacks before it can be built (HANDOFF-03, HANDOFF-12), and the prompt to read before it goes (HANDOFF-02). */
+.build-missing {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid var(--muted);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.build-missing p {
+  margin: 0 0 4px;
+  font-weight: 500;
+}
+.build-missing ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.build-prompt {
+  display: grid;
+  gap: 8px;
+}
+.build-prompt label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+.build-prompt textarea {
+  min-width: 0;
+  max-height: 420px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px/1.45 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  resize: vertical;
 }
 
 /* When part of the app fails to draw (#71 SHIP-14): what went wrong, in place of that part, and the way back. */

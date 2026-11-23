@@ -25,6 +25,8 @@ const REGROUP_AFTER_CHANGES = 10;
 const SHOWN = 8;
 // A build request nobody has picked up in this long says so on the card (#14 HANDOFF-06).
 const BUILD_STALE_MS = 60 * 60_000;
+// A prompt a person changed before it went (#14 HANDOFF-02) is theirs to write, up to this long.
+const PROMPT_MAX = 40_000;
 
 export const tokenHash = (token) => createHash('sha256').update(String(token)).digest('hex');
 
@@ -275,11 +277,10 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
   }
 
   /**
-   * A person asks for behaviours to be built (#14 HANDOFF-05): the named ones, or every one of the item that is new and
-   * unclaimed. Each must be work an agent could claim. It is recorded with the prompt it goes out with (HANDOFF-01), and
-   * waits for a builder; asking again for what already waits returns that request.
+   * What a build of these behaviours would be (#14 HANDOFF-05): the named ones, or every one of the item that is new and
+   * unclaimed, each work an agent could claim. A refusal says why not.
    */
-  async function requestBuild(projectId, { item, behaviours = [], by }) {
+  async function planBuild(projectId, { item, behaviours = [] }) {
     const data = await model.projects.getWithNodes(projectId);
     const node = data.nodes.find((n) => keyOf(n) === item);
     if (!node) throw new ValidationError(`${item} isn't on the map`);
@@ -293,18 +294,40 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     placeBehaviours(data.nodes, ids, data.project?.tested);
     const held = holders(ids, live);
     if (held.length) throw new Refused(`Already being coded: ${held.map((h) => `${h.behaviour} by ${h.agent}`).join('; ')}`, { held_by: held });
+    return { item, title: node.title, behaviours: ids, data, node, live, own };
+  }
+
+  /** The build planBuild() finds, with the prompt it would go out with (HANDOFF-01), for a person to read first (HANDOFF-02). */
+  async function buildPlan(projectId, ask) {
+    const { item, title, behaviours, data, node, own } = await planBuild(projectId, ask);
+    return { item, title, behaviours, prompt: await buildPromptOf(projectId, { data, node, own, ids: behaviours }) };
+  }
+
+  /** The prompt Overworld builds for these behaviours (HANDOFF-01): the item, its open comments and how the project tests. */
+  const buildPromptOf = async (projectId, { data, node, own, ids }) =>
+    buildPrompt({ nodes: data.nodes, node, behaviours: own.filter((b) => ids.includes(b.id)), comments: await model.comments.list(projectId, keyOf(node)), testing: data.project?.testing, tested: data.project?.tested });
+
+  /**
+   * A person asks for behaviours to be built (#14 HANDOFF-05), as planBuild() finds them. It is recorded with the prompt it
+   * goes out with: the one the person read and changed (HANDOFF-02), or else the one Overworld builds (HANDOFF-01). It
+   * waits for a builder; asking again for what already waits returns that request.
+   */
+  async function requestBuild(projectId, { item, behaviours = [], by, prompt }) {
+    const { title, behaviours: ids, data, node, live, own } = await planBuild(projectId, { item, behaviours });
+    const theirs = prompt == null || prompt === '' ? null : said(prompt, PROMPT_MAX, 'prompt');
     const open = await buildRequests(projectId, { nodes: data.nodes, live });
     const fresh = ids.filter((id) => !open.some((r) => r.waiting.includes(id)));
     if (!fresh.length) return { request: open.find((r) => ids.some((id) => r.waiting.includes(id))), already: true };
     const request = {
       id: newId(),
       itemKey: item,
-      title: node.title,
+      title,
       behaviours: fresh,
       by: said(by ?? '', 80, 'by'),
       at: iso(),
       state: 'waiting',
-      prompt: buildPrompt({ nodes: data.nodes, node, behaviours: own.filter((b) => fresh.includes(b.id)), comments: await model.comments.list(projectId, item), testing: data.project?.testing, tested: data.project?.tested }),
+      prompt: theirs ?? (await buildPromptOf(projectId, { data, node, own, ids: fresh })),
+      ...(theirs ? { edited: true } : {}),
     };
     await model.builds.put(projectId, request);
     return { request: { ...request, waiting: fresh, stale: false } };
@@ -616,7 +639,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     return report;
   }
 
-  return { callsPerMinute, standup, addressed, buildRequests, buildNotes, requestBuild, pullClosed, deployed, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
+  return { callsPerMinute, standup, addressed, buildRequests, buildNotes, buildPlan, requestBuild, pullClosed, deployed, applyNotes, answersToApply, applyAnswers, issueToken, revoke, authenticate, liveClaims, claim, handoff, remember, record, withinLimit, once };
 }
 
 /** An annotation addressed to an agent, as its tools show it: who said what, where, and the prompt to act on it. */
