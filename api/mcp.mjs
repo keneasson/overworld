@@ -418,6 +418,38 @@ export function createMcp({ model, agents, call, log = console }) {
       },
     },
 
+    coherence: {
+      description: 'What the spec says against itself (#36): behaviour IDs used in two items, two words for one thing, and pairs of behaviours in different items that sit close in meaning, found by an embedding model. Judge each pair in to_judge: read both behaviours and their items, then judge(pair, verdict). A duplicate or contradiction becomes an open question on both items, naming the other.',
+      input: {},
+      async run({ pid }) {
+        const found = await api('GET', `/api/projects/${pid}/coherence`);
+        const open = found.pairs.filter((p) => !p.judged);
+        return {
+          how: 'For each pair in to_judge, decide: duplicate (they say the same thing), contradiction (both can\'t hold), related (close, and both fine) or unrelated. Use context(item) when the behaviour alone doesn\'t settle it, and say why in a note. Then judge(pair, verdict, note). Drift and duplicate IDs are fixed through refine() and propose().',
+          duplicate_ids: found.duplicate_ids,
+          drift: found.drift,
+          to_judge: open.slice(0, 20),
+          more_to_judge: Math.max(0, open.length - 20) || undefined,
+          judged: found.pairs.length - open.length,
+        };
+      },
+    },
+
+    judge: {
+      description: 'Judge a pair from coherence(): duplicate, contradiction, related or unrelated, with a note saying why. A duplicate or contradiction becomes an open question on both items, each naming the other; related and unrelated just take the pair off the list.',
+      input: {
+        pair: { type: 'string', description: 'The pair\'s key, from coherence().' },
+        verdict: { type: 'string', enum: ['duplicate', 'contradiction', 'related', 'unrelated'] },
+        note: { type: 'string', description: 'Why, in a line: what each says.' },
+        request_key: requestKey,
+      },
+      required: ['pair', 'verdict'],
+      changes: true,
+      async run({ pid, agent }, args) {
+        return api('POST', `/api/projects/${pid}/coherence/judge`, { pair: String(args.pair ?? ''), verdict: String(args.verdict ?? ''), note: String(args.note ?? ''), by: author(agent), agentId: agent.id });
+      },
+    },
+
     remember: {
       description: 'Record a standing decision or correction for this project. Every agent gets it from prime() from then on, and people see it on the map.',
       input: { fact: { type: 'string' }, request_key: requestKey },

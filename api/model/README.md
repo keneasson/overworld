@@ -36,6 +36,7 @@ model.
 | Agent action | `PROJECT#<id>` | `ACTION#<at>#<id>` | `ACTIONS#<id>#<agentId>` | `<at>` |
 | Request key | `PROJECT#<id>` | `KEY#<agentId>#<requestKey>` | | |
 | Call count | `PROJECT#<id>` | `LIMIT#<agentId>#<minute>` | | |
+| Coherence finding | `PROJECT#<id>` | `COHERE#<pairKey>` | | |
 
 A project and its nodes share a partition, and sort last in it (`NODE#…`, then `PROJECT`), so one
 query reads a whole map and nothing else. A new entity in the partition must sort before `NODE#`. Changesets and
@@ -115,6 +116,8 @@ agents' tokens first. The token itself is never stored.
 | Record a change by an agent; one agent's changes | `actions.put(projectId, action)`, `actions.list(projectId, agentId)` | PutItem; Query GSI1 `ACTIONS#<id>#<agentId>`, descending |
 | Every agent's changes since a time (a standup) | `actions.since(projectId, at)` | Query `SK BETWEEN ACTION#<at> AND ACTION#~` |
 | A change's request key: start, read, finish, forget | `requests.start` / `get` / `finish` / `forget` | Conditional PutItem; GetItem; PutItem; DeleteItem |
+| Pairs of behaviours close in meaning, to judge or judged (#36 COHERE-04, COHERE-05) | `findings.list(projectId)` | Query `begins_with(SK, COHERE#)` |
+| One finding; record a check's pairs or a judgement | `findings.get(projectId, key)`, `findings.put(projectId, list)` | GetItem; batched puts |
 | Count an agent's call this minute | `limits.count(projectId, agentId, minute, limit)` | UpdateItem `ADD`, conditional on the limit |
 
 ## Adding a feature

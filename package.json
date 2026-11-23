@@ -16,6 +16,7 @@
     "build": "vite build",
     "test": "node --import ./web/test/register.mjs --test \"api/test/*.test.mjs\" \"web/test/*.test.mjs\" \"scripts/test/*.test.mjs\" \"packages/*/test/*.test.mjs\"",
     "deploy": "node scripts/deploy.mjs",
+    "coherence": "node scripts/coherence.mjs",
     "destroy": "node scripts/destroy.mjs"
   },
   "dependencies": {

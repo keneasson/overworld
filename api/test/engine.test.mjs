@@ -5,6 +5,7 @@ import { mapArchitecture } from '../engine/architecture.mjs';
 import { makeLocator } from '../engine/placement.mjs';
 import { parseSpec } from '../engine/behaviours.mjs';
 import { lifecycleOf, closedByOpenPrs, openQuestions, usesLifecycle } from '../engine/lifecycle.mjs';
+import { mapAirports } from '../engine/airports.mjs';
 
 const issue = (number, title, body = '') => ({ number, title, body, labels: [], parent: null });
 const parents = (issues) => Object.fromEntries([...nestByReferences(issues)].map(([c, { parent }]) => [c, parent]));
@@ -211,4 +212,44 @@ test('repositories without the lifecycle read as before', () => {
   assert.equal(usesLifecycle([it(['bug'])]), false);
   assert.deepEqual(lifecycleOf(it(['wip'])), { status: 'in_progress', definition: 'auto', unclear: '' });
   assert.equal(lifecycleOf(it(['blocked'])).status, 'blocked');
+});
+
+const airRepo = () => {
+  const sources = new Map([
+    ['web/src/api.js', "import { ROOT_ID } from '@shared/schema.js';\nexport const api = {\n  getProject: (id) => request('GET', `/api/projects/${id}`),\n  listChangesets: (pid) => request('GET', `/api/projects/${pid}/changesets`),\n  addChangeset: (pid) => request('POST', `/api/projects/${pid}/changesets`),\n  nowhere: () => request('GET', '/api/nothing/here'),\n};"],
+    ['api/app.mjs', "import { ROOT_ID } from '../shared/schema.js';\nconst routes = [\n  ['GET', /^\\/api\\/projects\\/([\\w-]+)$/, get],\n  ['GET', /^\\/api\\/projects\\/([\\w-]+)\\/changesets$/, list],\n  ['POST', /^\\/api\\/projects\\/([\\w-]+)\\/changesets$/, add],\n];"],
+    ['shared/schema.js', "export const ROOT_ID = 'root';"],
+    ['web/test/api.test.mjs', "import { createApi } from '../../api/app.mjs';"],
+    ['apps/next/app/api/users/[id]/route.ts', 'export async function GET() {}'],
+    ['apps/next/app/profile/page.tsx', "import { User } from '@acme/models';\nexport default async function Page({ id }) { return fetch(`/api/users/${id}`); }"],
+    ['packages/models/src/index.ts', 'export class User {}'],
+    ['packages/models/package.json', '{}'],
+  ]);
+  const manifests = new Map([['packages/models/package.json', { name: '@acme/models' }]]);
+  return { paths: [...sources.keys()], sources, manifests };
+};
+
+test('AIR-01 modules other areas import, route files and the clients that call them are airports, from the code alone', () => {
+  const { airports } = mapAirports(airRepo());
+  const by = Object.fromEntries(airports.map((a) => [a.path, a]));
+  assert.deepEqual(by['shared/schema.js'].usedBy, ['api', 'web'], 'imported from two other areas; a test importing it does not count');
+  assert.deepEqual(by['api/app.mjs'].kinds, ['routes']);
+  assert.deepEqual(by['api/app.mjs'].usedBy, ['web']);
+  assert.ok(by['api/app.mjs'].routes.includes('POST /api/projects/*/changesets'));
+  assert.deepEqual(by['web/src/api.js'].kinds, ['calls']);
+  assert.deepEqual(by['packages/models/src/index.ts'].usedBy, ['apps/next'], 'a workspace package imported by name');
+  assert.deepEqual(by['apps/next/app/api/users/[id]/route.ts'].routes, ['GET /api/users/*']);
+  assert.equal(by['web/test/api.test.mjs'], undefined);
+});
+
+test('AIR-02 a call whose URL matches a route is a flight, as is an import across areas, and the same repository gives the same flights', () => {
+  const repo = airRepo();
+  const { flights } = mapAirports(repo);
+  const call = flights.find((f) => f.kind === 'call' && f.from === 'web/src/api.js');
+  assert.equal(call.to, 'api/app.mjs');
+  assert.deepEqual(call.calls.map((c) => `${c.method} ${c.url}`), ['GET /api/projects/*', 'GET /api/projects/*/changesets', 'POST /api/projects/*/changesets'], 'each call lands on its own route; one with no route lands nowhere');
+  assert.ok(flights.some((f) => f.kind === 'call' && f.from === 'apps/next/app/profile/page.tsx' && f.to === 'apps/next/app/api/users/[id]/route.ts'), 'a page fetching its own app\'s API route');
+  assert.ok(flights.some((f) => f.kind === 'import' && f.from === 'web/src/api.js' && f.to === 'shared/schema.js'));
+  const shuffled = { ...repo, paths: [...repo.paths].reverse(), sources: new Map([...repo.sources].reverse()) };
+  assert.deepEqual(mapAirports(shuffled), mapAirports(repo));
 });
