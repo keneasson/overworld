@@ -242,10 +242,11 @@ export function createMcp({ model, agents, call, log = console }) {
         behaviours: ids('Behaviour IDs, e.g. ["MCP-04"]. Leave out to take the next work.'),
         minutes: { type: 'number', description: 'How long to hold them (default 120, at most 480).' },
         pull_request: { type: 'number', description: 'The pull request that carries them, once it has opened: the claim then holds until the production deploy that carries it succeeds, and is released for you.' },
+        built_with: { type: 'string', description: 'With pull_request: which agent and model built it, and why that one when it stood in for another. The card shows it.' },
         request_key: requestKey,
       },
       changes: true,
-      run: ({ pid, agent }, args) => agents.claim(pid, agent, { behaviours: list(args.behaviours), minutes: args.minutes, pullRequest: args.pull_request }),
+      run: ({ pid, agent }, args) => agents.claim(pid, agent, { behaviours: list(args.behaviours), minutes: args.minutes, pullRequest: args.pull_request, builtWith: args.built_with }),
     },
 
     handoff: {

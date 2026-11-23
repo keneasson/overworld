@@ -91,8 +91,8 @@ test('HANDOFF-09 HANDOFF-11 a runner that cannot finish says why on the item, as
   assert.match(asked.calls[0][1].question, /Who may build\?/);
 
   const opened = overworld();
-  await finish({ mcp: opened.mcp, item: 'issue-14', behaviours: ['HANDOFF-05'], pr: 'https://github.com/o/r/pull/7', branch: 'build/issue-14-1' });
-  assert.deepEqual(opened.calls.map(([n, a]) => [n, a.behaviours, a.pull_request]), [['claim', ['HANDOFF-05'], 7]], 'the claim names its pull request, and is not released');
+  await finish({ mcp: opened.mcp, item: 'issue-14', behaviours: ['HANDOFF-05'], pr: 'https://github.com/o/r/pull/7', branch: 'build/issue-14-1', used: 'aider (gpt-5), chosen by the BUILD_AGENT setting' });
+  assert.deepEqual(opened.calls.map(([n, a]) => [n, a.behaviours, a.pull_request, a.built_with]), [['claim', ['HANDOFF-05'], 7, 'aider (gpt-5), chosen by the BUILD_AGENT setting']], 'the claim names its pull request and the agent that built it, and is not released');
   const finishing = stepsOf(workflow).find((s) => s.includes('runner.mjs finish'));
   assert.match(finishing, /if: always\(\)/, 'it finishes however the run ended, so a crash never leaves the claim idle');
 });

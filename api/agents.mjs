@@ -119,11 +119,14 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
    * Claim behaviours for a while, all or none (MCP-04). With none named, the top of next_work() is claimed in the same step.
    * A behaviour the agent already holds is held for longer.
    */
-  async function claim(projectId, agent, { behaviours = [], minutes, pullRequest } = {}) {
+  async function claim(projectId, agent, { behaviours = [], minutes, pullRequest, builtWith } = {}) {
     const span = Math.min(CLAIM_MINUTES.max, Math.max(1, Number(minutes) || CLAIM_MINUTES.default));
     const pull = pullRequest == null || pullRequest === '' ? null : Number(String(pullRequest).replace(/^#/, ''));
     if (pull !== null && !(Number.isInteger(pull) && pull > 0)) throw new ValidationError('pull_request: expected a pull request number');
     if (pull !== null && !behaviours.length) throw new ValidationError('pull_request: name the behaviours it carries');
+    // Which agent built it, so the card can say when one stood in for the project's own (HANDOFF-08).
+    const built = builtWith == null || builtWith === '' ? null : said(builtWith, 300, 'built_with');
+    if (built && pull === null) throw new ValidationError('built_with: name the pull_request it built');
     for (let attempt = 0; attempt < 3; attempt++) {
       const data = await model.projects.getWithNodes(projectId);
       const { live } = await liveClaims(projectId);
@@ -147,7 +150,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       // Naming the pull request holds the claim until its deploy (HANDOFF-11); claiming again later keeps what it said.
       const list = wanted.map(({ id, node }) => {
         const was = live.get(id)?.owner === agent.id ? live.get(id) : null;
-        const pr = pull !== null ? { number: pull, state: 'open', at: iso(now) } : was?.pr;
+        const pr = pull !== null ? { number: pull, state: 'open', at: iso(now), ...(built ? { builtWith: built } : {}) } : was?.pr;
         const held = pr && pr.state !== 'closed' ? [until, was?.until ?? '', pull !== null ? iso(now + PULL_HOLD_MS) : ''].sort().at(-1) : until;
         return { behaviour: id, item: keyOf(node), title: node.title, agentName: agent.name, until: held, claimedAt: was?.claimedAt ?? iso(now), ...(pr ? { pr } : {}) };
       });

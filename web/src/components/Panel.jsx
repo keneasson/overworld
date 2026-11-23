@@ -564,7 +564,7 @@ const ago = (iso) => {
 function claimWords({ agent, ids, pr }) {
   const who = `${agent}: ${ids.join(', ')}`;
   if (!pr) return { text: `${who}, being built.` };
-  if (pr.state === 'open') return { text: `${who}, in pull request #${pr.number}. Held until it is deployed.` };
+  if (pr.state === 'open') return { text: `${who}, in pull request #${pr.number}${pr.builtWith ? `, built with ${pr.builtWith}` : ''}. Held until it is deployed.`, warn: /falling back/.test(pr.builtWith ?? '') };
   if (pr.deploy?.state === 'failed') return { text: `${who}: pull request #${pr.number} is merged, but the deploy of ${pr.deploy.sha.slice(0, 7)} failed, ${ago(pr.deploy.at)}. The claim stays with its builder.`, warn: true };
   if (pr.state === 'merged') return { text: `${who}: pull request #${pr.number} is merged, waiting for the deploy to production.` };
   return { text: `${who}: pull request #${pr.number} was closed without merging, ${ago(pr.at)}. The claim stays with its builder for now.`, warn: true };
