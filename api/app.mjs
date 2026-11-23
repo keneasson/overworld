@@ -4,7 +4,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
-import { changeKeys, compareItems, issueOf, mergeChanges, newItemMarkdown, parseBehaviours, parseIssue, placeOf, sectionText, writeIssue } from '../shared/issue-shape.js';
+import { changeKeys, compareItems, conflictKeys, issueOf, mergeChanges, newItemMarkdown, parseBehaviours, parseIssue, placeOf, sectionText, writeIssue } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
 import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './edits.mjs';
@@ -582,7 +582,10 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project, nodes } = await loadProject(pid);
         const before = findItem(nodes, key);
         if (!before) throw new HttpError(404, 'No such item on the map');
-        const all = changeKeys(compareItems(editableOf(before), entry.after));
+        // What it changes is what it changed from its base (ADOPT-17): a part it didn't touch is never adopted over the item.
+        const base = entry.base ?? null;
+        const diff = compareItems(editableOf(before), entry.after, base);
+        const all = changeKeys(diff);
         if (body?.behaviours != null && !Array.isArray(body.behaviours)) throw new ValidationError('behaviours: expected a list of behaviour IDs');
         const picks = body?.behaviours == null ? all : [...new Set(body.behaviours.map(String))];
         if (!picks.length && all.length) throw new ValidationError('behaviours: tick at least one');
@@ -592,20 +595,22 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         let changed = [];
         if (action === 'adopt') {
           // Open questions don't hold it back: they show as badges, and are answered in their threads (ADOPT-08).
-          if (conflictsOf({ items: [entry] }, nodes).length) throw Object.assign(new HttpError(409, `Changed since this was proposed: ${entry.nodeTitle}`), { conflicts: [key] });
-          const adopted = whole ? entry.after : mergeChanges(editableOf(before), entry.after, picks);
+          // A conflict is a ticked change to something that has changed since it was proposed; elsewhere the item may have moved on.
+          const clashes = base ? conflictKeys(diff).filter((k) => picks.includes(k)) : conflictsOf({ items: [entry] }, nodes).length ? picks : [];
+          if (clashes.length) throw Object.assign(new HttpError(409, `Changed since this was proposed: ${entry.nodeTitle}`), { conflicts: [key] });
+          const adopted = !base && whole ? entry.after : mergeChanges(editableOf(before), entry.after, picks, base);
           changed = [markEdited(before, applyTo(before, adopted, now), stores.forProject(project))];
           await model.nodes.put(pid, changed);
           await touchProject(project, nodes.map((n) => (n.id === before.id ? changed[0] : n)));
           // What is left is proposed against the item as it now is.
-          entry.base = editableOf(changed[0]);
-        } else entry.after = mergeChanges(entry.after, editableOf(before), picks);
+          entry.base = base ? mergeChanges(base, entry.after, picks, base) : editableOf(changed[0]);
+        } else entry.after = mergeChanges(entry.after, base ?? editableOf(before), picks); // declined: back to what it started from
         const ready = entry.readyForAdoption?.filter((id) => picks.includes(id)) ?? [];
         const decided = { key, nodeTitle: entry.nodeTitle, behaviours: picks, by, at: now, ...(ready.length ? { readyForAdoption: ready } : {}) };
         if (action === 'adopt') cs.adopted = [...(cs.adopted ?? []), decided];
         else cs.declined = [...(cs.declined ?? []), { ...decided, reason: text(body?.reason ?? '', 2000, 'reason').trim() }];
         const spec = changed[0] ? editableOf(changed[0]) : editableOf(before);
-        const left = whole ? [] : changeKeys(compareItems(spec, entry.after));
+        const left = whole ? [] : changeKeys(compareItems(spec, entry.after, entry.base ?? null));
         if (left.length) {
           entry.readyForAdoption = entry.readyForAdoption?.filter((id) => left.includes(id));
           if (!entry.readyForAdoption?.length) delete entry.readyForAdoption;

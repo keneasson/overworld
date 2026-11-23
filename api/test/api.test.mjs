@@ -604,6 +604,23 @@ test('ADOPT-05 ADOPT-06 a person adopts or declines a refinement one behaviour a
   assert.equal((await decide('adopt', {})).status, 409, 'closed');
 });
 
+test("ADOPT-17 adopting a refinement takes only what it changed: an edit made since, to a part it didn't touch, stays and is no conflict", async () => {
+  const { call, pid, node, map } = await shopProject();
+  const theirs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  await call('PUT', `/api/projects/${pid}/changesets/${theirs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('then it is a token.', 'then it is a token, never a number.') });
+
+  const mine = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Ken' })).body.changeset;
+  await call('PUT', `/api/projects/${pid}/changesets/${mine.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('Cards need tokens.', 'Cards need tokens, so numbers never reach us.') });
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${mine.id}/accept`)).status, 200);
+
+  const res = await call('POST', `/api/projects/${pid}/changesets/${theirs.id}/items/issue-4/adopt`, { by: 'Ken' });
+  assert.equal(res.status, 200);
+  const now = (await map()).find((n) => n.title.startsWith('#4 ')).body;
+  assert.match(now, /never a number/);
+  assert.match(now, /numbers never reach us/, "Ken's edit to the Why is kept");
+});
+
 test('ADOPT-08 open questions in a refinement show as badges, and never keep it from adoption', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;

@@ -6,6 +6,7 @@ import {
   behaviourPrefix,
   blankBehaviour,
   compareItems,
+  mergeChanges,
   isWellFormed,
   nextBehaviourId,
   parseBehaviours,
@@ -150,4 +151,25 @@ test('ADOPT-02 a refinement reads against the spec: its title, each behaviour an
   assert.equal(diff.behaviours[0].after, 'CL-01 Given work, when claimed, then it is held for two hours.');
   assert.deepEqual(diff.sections.map((x) => [x.name, x.change]), [['Acceptance', 'added']], 'unchanged sections are left out');
   assert.deepEqual(compareItems(spec, spec), { title: null, behaviours: [], sections: [] });
+});
+
+test("ADOPT-17 a refinement's changes are what it changed from its base: what it didn't touch never shows, and spacing is never a change", () => {
+  const base = { title: 'Claims', markdown: 'Part of #1\n\n## Why\n\nAgents collide.\n\n## Behaviours\n\n- CL-01 Given work, when claimed, then it is held.\n\n## Open questions\n\n- How long?\n' };
+  const proposed = { title: 'Claims', markdown: 'Part of #1\n\n## Why\n\nAgents collide.\n\n## Behaviours\n\n- CL-01 Given work, when claimed, then it is held for two hours.\n\n## Open questions\n\n- How long?\n\n\n' };
+  // Since it was proposed, someone answered the open question, and the editor filled in an Acceptance section.
+  const now = { title: 'Claims', markdown: base.markdown.replace('- How long?', 'None').replace('## Open questions', '## Acceptance\n\nTwo agents never collide.\n\n## Open questions') };
+  const diff = compareItems(now, proposed, base);
+  assert.deepEqual(diff.behaviours.map((b) => [b.id, b.change]), [['CL-01', 'changed']]);
+  assert.deepEqual(diff.sections, [], "someone else's edits are not the refinement's");
+  assert.equal(diff.title, null);
+  assert.deepEqual(compareItems(base, { ...base, markdown: base.markdown.replace('Agents collide.', 'Agents   collide.\n\n') }), { title: null, behaviours: [], sections: [] }, 'spacing alone');
+
+  const adopted = mergeChanges(now, proposed, ['CL-01', 'other'], base);
+  assert.match(adopted.markdown, /held for two hours/);
+  assert.match(adopted.markdown, /## Acceptance\n\nTwo agents never collide\.[\s\S]*## Open questions\n\nNone/, 'adopting never overwrites what it did not change');
+
+  const touched = { ...proposed, markdown: proposed.markdown.replace('- How long?', '- How long? Two hours?') };
+  const clash = compareItems(now, touched, base).sections.find((x) => x.name === 'Open questions');
+  assert.equal(clash.conflict, true, 'a part it changed that has changed since is a conflict');
+  assert.deepEqual(compareItems(now, proposed).sections.map((x) => x.name), ['Acceptance', 'Open questions'], 'with no base, against the item as it is');
 });

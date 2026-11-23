@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
@@ -9,6 +9,7 @@ import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf
 import { isEditable, isMapped } from '../editor/items.js';
 import { AnswerBox, Composer, Thread, useAskName } from '../editor/Annotate.jsx';
 import { questionsIn } from '@shared/questions.js';
+import { changeSummary, foldUnchanged, wordDiff } from '@shared/word-diff.js';
 import { clausesOf, isDismissed, locate, piecesOf, quoteOf, refinementThreads, threadsOf } from '@shared/annotations.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
@@ -39,7 +40,8 @@ const markedFor = (repo) => {
 
 export function Markdown({ text }) {
   const { repo } = useLinks();
-  const html = useMemo(() => DOMPurify.sanitize(markedFor(repo).parse(text ?? '')), [text, repo]);
+  // Nothing unsanitised is ever shown: with no page to sanitise for (the panel read in a test), it shows nothing.
+  const html = useMemo(() => (DOMPurify.sanitize ? DOMPurify.sanitize(markedFor(repo).parse(text ?? '')) : ''), [text, repo]);
   return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
@@ -223,8 +225,38 @@ const when = (iso) => {
   return new Date(iso).toLocaleDateString();
 };
 
-/** One change in a refinement: what the spec says now, struck through, and what is proposed, and its conversation. */
-function Change({ label, change, before, after, ready, tick = null, talk = null }) {
+/**
+ * Words as one text (ADOPT-18): those a change removes struck through and those it adds marked, in their place. With
+ * `fold`, long unchanged runs shrink to "…" with a few words either side of each change, and open on a tap.
+ */
+function WordDiff({ before, after, fold = false }) {
+  const [open, setOpen] = useState(false);
+  const parts = useMemo(() => (fold && !open ? foldUnchanged(wordDiff(before, after)) : wordDiff(before, after)), [before, after, fold, open]);
+  return parts.map((p, i) => {
+    if (p.kind === 'del') return <del key={i} className="diff-del">{p.text}</del>;
+    if (p.kind === 'ins') return <ins key={i} className="diff-ins">{p.text}</ins>;
+    if (p.kind === 'fold')
+      return (
+        <Fragment key={i}>
+          {p.head}
+          <button type="button" className="link-btn diff-fold" onClick={() => setOpen(true)} title="Show the unchanged words" aria-label="Show the unchanged words">
+            …
+          </button>
+          {p.tail}
+        </Fragment>
+      );
+    return <Fragment key={i}>{p.text}</Fragment>;
+  });
+}
+
+const CONFLICT = (
+  <span className="pill pill-conflict" title="This part of the item has changed since it was proposed: adopting it is a conflict to resolve first">
+    Changed since
+  </span>
+);
+
+/** One change in a refinement: a changed one as one text with its edits marked in it, an added or removed one whole, and its conversation. */
+function Change({ label, change, before, after, ready, conflict = false, tick = null, talk = null }) {
   return (
     <li className={`change change-${change}`}>
       <div className="change-head">
@@ -236,10 +268,21 @@ function Change({ label, change, before, after, ready, tick = null, talk = null 
             Ready for adoption
           </span>
         )}
+        {conflict && CONFLICT}
         {talk?.head}
       </div>
-      {before && <del className="change-before">{before}</del>}
-      {after && (talk?.proposed ?? <ins className="change-after">{after}</ins>)}
+      {change === 'changed' && before && after ? (
+        (talk?.proposed ?? (
+          <span className="change-after">
+            <WordDiff before={before} after={after} />
+          </span>
+        ))
+      ) : (
+        <>
+          {before && <del className="change-before">{before}</del>}
+          {after && (talk?.proposed ?? <ins className="change-after">{after}</ins>)}
+        </>
+      )}
       {talk?.body}
     </li>
   );
@@ -251,7 +294,7 @@ function Change({ label, change, before, after, ready, tick = null, talk = null 
  * for the author's word shows a badge. `text` is the behaviour as proposed: select some of its words, or tap its Given,
  * When or Then, to comment on just those, and the words a thread quotes are marked in it, as in the document.
  */
-function useTalk({ cs, item, on, label, text = '', threads, editing }) {
+function useTalk({ cs, item, on, label, text = '', before = '', threads, editing }) {
   const [writing, setWriting] = useState(null); // the anchor a new comment goes on
   const [picked, setPicked] = useState(null); // words selected in the proposed text: { start, end }
   const [shut, setShut] = useState(() => new Set());
@@ -263,12 +306,29 @@ function useTalk({ cs, item, on, label, text = '', threads, editing }) {
     window.getSelection()?.removeAllRanges();
     setWriting({ on: 'phrase', behaviour: on, refinement: cs.id, ...quoteOf(text, start, end) });
   };
-  // Where a selection is in the proposed text, as offsets into it, trimmed of the spaces either side.
+  // Where a selection is in the proposed text, as offsets into it, trimmed of the spaces either side. Struck words aren't in it.
   const offsetOf = (node, offset) => {
     const r = document.createRange();
     r.selectNodeContents(words.current);
     r.setEnd(node, offset);
-    return r.toString().length;
+    const upTo = r.cloneContents();
+    upTo.querySelectorAll('del').forEach((d) => d.remove());
+    return upTo.textContent.length;
+  };
+  // With what it says now, the proposed text shows its edits in place (ADOPT-18): where each removed run was, and which words are new.
+  const runs = useMemo(() => {
+    if (!before || !text) return null;
+    let at = 0;
+    return wordDiff(before, text).map((p) => (p.kind === 'del' ? { at, del: p.text } : { start: at, end: (at += p.text.length), ins: p.kind === 'ins' }));
+  }, [before, text]);
+  const marked = (start, end) => {
+    if (!runs) return text.slice(start, end);
+    return runs.flatMap((r) => {
+      if (r.del != null) return r.at >= start && (r.at < end || (r.at === end && end === text.length)) ? [<del key={`d${r.at}`} className="diff-del">{r.del}</del>] : [];
+      const a = Math.max(r.start, start), b = Math.min(r.end, end);
+      if (a >= b) return [];
+      return [r.ins ? <ins key={`i${a}`} className="diff-ins">{text.slice(a, b)}</ins> : <Fragment key={`s${a}`}>{text.slice(a, b)}</Fragment>];
+    });
   };
   const select = () => {
     const sel = window.getSelection();
@@ -303,14 +363,14 @@ function useTalk({ cs, item, on, label, text = '', threads, editing }) {
       <>
         <ins className="change-after talkable" ref={words} onMouseUp={select} onKeyUp={select}>
           {pieces.map((p) => {
-            const said = text.slice(p.start, p.end);
+            const said = marked(p.start, p.end);
             if (p.threads.length)
               return (
                 <mark key={p.start} className="noted" title="Open its comment" onClick={() => window.getSelection()?.isCollapsed && show(p.threads)}>
                   {said}
                 </mark>
               );
-            if (!p.clause) return said;
+            if (!p.clause) return <Fragment key={p.start}>{said}</Fragment>;
             return (
               <span
                 key={p.start}
@@ -370,8 +430,27 @@ function useTalk({ cs, item, on, label, text = '', threads, editing }) {
 
 /** A behaviour row of a refinement, with its tick and its conversation. */
 function BehaviourChange({ b, cs, item, threads, editing, ready, tick }) {
-  const talk = useTalk({ cs, item, on: b.id, label: b.id, text: b.after, threads, editing });
-  return <Change label={b.id || 'Behaviour'} change={b.change} before={b.before} after={b.after} ready={ready} tick={tick} talk={b.id ? talk : null} />;
+  const talk = useTalk({ cs, item, on: b.id, label: b.id, text: b.after, before: b.change === 'changed' ? b.before : '', threads, editing });
+  return <Change label={b.id || 'Behaviour'} change={b.change} before={b.before} after={b.after} ready={ready} conflict={Boolean(b.conflict)} tick={tick} talk={b.id ? talk : null} />;
+}
+
+/** One of a refinement's other changes as a line of what it did ("Why: 1 sentence reworded"), with its words under a disclosure (ADOPT-18). */
+function SectionChange({ label, c, summary }) {
+  return (
+    <li className={`section-change change-${c.change}`}>
+      <details>
+        <summary>
+          <span className="change-label">{label}</span>
+          {label === 'Title' ? ' ' : ': '}
+          {summary}
+          {c.conflict && <> {CONFLICT}</>}
+        </summary>
+        <span className="change-after">
+          <WordDiff before={c.before} after={c.after} fold />
+        </span>
+      </details>
+    </li>
+  );
 }
 
 /** A tick on one change of a refinement (ADOPT-05). */
@@ -391,7 +470,8 @@ function Refinement({ cs, item, node, editing, comments }) {
   const otherTalk = useTalk({ cs, item, on: OTHER_CHANGES, label: 'Other changes', threads, editing });
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
-  const diff = useMemo(() => compareItems(editableOf(node), item.after), [node, item.after]);
+  // What it changed from the item as it found it (ADOPT-17), not every way the item differs from it now.
+  const diff = useMemo(() => compareItems(editableOf(node), item.after, item.base ?? null), [node, item.after, item.base]);
   const keys = useMemo(() => changeKeys(diff), [diff]);
   const ready = new Set(item.readyForAdoption ?? []);
   const [ticks, setTicks] = useState(() => new Set(keys.filter((k) => ready.has(k))));
@@ -453,10 +533,10 @@ function Refinement({ cs, item, node, editing, comments }) {
                   {otherTalk.head}
                 </div>
                 {otherTalk.body}
-                <ul className="changes">
-                  {diff.title && <Change label="Title" change="changed" before={diff.title.before} after={diff.title.after} />}
+                <ul className="change-summary">
+                  {diff.title && <SectionChange label="Title" c={{ change: 'changed', ...diff.title }} summary="changed" />}
                   {diff.sections.map((c) => (
-                    <Change key={`s${c.name}`} label={c.name === 'Head' ? 'Part of · Kind · Place' : c.name} change={c.change} before={c.before} after={c.after} />
+                    <SectionChange key={`s${c.name}`} label={c.name === 'Head' ? 'Part of · Kind · Place' : c.name} c={c} summary={changeSummary(c)} />
                   ))}
                 </ul>
               </li>
