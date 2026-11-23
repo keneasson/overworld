@@ -38,8 +38,8 @@ export async function questionsOnMap(model, pid, nodes, itemKey = '') {
   return nodes.filter((n) => !itemKey || itemKeyOf(n) === itemKey).flatMap((n) => questionsOfNode(n, by.get(itemKeyOf(n))));
 }
 
-/** Answered, and waiting for an agent to write the answer into the spec (ANSWER-02); a finished item waits for nothing. */
-export const awaitsApplying = (q, node) => Boolean(q.answer) && !q.applied && !(node && isFinished(node));
+/** Answered, and waiting for an agent to act on it (ANSWER-02); on a finished item too, where it reopens it or starts a new one (ANSWER-09). */
+export const awaitsApplying = (q) => Boolean(q.answer) && !q.applied;
 
 /**
  * The prompt that applies an answer (ANSWER-02): everything an agent needs, with no chat history.
@@ -51,6 +51,7 @@ export function answerPrompt({ nodes, question, answer, answeredBy }) {
   const key = itemKeyOf(node);
   const others = questionsIn(key, editableOf(node).markdown).filter((q) => q.id !== question.id).map((q) => q.text);
   const next = others.length ? 'needs_decision' : 'ready for adoption, unless the answer opens something new';
+  if (isFinished(node)) return finishedPrompt({ nodes, node, key, question, answer, answeredBy });
   return [
     `An open question on ${node.title} (${key}) has been answered. Write the answer into the spec. This prompt holds everything you need.`,
     '',
@@ -73,6 +74,28 @@ export function answerPrompt({ nodes, question, answer, answeredBy }) {
     '   - Ready for adoption if nothing is: every behaviour clear and testable, and nothing open. Then mark it so.',
     '',
     `How: open a refinement with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, answers: ["${question.id}"]), adding item_ready: true and ready_for_adoption: [every behaviour ID in it] when it is ready for adoption. Changes to other items go into the same refinement. A person adopts the refinement, and that applies the answer. Never guess at what the answer leaves open: ask() it.`,
+  ].join('\n');
+}
+
+// On a finished item the spec is settled and its code is in, so an answer doesn't rewrite it (#32 STATE-13). It does one of
+// two things: says the item wasn't done properly, and reopens it; or builds on it, as a new item linked back (ANSWER-09).
+function finishedPrompt({ nodes, node, key, question, answer, answeredBy }) {
+  return [
+    `An open question on ${node.title} (${key}), which is ${stateWords(node.status)}, has been answered. Act on it. This prompt holds everything you need.`,
+    '',
+    `The question${question.asked?.by ? `, asked by ${question.asked.by}` : ''}:`,
+    quote(question.text),
+    '',
+    `The answer${answeredBy ? `, from ${answeredBy}` : ''}:`,
+    quote(answer),
+    '',
+    ...itemContext(nodes, node),
+    '',
+    'The item is finished, so its behaviours are not edited in place (STATE-13). The answer means one of two things:',
+    `1. It wasn't done properly: what was built doesn't do what its behaviours say. Reopen it: propose(refinement, item: "${key}", markdown: its text with the question and answer taken out and a line in the Why saying what is wrong, answers: ["${question.id}"]), and say in that line which behaviours fail. Its code is then work again.`,
+    `2. It asks for more, building on it: propose a new item (parent: the same parent, kind: feature or task) whose Why starts "Building on ${node.title.replace(/^#\d+ /, '')} (#${key.replace(/^issue-/, '')})", with new behaviour IDs; where it changes an old behaviour, the old one is marked renovated, naming the new IDs. Take the question and answer out of ${key} in the same refinement, with answers: ["${question.id}"].`,
+    '',
+    `Open the refinement with refine(place: "${key}"). If you can't tell which of the two it is, ask() on ${key} instead of guessing. A person adopts the refinement.`,
   ].join('\n');
 }
 

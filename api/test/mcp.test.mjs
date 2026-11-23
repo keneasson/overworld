@@ -833,3 +833,11 @@ test('HANDOFF-11 HANDOFF-04 a claim whose pull request opened holds through revi
   assert.match(notes.at(-1).note, /Deployed to production in abc1234, with #12: done/);
   assert.match((await rest('POST', '/api/deploys', { repo: 'octo/app', outcome: 'maybe' })).error, /success or failure/);
 });
+
+test('ANSWER-09 an answer on a finished item goes to an agent to reopen it or build on it, never to edit it in place', async () => {
+  const { answerPrompt, awaitsApplying } = await import('../answers.mjs');
+  const node = { id: 'n1', title: '#7 Login', status: 'done', url: 'https://github.com/o/r/issues/7', kind: 'feature', body: '## Behaviours\n\n- LOG-01 Given a user, when they sign in, then they land home.\n\n## Open questions\n\n- Should it remember me?\nAnswer: Yes, for 30 days.\n' };
+  assert.ok(awaitsApplying({ answer: 'Yes, for 30 days.' }), 'a finished item still hands its answer on');
+  const prompt = answerPrompt({ nodes: [node], question: { id: 'q1', itemKey: 'issue-7', text: 'Should it remember me?' }, answer: 'Yes, for 30 days.', answeredBy: 'Ken' });
+  for (const part of [/not edited in place/, /Reopen it/, /Building on Login \(#7\)/, /new behaviour IDs/, /answers: \["q1"\]/]) assert.match(prompt, part);
+});
