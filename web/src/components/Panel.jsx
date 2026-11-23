@@ -15,6 +15,9 @@ import { issueRefExtension } from '../model/links.js';
 import { useLinks } from './links-context.js';
 import { reviewingAt, titleWithNumber, waitedFor, waitingWords } from '../model/review.js';
 import { wasteCard } from '../map/wasteland.js';
+import { behavioursReaching, isStale, linesOf } from '@shared/proof.js';
+import { houseId } from '../map/houses.js';
+import { provenSummary } from '../map/lenses.js';
 
 // Only where there is a page to sanitise for (not when the panel is read in a test).
 DOMPurify.addHook?.('afterSanitizeAttributes', (node) => {
@@ -800,7 +803,141 @@ function SplitBar({ node, editing, onPick }) {
   );
 }
 
-export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], review = null, box = null, onNextReview = null, onBuild = null, commenting = false, commentControl = null, back = null, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
+const NO_PROOF = { report: null, code: null, repo: null };
+
+/** Where a file is on GitHub at the report's commit, at its first reached line when given ranges. */
+const sourceAt = (repo, commit, path, ranges = '') => {
+  if (!repo || !commit) return null;
+  const first = String(ranges).split(',')[0];
+  return `https://github.com/${repo}/blob/${commit}/${path.split('/').map(encodeURIComponent).join('/')}${first ? `#L${first.replace('-', '-L')}` : ''}`;
+};
+const PROOF_WORDS = { done: 'Done, proven', broken: 'Broken: its proof fails', unproven: 'Unproven: nothing shows it', passing: 'Tests pass', failing: 'Tests fail', untested: 'No tests yet' };
+const proofWords = (b) => PROOF_WORDS[b.done ?? (b.proof.state === 'untested' && b.proof.proven ? 'passing' : b.proof.state)];
+const proofClass = (b) => (b.done === 'broken' || b.proof.state === 'failing' ? 'failing' : b.proof.proven ? 'passing' : 'untested');
+
+/** Which commit the report is from, and whether the code has moved on since (#21 PROVEN-05). */
+function ReportFrom({ proof }) {
+  const { report, code } = proof;
+  if (!report) return null;
+  const short = (c) => String(c).slice(0, 7);
+  return isStale(report, code) ? (
+    <p className="proof-from stale" role="status">
+      This report is from {short(report.commit)}, older than the code, which is now at {short(code)}.
+    </p>
+  ) : (
+    <p className="proof-from muted small">From the coverage report for {short(report.commit)}{report.coverage === 'file' ? ', measured per test file' : ''}.</p>
+  );
+}
+
+/**
+ * The proof of each behaviour an issue lists (#21 PROVEN-03): the tests that prove it and the files they reach, from the
+ * latest coverage report, and any screenshot or other viewable proof its line links to, each linked to its source. The
+ * behaviour opened from its house on the map is open here too.
+ */
+export function ProofSection({ node, atBehaviour, proof }) {
+  const rows = (node.behaviourRows ?? []).filter((b) => !b.fog);
+  if (!rows.length || !(proof.report || rows.some((b) => b.proof.viewable.length))) return null;
+  const at = (path, ranges) => sourceAt(proof.repo, proof.report?.commit, path, ranges);
+  return (
+    <section className="proof">
+      <h3>
+        Proof <span className="count">{rows.filter((b) => b.proof.proven).length}/{rows.length}</span>
+      </h3>
+      <ReportFrom proof={proof} />
+      {rows.map((b) => (
+        <details key={b.id} className={`proof-row ${proofClass(b)}`} open={b.id === atBehaviour}>
+          <summary>
+            <span className={`proof-dot ${proofClass(b)}`} aria-hidden="true" />
+            <span className="proof-id">{b.id}</span>
+            <span className="row-sub">{proofWords(b)}</span>
+          </summary>
+          {b.proof.viewable.map((v) => (
+            <a key={v.url} className="proof-view" href={v.url} target="_blank" rel="noopener noreferrer">
+              {v.kind === 'image' ? <img src={v.url} alt={v.label} loading="lazy" /> : v.label}
+            </a>
+          ))}
+          {b.proof.tests.length > 0 && (
+            <>
+              <h4>Tests</h4>
+              <ul className="proof-list">
+                {b.proof.tests.map((t) => (
+                  <li key={`${t.file}:${t.name}`} className={t.passed ? 'passing' : 'failing'}>
+                    <span className={`proof-dot ${t.passed ? 'passing' : 'failing'}`} aria-label={t.passed ? 'passes' : 'fails'} />
+                    {at(t.file) ? <a href={at(t.file)} target="_blank" rel="noopener noreferrer">{t.name}</a> : t.name}
+                    <span className="row-sub"> {t.file}</span>
+                  </li>
+                ))}
+              </ul>
+              <h4>Code they reach</h4>
+              <ul className="proof-list">
+                {Object.entries(b.proof.files).map(([path, ranges]) => (
+                  <li key={path}>
+                    {at(path, ranges) ? <a href={at(path, ranges)} target="_blank" rel="noopener noreferrer">{path}</a> : path}
+                    <span className="row-sub"> {ranges ? `${linesOf(ranges).length} lines` : 'reached'}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {!b.proof.tests.length && !b.proof.viewable.length && <p className="muted small">No test is named {b.id}, and nothing viewable shows it yet.</p>}
+        </details>
+      ))}
+    </section>
+  );
+}
+
+// The files a code area lists: "- [path](url)" lines (api/engine/project.mjs), with markdown's escapes undone.
+const filesIn = (body) => [...String(body ?? '').matchAll(/^- \[((?:\\.|[^\]])+)\]\(/gm)].map((m) => m[1].replace(/\\(.)/g, '$1'));
+
+/**
+ * For each file a code area holds, the behaviours whose tests reach it (#21 PROVEN-04); Directions lights those
+ * behaviours up on the map.
+ */
+export function FileProof({ node, tree, proof, lit, onPick, onDirections }) {
+  if (!proof.report || !node.tags?.includes('code')) return null;
+  const houseOf = new Map(tree.list.flatMap((n) => (n.behaviourRows ?? []).map((b) => [b.id, houseId(n, b.id)])));
+  const files = filesIn(node.body).map((path) => ({ path, ids: behavioursReaching(proof.report, path) }));
+  if (!files.length) return null;
+  return (
+    <section className="proof">
+      <h3>Behaviours that reach its files</h3>
+      <ReportFrom proof={proof} />
+      <ul className="rows">
+        {files.map(({ path, ids }) => {
+          const houses = ids.map((id) => houseOf.get(id)).filter(Boolean);
+          const on = houses.length > 0 && lit?.path === path;
+          return (
+            <li key={path} className="file-proof">
+              <div className="row-main">
+                <span className="row-title">{path}</span>
+                <span className="row-sub">{ids.length ? `${ids.length} behaviour${ids.length === 1 ? '' : 's'} reach it` : 'No behaviour’s tests reach it'}</span>
+                {houses.length > 0 && (
+                  <span className="proof-ids">
+                    {ids
+                      .filter((id) => houseOf.has(id))
+                      .map((id) => (
+                        <button key={id} type="button" className="tag" onClick={() => onPick(houseOf.get(id))}>
+                          {id}
+                        </button>
+                      ))}
+                  </span>
+                )}
+                {houses.length < ids.length && <span className="row-sub">{ids.length - houses.length} not on this map</span>}
+              </div>
+              {houses.length > 0 && (
+                <button type="button" className={`directions${on ? ' on' : ''}`} aria-pressed={on} onClick={() => onDirections(on ? null : { path, houses })}>
+                  <Icon name="target" size={16} /> Directions
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+export function Details({ node, atBehaviour = null, tree, lens, comments = [], editing, builds = null, claims = [], review = null, box = null, onNextReview = null, onBuild = null, commenting = false, commentControl = null, back = null, proof = NO_PROOF, lit = null, onDirections = () => {}, onPick, onFly, onAdd, onPatch, onDelete, onClose, onCopyLink, onDocFocus }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const docRef = useRef(null);
   const rootRef = useRef(null);
@@ -895,6 +1032,11 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
             <StatusDot status={node.status} /> {STATUS_LABEL[node.status]}
           </span>
         )}
+        {s.broken > 0 && (
+          <span className="pill pill-broken" title="Done, but the proof of some of its behaviours now fails: they are work again (#21)">
+            {s.broken} broken
+          </span>
+        )}
         {!node.refinement && saysMore(node, s.health) && <HealthPill health={s.health} />}
         {s.overdue && <span className="pill pill-outline">Overdue</span>}
         {s.vague && <span className="pill pill-fog">Poorly defined</span>}
@@ -985,6 +1127,9 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       {editable && <OpenQuestions node={node} editing={editing} />}
       <EditBar editing={editing} box={box} comments={comments} onPick={onPick} />
 
+      <ProofSection node={node} atBehaviour={atBehaviour} proof={proof} />
+      <FileProof node={node} tree={tree} proof={proof} lit={lit} onPick={onPick} onDirections={onDirections} />
+
       <section>
         <h3>Properties</h3>
         <Properties node={node} tree={tree} onPatch={onPatch} />
@@ -996,7 +1141,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         <div className="progress-bar">
           <span style={{ width: pct(s.progress) }} />
         </div>
-        <span>{pct(s.progress)} done</span>
+        <span>{s.measured && s.adopted ? provenSummary(s) : `${pct(s.progress)} done`}</span>
       </div>
 
       <dl className="stats">

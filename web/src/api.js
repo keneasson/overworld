@@ -70,6 +70,7 @@ export const api = {
   questionPrompt: (pid, itemKey, id, body) => request('POST', `/api/projects/${pid}/questions/${itemKey}/${id}/prompt`, body),
   reportError: (report) => request('POST', '/api/errors', report),
   claims: (pid) => request('GET', `/api/projects/${pid}/claims`),
+  coverage: (pid) => request('GET', `/api/projects/${pid}/coverage`),
   builds: (pid) => request('GET', `/api/projects/${pid}/builds`),
   requestBuild: (pid, body) => request('POST', `/api/projects/${pid}/builds`, body),
   splitOf: (pid, key) => request('GET', `/api/projects/${pid}/items/${key}/split`),

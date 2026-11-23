@@ -1132,6 +1132,11 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const pulls = Array.isArray(body?.pulls) ? body.pulls.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 200) : [];
         const sha = String(body?.sha ?? '').slice(0, 40);
         const projects = await model.links.projectsOf(githubKey(repo));
+        // The commit the code is at now, so a coverage report from before it says it is older than the code (#21 PROVEN-05).
+        if (body.outcome === 'success' && /^[0-9a-f]{7,40}$/.test(sha)) await Promise.all(projects.map(async (pid) => {
+          const project = await model.projects.get(pid);
+          if (project) await model.projects.put({ ...project, deployed: { sha, at: new Date(clock()).toISOString() } });
+        }));
         return { projects: await Promise.all(projects.map(async (pid) => ({ project: pid, ...(await agents.deployed(pid, { sha, outcome: body.outcome, pulls })) }))) };
       },
     ],
@@ -1143,7 +1148,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       const [requests, notes] = await Promise.all([agents.buildRequests(pid, { nodes, live }), agents.buildNotes(pid, { live })]);
       const asked = new Set(requests.flatMap((r) => r.waiting));
       const buildable = {};
-      for (const w of nextWork(nodes, live, { tested: project?.tested }).work) {
+      for (const w of nextWork(nodes, live, { tested: project?.tested, report: await model.coverage.get(pid) }).work) {
         const open = w.behaviours.map((b) => b.id).filter((id) => !asked.has(id));
         if (open.length) buildable[w.item] = open;
       }
@@ -1196,7 +1201,11 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       { public: true },
     ],
 
-    ['GET', /^\/api\/projects\/([\w-]+)\/coverage$/, async ({ params: [pid] }) => ({ coverage: await model.coverage.get(pid) })],
+    // With the commit the code is at now (the last deploy's), so the map can say when the report is older (#21 PROVEN-05).
+    ['GET', /^\/api\/projects\/([\w-]+)\/coverage$/, async ({ params: [pid] }) => {
+      const [coverage, project] = await Promise.all([model.coverage.get(pid), loadProjectHead(pid)]);
+      return { coverage, code: project.deployed?.sha ?? null };
+    }],
 
     ['GET', /^\/api\/projects\/([\w-]+)\/facts$/, async ({ params: [pid] }) => ({ facts: await model.facts.list(pid) })],
 

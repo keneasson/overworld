@@ -15,16 +15,7 @@ export function rangesOf(lines) {
   return out.join(',');
 }
 
-/** '1-3,7' -> [1, 2, 3, 7] */
-export function linesOf(ranges) {
-  return String(ranges || '')
-    .split(',')
-    .filter(Boolean)
-    .flatMap((r) => {
-      const [a, b = a] = r.split('-').map(Number);
-      return Array.from({ length: b - a + 1 }, (_, i) => a + i);
-    });
-}
+export { linesOf } from '../../shared/proof.js';
 
 const sortedObject = (entries) => Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 

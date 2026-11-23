@@ -67,6 +67,7 @@ const LIFECYCLE = [
   ['ready', '#2da44e', 'Ready'],
   ['planned', '#c9cdd2', 'Open, no status'],
   ['idea', '#e3e5e8', 'Draft'],
+  ['broken', '#d93025', 'Done, proof broken'],
   ['done', '#9cc0f5', 'Done'],
   ['rejected', '#f1f3f4', 'Rejected (ruin)'],
 ];
@@ -80,14 +81,19 @@ function lifecycleOfRegion(n) {
   const open = OPEN.filter((s) => states[s]).sort((a, b) => states[b] - states[a])[0];
   return open ?? (states.done ? 'done' : n.status === 'rejected' || states.rejected ? 'rejected' : 'done');
 }
+// A leaf's own state: its status, except that done with a failing proof is broken (#21 PROVEN-07).
+const leafState = (n) => (n.stats?.states?.broken ? 'broken' : n.status);
 /** The lifecycle colour an item's symbol is filled with (#10 SYM-02): its own state, or for a region what most of its work waits on. */
-export const statusColor = (n) => (n.children.length ? LIFECYCLE_COLOR[lifecycleOfRegion(n)] : LIFECYCLE_COLOR[n.status]) ?? LIFECYCLE_COLOR.planned;
-export const statusKey = (n) => (n.children.length ? lifecycleOfRegion(n) : LIFECYCLE_COLOR[n.status] ? n.status : 'planned');
+export const statusColor = (n) => (n.children.length ? LIFECYCLE_COLOR[lifecycleOfRegion(n)] : LIFECYCLE_COLOR[leafState(n)]) ?? LIFECYCLE_COLOR.planned;
+export const statusKey = (n) => (n.children.length ? lifecycleOfRegion(n) : LIFECYCLE_COLOR[leafState(n)] ? leafState(n) : 'planned');
 export const STATUS_FILLS = LIFECYCLE.map(([key, color, label]) => ({ key, color, label }));
 const lifecycleSummary = (states) =>
   LIFECYCLE.filter(([s]) => states[s])
     .map(([s, , l]) => `${states[s]} ${l.replace(' (ruin)', '').toLowerCase()}`)
     .join(' · ');
+
+/** Only proven behaviours count as done (#21 PROVEN-01): "3 of 8 behaviours done · 1 broken". */
+export const provenSummary = (s) => `${s.proven} of ${plural(s.adopted, 'behaviour')} done${s.broken ? ` · ${s.broken} broken` : ''}`;
 
 const OWNER_COLORS = ['#a9cdf5', '#f7c59f', '#b6e0b0', '#e9b6e3', '#f5e19c', '#a7e0dc', '#d3c0f0', '#f4b0b0', '#c9d99a', '#b9c7d6'];
 
@@ -203,7 +209,7 @@ export const LENSES = [
     blurb: 'Terrain by completion: sandy lowlands are untouched, deep green is done.',
     theme: LIGHT,
     fill: (n) => terrain(n.stats.progress),
-    stat: (n) => `${pct(n.stats.progress)} done · ${n.stats.doneLeaves}/${n.stats.leaves} items`,
+    stat: (n) => (n.stats.measured && n.stats.adopted ? provenSummary(n.stats) : `${pct(n.stats.progress)} done · ${n.stats.doneLeaves}/${n.stats.leaves} items`),
     legend: () => [0, 0.25, 0.5, 0.75, 1].map((t) => ({ color: terrain(t), label: pct(t) })),
   },
   {
@@ -262,11 +268,11 @@ export const LENSES = [
     icon: '🚦',
     blurb: 'Where the work stands: ready, in progress, waiting on a decision, done or rejected.',
     theme: LIGHT,
-    fill: (n) => (!Object.keys(n.stats.states).length ? NO_WORK : (LIFECYCLE_COLOR[n.children.length ? lifecycleOfRegion(n) : n.status] ?? LIFECYCLE_COLOR.planned)),
+    fill: (n) => (!Object.keys(n.stats.states).length ? NO_WORK : (LIFECYCLE_COLOR[n.children.length ? lifecycleOfRegion(n) : leafState(n)] ?? LIFECYCLE_COLOR.planned)),
     hatch: (n) => n.status === 'rejected',
     dots: (n) => !n.children.length && n.status === 'needs_decision',
     dotColor: () => '#8b5cf6',
-    stat: (n) => (!Object.keys(n.stats.states).length ? 'No work here' : n.children.length ? lifecycleSummary(n.stats.states) : (LIFECYCLE_NAME[n.status] ?? n.status)),
+    stat: (n) => (!Object.keys(n.stats.states).length ? 'No work here' : n.children.length ? lifecycleSummary(n.stats.states) : (LIFECYCLE_NAME[leafState(n)] ?? n.status)),
     matches: (n) => !n.children.length && (n.status === 'needs_decision' || n.tags.includes('status-unclear')),
     sort: (a, b) => (a.status === 'needs_decision' ? 0 : 1) - (b.status === 'needs_decision' ? 0 : 1),
     count: (tree) => tree.root.stats.states.needs_decision ?? 0,

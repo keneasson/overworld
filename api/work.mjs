@@ -5,7 +5,10 @@
 //   adopted       the behaviours of an issue that is Ready and isn't an epic
 //   new           adopted, and nobody holds a claim on it
 //   being coded   a live claim (MCP-04)
-//   coded         its issue is done; that issue is a leaf, an independent unit of work (#32 STATE-02, STATE-08)
+//   coded         its issue is done and its proof passes (#21 PROVEN-01); that issue is a leaf, an independent unit of
+//                 work (#32 STATE-02, STATE-08). With nothing viewable as proof it is unproven, not done (PROVEN-06), and
+//                 when its proof fails it is broken, and work again until it passes (PROVEN-07). Proof comes from the
+//                 latest coverage report (#20) and what the behaviour's line links to (shared/proof.js).
 // Work is hierarchical: only leaf issues are offered (STATE-09). An issue with child issues is a parent, whose state
 // rolls up from them. An issue that is partly built, judged by which of its behaviours have a test named by their ID on
 // the default branch (#19), needs a split and isn't offered either (STATE-10).
@@ -13,6 +16,7 @@
 // When #32 lands, only this file changes.
 
 import { editableOf, itemKeyOf, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { doneOf, proofOf } from '../shared/proof.js';
 
 const NOT_WORK = new Set(['project', 'area', 'epic']);
 const NOT_ITEMS = new Set(['project', 'area', 'behavior']); // places and spec rows: what an issue holds without being a parent
@@ -28,7 +32,7 @@ export function behavioursOf(node) {
   const content = sectionText(parseIssue(editableOf(node).markdown), 'Behaviours');
   return parseBehaviours(content)
     .filter((r) => r.id)
-    .map((r) => ({ id: r.id, text: r.raw.replace(/^\s*[-*]\s+/, '').replace(new RegExp(`^[*\`]*${r.id}[*\`:]*\\s*`), '').replace(/\s+/g, ' ').trim(), fog: FOG.test(r.text || r.given) }));
+    .map((r) => ({ id: r.id, text: r.raw.replace(/^\s*[-*]\s+/, '').replace(new RegExp(`^[*\`]*${r.id}[*\`:]*\\s*`), '').replace(/\s+/g, ' ').trim(), fog: FOG.test(r.text || r.given), raw: r.raw }));
 }
 
 export const isFinished = (node) => FINISHED.has(node.status);
@@ -74,20 +78,26 @@ export function blockersOf(node, byId) {
 /** An item's state, in words an agent reads. A new item in an open refinement needs improvement until it is adopted (NEW-03). */
 export const stateOf = (node) => (node.refinement ? 'needs improvement' : node.status);
 
-/** A behaviour's building state. */
-export function buildingOf(node, claim) {
-  if (node.status === 'done') return 'coded';
-  return claim ? 'being coded' : 'new';
+/** A behaviour's building state, proof included when there is a coverage report: coded, broken, unproven, being coded or new. */
+export function buildingOf(node, claim, behaviour = null, report = null) {
+  if (claim) return 'being coded';
+  if (node.status !== 'done') return 'new';
+  const done = behaviour ? doneOf(true, proofOf(behaviour.id, { report, raw: behaviour.raw })) : 'done';
+  return done === 'done' ? 'coded' : done;
 }
+
+/** A done item's behaviours whose proof now fails (PROVEN-07): they are work again. */
+export const brokenOf = (node, report) => (node.status === 'done' && report ? behavioursOf(node).filter((b) => !b.fog && doneOf(true, proofOf(b.id, { report, raw: b.raw })) === 'broken') : []);
 
 /**
  * Work that is new and unclaimed, grouped by item and ordered by priority, then by number. Only leaf issues (STATE-09);
  * one that needs a split is listed apart, not offered (STATE-10).
  * @param {Map<string, object>} live live claims by behaviour id
- * @param {{ tested?: Iterable<string> }} [o] behaviour ids with a test named by them on the default branch
+ * A done item whose proof now fails is offered again, its broken behaviours only, ahead of the rest (PROVEN-07).
+ * @param {{ tested?: Iterable<string>, report?: object | null }} [o] behaviour ids with a test named by them on the default branch, and the latest coverage report
  * @returns {{ work: { item, title, priority, behaviours }[], blocked: { item, title, by }[], needsSplit: { item, title, reason, looks_built, still_to_build }[], toVerify: { item, title, behaviours }[] }}
  */
-export function nextWork(nodes, live, { tested = [] } = {}) {
+export function nextWork(nodes, live, { tested = [], report = null } = {}) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const kids = childrenOf(nodes);
   const have = new Set(tested);
@@ -96,6 +106,8 @@ export function nextWork(nodes, live, { tested = [] } = {}) {
   const needsSplit = [];
   const toVerify = []; // every behaviour has a test: ready to verify, not done (STATE-12)
   for (const node of nodes) {
+    const broken = brokenOf(node, report).filter((b) => !live.has(b.id));
+    if (broken.length) work.push({ item: keyOf(node), title: node.title, priority: node.priority || '', broken: true, behaviours: broken.map(({ id, text }) => ({ id, text })), order: node.order ?? 0 });
     if (!isWork(node)) continue;
     const split = splitOf(node, kids.get(node.id) ?? [], have);
     if (split) {
@@ -115,6 +127,6 @@ export function nextWork(nodes, live, { tested = [] } = {}) {
     if (by.length) blocked.push({ item: entry.item, title: entry.title, by });
     else work.push({ ...entry, order: node.order ?? 0 });
   }
-  work.sort((a, b) => (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9) || a.order - b.order || a.item.localeCompare(b.item));
+  work.sort((a, b) => Number(Boolean(b.broken)) - Number(Boolean(a.broken)) || (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9) || a.order - b.order || a.item.localeCompare(b.item));
   return { work: work.map(({ order, ...w }) => w), blocked, needsSplit, toVerify };
 }

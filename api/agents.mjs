@@ -4,7 +4,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { ValidationError, newId } from '../shared/schema.js';
-import { nextWork, behavioursOf, blockersOf, childrenOf, isFinished, isWork, keyOf, splitOf } from './work.mjs';
+import { nextWork, behavioursOf, blockersOf, brokenOf, childrenOf, isFinished, isWork, keyOf, splitOf } from './work.mjs';
 import { awaitsApplying, promptOf, questionsOnMap } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { notePrompt } from './notes.mjs';
@@ -128,15 +128,14 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const built = builtWith == null || builtWith === '' ? null : said(builtWith, 300, 'built_with');
     if (built && pull === null) throw new ValidationError('built_with: name the pull_request it built');
     for (let attempt = 0; attempt < 3; attempt++) {
-      const data = await model.projects.getWithNodes(projectId);
-      const { live } = await liveClaims(projectId);
+      const [data, { live }, report] = await Promise.all([model.projects.getWithNodes(projectId), liveClaims(projectId), model.coverage.get(projectId)]);
       const othersHold = new Map([...live].filter(([, c]) => c.owner !== agent.id));
       let wanted;
       if (!behaviours.length) {
         // What a person asked to be built comes first (HANDOFF-10), oldest first; then the top of next_work().
         wanted = requestedWork(data, await buildRequests(projectId, { nodes: data.nodes, live }));
         if (!wanted) {
-          const top = nextWork(data.nodes, live, { tested: data.project?.tested }).work[0];
+          const top = nextWork(data.nodes, live, { tested: data.project?.tested, report }).work[0];
           if (!top) return { claimed: [], message: 'Nothing is ready and unclaimed.' };
           wanted = top.behaviours.map((b) => ({ id: b.id, node: data.nodes.find((n) => keyOf(n) === top.item) }));
         }
@@ -150,7 +149,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
           const node = data.nodes.find((n) => behavioursOf(n).some((b) => b.id === id));
           if (node && !isFinished(node)) mine.add(id);
         }
-        wanted = placeBehaviours(data.nodes, behaviours.map(String), data.project?.tested, mine);
+        wanted = placeBehaviours(data.nodes, behaviours.map(String), data.project?.tested, mine, report);
         const held = holders(behaviours, othersHold);
         if (held.length) throw new Refused(`Already claimed: ${held.map((h) => `${h.behaviour} by ${h.agent} until ${h.until}`).join('; ')}`, { held_by: held });
       }
@@ -178,7 +177,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
   }
 
   /** Each named behaviour's item, if it is work an agent may claim, or a refusal saying why not. */
-  function placeBehaviours(nodes, ids, tested = [], mine = new Set()) {
+  function placeBehaviours(nodes, ids, tested = [], mine = new Set(), report = null) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const kids = childrenOf(nodes);
     const have = new Set(tested);
@@ -186,7 +185,8 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     for (const id of ids) {
       const node = nodes.find((n) => behavioursOf(n).some((b) => b.id === id));
       if (!node) throw new Refused(`${id} isn't a behaviour on the map`);
-      if (mine.has(id)) {
+      // A done item's behaviour whose proof now fails is work again (#21 PROVEN-07).
+      if (mine.has(id) || brokenOf(node, report).some((b) => b.id === id)) {
         out.push({ id, node });
         continue;
       }
@@ -555,7 +555,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const awayHours = last ? (now - Date.parse(last.at)) / 3_600_000 : 0;
     const mode = !last ? 'onboarding' : awayHours > REGROUP_AFTER_HOURS || changes >= REGROUP_AFTER_CHANGES ? 'regroup' : 'up_to_date';
 
-    const { work, needsSplit, toVerify } = nextWork(data.nodes, live, { tested: data.project?.tested });
+    const { work, needsSplit, toVerify } = nextWork(data.nodes, live, { tested: data.project?.tested, report: await model.coverage.get(projectId) });
     // What people asked to be built and nobody has taken (HANDOFF-10): an open session can take it before a runner does.
     const builds = (await buildRequests(projectId, { nodes: data.nodes, live })).map(buildOf);
     const git = gitOf(local);
