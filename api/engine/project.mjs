@@ -7,6 +7,7 @@ import { mapArchitecture } from './architecture.mjs';
 import { explain, makeLocator } from './placement.mjs';
 import { epicness, nestByReferences, referencesIn } from './references.mjs';
 import { closedByOpenPrs, lifecycleOf, usesLifecycle } from './lifecycle.mjs';
+import { mapAirports } from './airports.mjs';
 
 const BUG_TITLE =
   /\b(bug|crash(es|ed)?|broken|breaks|fails?|failing|error|500|leak|regression|cut off|unusable|dead end|wrong|rotted|not (invalidated|enforced|sendable|working)|never (enforced|applied)|silently)\b/i;
@@ -78,7 +79,7 @@ export function issueFields(i, { lifecycle, note, placement = [], kind }) {
   };
 }
 
-export function buildProject({ repo, paths = [], manifests = new Map(), specs = [], issues = [], pulls = [], now = new Date().toISOString(), makeId = newId }) {
+export function buildProject({ repo, paths = [], manifests = new Map(), specs = [], sources = new Map(), issues = [], pulls = [], now = new Date().toISOString(), makeId = newId }) {
   const branch = repo.default_branch ?? 'main';
   const arch = mapArchitecture({ paths, manifests, mentions: issues.map((i) => `${i.title}\n${i.body}`) });
   const locate = makeLocator(arch);
@@ -349,5 +350,5 @@ export function buildProject({ repo, paths = [], manifests = new Map(), specs = 
     url: repo.html_url,
   });
 
-  return { title: repo.full_name, summary: nodes[0].summary, nodes, strictLifecycle: lifecycle.strict, stats: { ...stats, regions: arch.regions.size, behaviours } };
+  return { title: repo.full_name, summary: nodes[0].summary, nodes, airports: mapAirports({ paths, sources, manifests }), strictLifecycle: lifecycle.strict, stats: { ...stats, regions: arch.regions.size, behaviours } };
 }

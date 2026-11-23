@@ -16,7 +16,8 @@ import { questionId, questionsIn, withAnswer, withQuestion } from '../shared/que
 import { addresseesOf } from './notes.mjs';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
-import { childrenOf, nextWork, splitOf } from './work.mjs';
+import { behavioursOf, childrenOf, keyOf, nextWork, splitOf } from './work.mjs';
+import { VOCABULARY, duplicateIds, pairKey, textHash, vocabularyDrift } from '../shared/coherence.js';
 import { openQuestions } from './engine/lifecycle.mjs';
 
 class HttpError extends Error {
@@ -25,6 +26,12 @@ class HttpError extends Error {
     this.status = status;
   }
 }
+
+const BEHAVIOUR = /^[A-Z][A-Z0-9]*-\d+$/;
+const VERDICTS = ['duplicate', 'contradiction', 'related', 'unrelated'];
+
+/** Every behaviour on the map, as the spec's check reads them (#36): { id, item, title, text, hash }. */
+const behavioursOn = (nodes) => nodes.flatMap((n) => behavioursOf(n).map((b) => ({ id: b.id, item: keyOf(n), title: n.title, text: b.text, hash: textHash(b.text) })));
 
 const digest = (s) => createHash('sha256').update(String(s)).digest();
 
@@ -938,7 +945,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       /^\/api\/import\/github$/,
       async ({ body }) => {
         const data = await importGitHub({ repo: body?.repo, token: body?.token || undefined }, fetchImpl);
-        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested });
+        const saved = await saveNewProject(data, 'github', { githubRepo: data.title, strictLifecycle: data.strictLifecycle, guide: data.guide, tested: data.tested, airports: data.airports });
         await model.links.link(stores.forProject(saved.project).key, saved.project.id);
         return saved;
       },
@@ -959,6 +966,96 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const updated = await touchProject(project, kept.nodes, data.project);
         await model.links.link(store.key, pid);
         return { project: updated, nodes: kept.nodes };
+      },
+    ],
+
+    // ---- The spec checks itself (#36): deterministic checks on every read, near pairs found by a script with a model ----
+
+    [
+      'GET',
+      /^\/api\/projects\/([\w-]+)\/coherence$/,
+      // The same behaviour ID in two items and two words for one thing (COHERE-01), worked out from the map as it is now, and
+      // the close pairs a check found whose behaviours still read as they did (COHERE-04), each naming its model (COHERE-07).
+      async ({ params: [pid] }) => {
+        const { nodes } = await loadProject(pid);
+        const list = behavioursOn(nodes);
+        const now = new Map(list.map((b) => [`${b.item}:${b.id}`, b]));
+        const current = (s) => now.get(`${s.item}:${s.id}`)?.hash === s.hash;
+        const found = await model.findings.list(pid);
+        const show = (s) => ({ id: s.id, item: s.item, title: now.get(`${s.item}:${s.id}`).title, text: now.get(`${s.item}:${s.id}`).text });
+        const pairs = found.filter((f) => current(f.a) && current(f.b)).sort((p, q) => q.cosine - p.cosine || (p.key < q.key ? -1 : 1));
+        return {
+          vocabulary: VOCABULARY,
+          duplicate_ids: duplicateIds(list),
+          drift: vocabularyDrift(list),
+          pairs: pairs.map((f) => ({ key: f.key, cosine: f.cosine, model: f.model, ...(f.version ? { version: f.version } : {}), a: show(f.a), b: show(f.b), ...(f.judged ? { judged: f.judged } : {}) })),
+          stale: found.length - pairs.length,
+        };
+      },
+    ],
+
+    // Every behaviour with the hash of its words: what a check embeds, and how it tells what changed since it last ran.
+    ['GET', /^\/api\/projects\/([\w-]+)\/coherence\/behaviours$/, async ({ params: [pid] }) => ({ behaviours: behavioursOn((await loadProject(pid)).nodes) })],
+
+    [
+      'PUT',
+      /^\/api\/projects\/([\w-]+)\/coherence\/pairs$/,
+      // A check's close pairs. A pair found again with the same words keeps its judgement; one whose words changed starts over.
+      async ({ params: [pid], body }) => {
+        await loadProjectHead(pid);
+        const pairs = Array.isArray(body?.pairs) ? body.pairs : null;
+        if (!pairs) throw new ValidationError('pairs: expected an array');
+        if (pairs.length > 500) throw new ValidationError('pairs: at most 500 at once');
+        const side = (s, what) => {
+          if (!KEY.test(String(s?.item)) || !BEHAVIOUR.test(String(s?.id)) || !/^[0-9a-f]{16}$/.test(String(s?.hash))) throw new ValidationError(`${what}: expected { id, item, hash }`);
+          return { id: s.id, item: s.item, hash: s.hash };
+        };
+        const at = new Date(clock()).toISOString();
+        const had = new Map((await model.findings.list(pid)).map((f) => [f.key, f]));
+        const list = pairs.map((p, i) => {
+          const a = side(p.a, `pairs[${i}].a`);
+          const b = side(p.b, `pairs[${i}].b`);
+          const key = pairKey(a, b);
+          const cosine = Number(p.cosine);
+          if (!(cosine >= -1 && cosine <= 1)) throw new ValidationError(`pairs[${i}].cosine: expected a number from -1 to 1`);
+          const was = had.get(key);
+          const same = was && was.a.hash === a.hash && was.b.hash === b.hash;
+          const modelName = text(p.model ?? '', 200, `pairs[${i}].model`);
+          if (!modelName) throw new ValidationError(`pairs[${i}].model: required, so a finding says what found it (COHERE-07)`);
+          return { key, a, b, cosine, model: modelName, ...(p.version ? { version: text(p.version, 200, `pairs[${i}].version`) } : {}), foundAt: same ? was.foundAt : at, ...(same && was.judged ? { judged: was.judged } : {}) };
+        });
+        await model.findings.put(pid, list);
+        return { recorded: list.length };
+      },
+    ],
+
+    [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/coherence\/judge$/,
+      // Someone looked at a pair. A duplicate or a contradiction becomes an open question on both items, each naming the
+      // other, so reconciling them is ordinary refinement (COHERE-05).
+      async ({ params: [pid], body }) => {
+        const key = String(body?.pair ?? '');
+        const verdict = String(body?.verdict ?? '');
+        if (!VERDICTS.includes(verdict)) throw new ValidationError(`verdict: one of ${VERDICTS.join(', ')}`);
+        const finding = await model.findings.get(pid, key);
+        if (!finding) throw new HttpError(404, 'No such pair: coherence() lists them');
+        const note = text(body?.note ?? '', 1000, 'note').replace(/\s+/g, ' ').trim();
+        const by = author(body?.by);
+        const asked = [];
+        if (verdict === 'duplicate' || verdict === 'contradiction') {
+          const { nodes } = await loadProject(pid);
+          const titleOf = (item) => findItem(nodes, item)?.title ?? item;
+          const say = (here, there) => `${here.id} and ${there.id} in ${titleOf(there.item)} look like a ${verdict}${note ? `: ${note}` : ''}. Which should hold, and should one change?`;
+          for (const [here, there] of [[finding.a, finding.b], [finding.b, finding.a]]) {
+            const res = await handle({ method: 'POST', path: `/api/projects/${pid}/questions`, body: { itemKey: here.item, text: say(here, there), author: by, agentId: body?.agentId }, trusted: true });
+            if (res.status >= 400) throw new HttpError(res.status, res.body?.error ?? 'Could not ask');
+            asked.push({ item: here.item, question: res.body.question.id });
+          }
+        }
+        const judged = { verdict, by, at: new Date(clock()).toISOString(), ...(note ? { note } : {}), ...(asked.length ? { asked } : {}) };
+        await model.findings.put(pid, [{ ...finding, judged }]);
+        return { pair: key, judged };
       },
     ],
 

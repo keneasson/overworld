@@ -25,6 +25,7 @@
 //   Action    PROJECT#<id>    ACTION#<at>#<id>   ACTIONS#<id>#<agentId> <at>   what an agent changed (MCP-14)
 //   Request   PROJECT#<id>    KEY#<agentId>#<requestKey>  a change's result, kept a day for repeats (MCP-12)
 //   Limit     PROJECT#<id>    LIMIT#<agentId>#<minute>    an agent's calls this minute (MCP-13)
+//   Finding   PROJECT#<id>    COHERE#<pairKey>   two behaviours close in meaning, the model that found them, and a judgement (#36 COHERE-04)
 //
 // A project and its nodes share a partition (an item collection): one query reads a
 // whole map, and one query finds everything to delete. The map's entities sort last: every prefix in a
@@ -92,6 +93,8 @@ export const keys = {
   questionsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `ASK#${itemKey ? `${itemKey}#` : ''}` }),
   inbox: (projectId, id) => ({ PK: projectPartition(projectId), SK: `INBOX#${id}` }),
   inboxOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: 'INBOX#' }),
+  finding: (projectId, key) => ({ PK: projectPartition(projectId), SK: `COHERE#${key}` }),
+  findingsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: 'COHERE#' }),
   commentsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `${COMMENT_PREFIX}${itemKey ? `${itemKey}#` : ''}` }),
 };
 
