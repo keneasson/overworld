@@ -2,7 +2,7 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema.js';
-import { HEALTH_COLOR, HEALTH_LABEL, isInside, pathOf } from '../model/tree.js';
+import { HEALTH_COLOR, HEALTH_LABEL, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
 import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
@@ -1135,54 +1135,6 @@ export function ReviewList({ review, onPick, onClose }) {
         ))}
       </ul>
       {!review.length && <p className="empty-note">Proposed changes and questions waiting on someone show here as soon as they're made.</p>}
-    </div>
-  );
-}
-
-export function Results({ lens, tree, focusId, onPick, onClose }) {
-  const [everywhere, setEverywhere] = useState(false);
-  const scope = !everywhere && focusId ? tree.byId.get(focusId) : tree.root;
-  const items = useMemo(() => {
-    const list = tree.list.filter((n) => lens.matches(n) && isInside(n, scope));
-    return lens.sort ? list.sort(lens.sort) : list;
-  }, [tree, lens, scope]);
-  return (
-    <div className="details">
-      <header className="panel-head">
-        <div>
-          <div className="eyebrow">
-            {lens.icon} {lens.name}
-          </div>
-          <h2 className="node-title">
-            {items.length} {lens.chip.toLowerCase()} {scope === tree.root ? 'in the project' : `in ${scope.title}`}
-          </h2>
-        </div>
-        <button className="icon-btn" onClick={onClose} aria-label="Close results">
-          <Icon name="close" />
-        </button>
-      </header>
-      <p className="summary">{lens.blurb}</p>
-      {scope !== tree.root && (
-        <button className="link-btn" onClick={() => setEverywhere(true)}>
-          Search the whole project
-        </button>
-      )}
-      {everywhere && focusId && focusId !== tree.root.id && (
-        <button className="link-btn" onClick={() => setEverywhere(false)}>
-          Only {tree.byId.get(focusId)?.title}
-        </button>
-      )}
-      <ul className="rows">
-        {items.map((n) => (
-          <NodeRow
-            key={n.id}
-            node={n}
-            onPick={onPick}
-            sub={[lens.stat(n), pathOf(n).slice(1, -1).map((p) => p.title).join(' › ')].filter(Boolean).join(' — ')}
-          />
-        ))}
-      </ul>
-      {!items.length && <p className="empty-note">Nothing here. Zoom out or search the whole project.</p>}
     </div>
   );
 }

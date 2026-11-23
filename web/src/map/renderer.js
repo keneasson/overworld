@@ -19,6 +19,7 @@ import { rectsOverlap, smoothstep } from './geometry.js';
 
 export const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif';
 const ACCENT = '#1a73e8';
+const MATCH = '#f29900'; // matches of a search or a lens: amber, apart from the selection's blue
 const LINK_COLOR = { navigates: '#1a73e8', depends: '#e8710a', relates: '#8e44ad' };
 const LINK_COLOR_NIGHT = { navigates: '#8ab4f8', depends: '#fcad70', relates: '#d7aefb' };
 
@@ -675,7 +676,7 @@ export function placeInView(scene, view, { center, T = thresholds(view.width, vi
 export function drawMap(ctx, scene, view, opts) {
   const { tree, geo } = scene;
   const { x, y, k, width: W, height: H, dpr } = view;
-  const { lens, selectedId = null, hoverId = null, showLinks = false, thumbnail = false, live, time = 0 } = opts;
+  const { lens, selectedId = null, hoverId = null, marked = null, showLinks = false, thumbnail = false, live, time = 0 } = opts;
   const theme = lens.theme;
   const T = opts.T ?? thresholds(W, H);
   const sizeOf = (n) => geo.get(n.id).size * k;
@@ -790,6 +791,22 @@ export function drawMap(ctx, scene, view, opts) {
     ctx.strokeStyle = theme.dark ? '#ffffff' : '#202124';
     ctx.lineWidth = 2 / k;
     ctx.stroke(pathFor(geo.get(hovered.id)));
+  }
+  // The matches of a search or a lens, as its list narrows them (#53 FIND-01, FIND-02): each one ringed where it is.
+  if (marked?.size && !thumbnail) {
+    ctx.strokeStyle = MATCH;
+    ctx.fillStyle = MATCH;
+    for (const id of marked) {
+      const g = geo.get(id);
+      if (!g || !inView(g.bbox)) continue;
+      const p = pathFor(g);
+      ctx.globalAlpha = 0.16;
+      ctx.fill(p);
+      ctx.globalAlpha = 0.95;
+      ctx.lineWidth = 2.5 / k;
+      ctx.stroke(p);
+    }
+    ctx.globalAlpha = 1;
   }
   const selected = selectedId && tree.byId.get(selectedId);
   if (selected) {
