@@ -50,7 +50,7 @@ export function answerPrompt({ nodes, question, answer, answeredBy }) {
   if (!node) return '';
   const key = itemKeyOf(node);
   const others = questionsIn(key, editableOf(node).markdown).filter((q) => q.id !== question.id).map((q) => q.text);
-  const next = others.length ? 'needs_decision' : 'ready';
+  const next = others.length ? 'needs_decision' : 'ready for adoption, unless the answer opens something new';
   return [
     `An open question on ${node.title} (${key}) has been answered. Write the answer into the spec. This prompt holds everything you need.`,
     '',
@@ -62,15 +62,17 @@ export function answerPrompt({ nodes, question, answer, answeredBy }) {
     '',
     ...itemContext(nodes, node),
     '',
-    `Its state now: ${stateWords(node.status)}. Once this question is settled, it would be ${stateWords(next)}${others.length ? `, because these questions are still open: ${others.map((q) => `"${q}"`).join('; ')}` : ''}.`,
+    `Its state now: ${stateWords(node.status)}. Once this question is settled, it would be ${others.length ? stateWords('needs_decision') : next}${others.length ? `, because these questions are still open: ${others.map((q) => `"${q}"`).join('; ')}` : ''}.`,
     '',
     'What to do:',
     '1. Write the decision where it belongs: in the behaviour it settles, in the Why, or, if it holds for the whole project, as a standing decision (remember(), AGENT-07).',
     '2. Take the question and its answer out of Open questions. Write "None." there if nothing else is open. Leave any other question, and its answer, where it is.',
     '3. Change whatever else the answer implies: behaviours to add, reword or split, items to split or move, links to other items.',
-    `4. Mark the item ready if nothing else is open${others.length ? ' (here something is, so leave it needing a decision)' : ''}.`,
+    '4. Then evaluate the whole item again, as it would read once adopted. Either it still needs refining, or it is ready for adoption:',
+    `   - Still needs refining if anything is unclear: ${others.length ? 'the questions still open, ' : ''}anything the answer opens up, a behaviour that is vague or reads "Not worked out yet", or work too big for one go. ask() each new question on ${key}, so it is a line in Open questions, and leave the item needing a decision.`,
+    '   - Ready for adoption if nothing is: every behaviour clear and testable, and nothing open. Then mark it so.',
     '',
-    `How: open a refinement with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, answers: ["${question.id}"], item_ready: ${others.length ? 'false' : 'true'}). Changes to other items go into the same refinement. A person adopts the refinement, and that applies the answer. If the answer leaves something you can't decide, ask() it on ${key} instead of guessing.`,
+    `How: open a refinement with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, answers: ["${question.id}"]), adding item_ready: true and ready_for_adoption: [every behaviour ID in it] when it is ready for adoption. Changes to other items go into the same refinement. A person adopts the refinement, and that applies the answer. Never guess at what the answer leaves open: ask() it.`,
   ].join('\n');
 }
 
