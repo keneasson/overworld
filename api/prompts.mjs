@@ -3,12 +3,50 @@
 // build on this, so an agent gets the same picture of an item however the work reaches it.
 
 import { STATUS_LABEL } from '../shared/schema.js';
-import { editableOf, itemKeyOf, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { OTHER_CHANGES, editableOf, itemKeyOf, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { isOpen, threadsOf } from '../shared/annotations.js';
 
 const SIBLINGS_SHOWN = 30;
 
 export const quote = (s) => String(s).split('\n').map((l) => `> ${l}`).join('\n');
 export const stateWords = (status) => (STATUS_LABEL[status] ?? status).toLowerCase();
+
+/** What a comment is anchored to, in words: the first line, then any quoted words. */
+export function anchorWords(a = {}) {
+  if (a.refinement) {
+    const what = a.behaviour === OTHER_CHANGES ? 'the other changes (title and sections)' : `behaviour ${a.behaviour}`;
+    return a.quote ? [`on these words of ${what}, as your refinement ${a.refinement} proposes it:`, quote(a.quote)] : [`on ${what}, as your refinement ${a.refinement} proposes it`];
+  }
+  switch (a.on) {
+    case 'place':
+      return ['on its place on the map'];
+    case 'changeset':
+      return ['on the changeset of edits in this area that are not on GitHub yet, as a whole'];
+    case 'section':
+      return [`on the whole ${a.section} section`];
+    case 'behaviour':
+      return [`on behaviour ${a.behaviour}`];
+    case 'image':
+      return [`on an image in ${a.section} (${a.src}${a.quote ? `, "${a.quote}"` : ''})`];
+    default:
+      return a.quote ? [`on these words in ${a.behaviour ? `behaviour ${a.behaviour}` : a.section}:`, quote(a.quote)] : [`on ${a.behaviour ?? a.section}`];
+  }
+}
+
+/** The item's comments still open (#15 NOTE-07), oldest first: each with what it is anchored to and its whole thread. */
+function openComments(comments, key) {
+  const open = threadsOf(comments.filter((c) => c.itemKey === key)).filter((t) => isOpen(t.root));
+  if (!open.length) return [];
+  const said = (c) => `${c.author}: ${c.text.replace(/\n/g, ' ')}`;
+  return [
+    '',
+    `Its open comments (${open.length}), each with what it is on and its thread. Take them into account; they are not settled:`,
+    ...open.flatMap(({ root, replies }) => {
+      const [where, ...quoted] = anchorWords(root.anchor);
+      return [`- ${root.author}, ${where}`, ...quoted.map((q) => q.replace(/^/gm, '  ')), `  ${said(root)}`, ...replies.map((r) => `  - ${said(r)}`)];
+    }),
+  ];
+}
 
 /** The item as it stands, then where it sits: lines of a prompt. */
 export function itemContext(nodes, node) {
@@ -31,9 +69,10 @@ export function itemContext(nodes, node) {
 /**
  * The prompt a build goes out with (#14 HANDOFF-01): the behaviours to build, the issue's acceptance and out of scope, and
  * the map around it, its parent, its neighbours and its roads, so a builder needs no chat history.
- * @param {{ nodes: object[], node: object, behaviours: { id: string, text: string }[] }} o
+ * Its comments still open come with it (#15 NOTE-07).
+ * @param {{ nodes: object[], node: object, behaviours: { id: string, text: string }[], comments?: object[] }} o
  */
-export function buildPrompt({ nodes, node, behaviours }) {
+export function buildPrompt({ nodes, node, behaviours, comments = [] }) {
   const key = itemKeyOf(node);
   const issue = parseIssue(editableOf(node).markdown);
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -50,6 +89,7 @@ export function buildPrompt({ nodes, node, behaviours }) {
     ...behaviours.map((b) => `- ${b.id} ${b.text}`),
     ...(section('Acceptance') ? ['', 'Its acceptance:', section('Acceptance')] : []),
     ...(section('Out of scope') ? ['', 'Out of scope, so leave it alone:', section('Out of scope')] : []),
+    ...openComments(comments, key),
     '',
     ...itemContext(nodes, node),
     ...(roads.length ? ['Its roads:', ...roads] : ['It has no roads to other items.']),

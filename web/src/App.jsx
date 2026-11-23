@@ -6,7 +6,7 @@ import { api, AuthError, setAccessKey, storage } from './api.js';
 import { buildScene } from './map/scene.js';
 import { MapView } from './map/MapView.jsx';
 import { LENS_BY_ID, lensesWith, needsApproval } from './map/lenses.js';
-import { Breadcrumbs, Chips, CommentToggle, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
+import { Breadcrumbs, Chips, CommentToggle, escapeDoes, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
 import { Composer, YouContext } from './editor/Annotate.jsx';
 import { Details, Results, ReviewList } from './components/Panel.jsx';
 import { useItemEditing } from './editor/useItemEditing.js';
@@ -429,10 +429,10 @@ export function App() {
       if (e.key !== 'Escape' || drawerOpen) return;
       if (connectOpen) return setConnectOpen(false);
       const el = document.activeElement;
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable || el?.closest?.('.thread-pop')) return;
-      // Esc switches the Comment control off before it closes anything (NOTE-16).
-      if (commenting) return setCommenting(false);
-      closePanel();
+      const inBox = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el?.tagName) || el?.isContentEditable || Boolean(el?.closest?.('.thread-pop'));
+      const does = escapeDoes({ commenting, inBox });
+      if (does === 'stop commenting') setCommenting(false);
+      else if (does === 'close') closePanel();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
