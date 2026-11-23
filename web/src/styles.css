@@ -2823,3 +2823,28 @@ button.danger.armed {
   flex-wrap: wrap;
   gap: 8px;
 }
+
+/* Find (#53): the filter chips above a list of matches, and each match's markers. */
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+.filter-chips .chip {
+  font-size: 12px;
+  height: 28px;
+  padding: 0 10px;
+}
+.match-count {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.match-markers {
+  display: inline-flex;
+  gap: 3px;
+}
+.row.match.active {
+  background: var(--accent-soft);
+}

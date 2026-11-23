@@ -8,7 +8,10 @@ import { MapView } from './map/MapView.jsx';
 import { LENS_BY_ID, lensesWith, needsApproval } from './map/lenses.js';
 import { Breadcrumbs, Chips, CommentToggle, escapeDoes, Hint, LayerButton, Legend, MapControls, SearchBar, Toasts } from './components/Chrome.jsx';
 import { Composer, YouContext } from './editor/Annotate.jsx';
-import { Details, Results, ReviewList } from './components/Panel.jsx';
+import { Details, ReviewList } from './components/Panel.jsx';
+import { Matches } from './components/Matches.jsx';
+import { search } from './model/search.js';
+import { findList } from './model/find.js';
 import { useItemEditing } from './editor/useItemEditing.js';
 import { isMapped } from './editor/items.js';
 import { Drawer, Unlock } from './components/Drawer.jsx';
@@ -119,6 +122,12 @@ export function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [focusId, setFocusId] = useState(null);
+  // Find (#53): what the search box holds, the filter chips chosen (kept until cleared, FIND-03), the row the arrows are on,
+  // and the part of the world in view, which the list puts first.
+  const [query, setQuery] = useState('');
+  const [chosen, setChosen] = useState([]);
+  const [findActive, setFindActive] = useState(0);
+  const [visible, setVisible] = useState(null);
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [sheetFull, setSheetFull] = useState(false);
@@ -336,11 +345,15 @@ export function App() {
   const hashTimer = useRef(0);
   const onView = useCallback(() => {
     clearTimeout(hashTimer.current);
-    hashTimer.current = setTimeout(writeHash, 400);
+    hashTimer.current = setTimeout(() => {
+      writeHash();
+      setVisible(mapRef.current?.visible() ?? null);
+    }, 400);
   }, [writeHash]);
 
   // The Review lens's list is the Review list (REVIEW-05): the chip beside Fog and Bugs is the one way in (REVIEW-01).
-  const panelMode = selected ? 'details' : resultsOpen && lensId === 'approval' ? 'review' : resultsOpen && offered.matches ? 'results' : null;
+  const searching = Boolean(query.trim());
+  const panelMode = selected ? 'details' : searching ? 'find' : resultsOpen && lensId === 'approval' ? 'review' : resultsOpen && offered.matches ? 'results' : null;
   const insets = useMemo(() => {
     if (mobile) return { top: 130, bottom: panelMode ? Math.round(window.innerHeight * (sheetFull ? 0.92 : 0.46)) : 72 };
     return { left: panelMode ? panelW + 24 : 0, top: 60 };
@@ -413,12 +426,15 @@ export function App() {
   );
   const setLens = useCallback((id) => {
     setLensId(id);
+    setChosen([]);
     const hasResults = Boolean(LENS_BY_ID[id].matches);
     setResultsOpen(hasResults);
     if (hasResults) setSelectedId(null);
   }, []);
   const closePanel = useCallback(() => {
     setSelectedId(null);
+    setQuery('');
+    setChosen([]);
     setResultsOpen(false);
     setReviewingId(null);
     setSheetFull(false);
@@ -508,6 +524,42 @@ export function App() {
   const approval = useMemo(() => needsApproval(review), [review]);
   const lenses = useMemo(() => lensesWith(approval), [approval]);
   const lens = lensId === approval.id ? approval : offered;
+
+  // Find (#53): a search, or a lens with a list, gives a list of matches; the map marks them, the ones in view come first
+  // (FIND-01), and chips from what those in view carry narrow both (FIND-02). The list follows the view (FIND-03).
+  const listing = panelMode === 'find' || panelMode === 'results';
+  const matches = useMemo(() => {
+    if (!tree || !listing) return [];
+    if (panelMode === 'find') return search(tree, query, Infinity);
+    const list = tree.list.filter((n) => lens.matches(n));
+    return (lens.sort ? list.sort(lens.sort) : list).map((node) => ({ node }));
+  }, [tree, listing, panelMode, query, lens]);
+  const found = useMemo(() => {
+    if (!listing) return null;
+    const inView = (n) => {
+      const at = visible && scene?.geo.get(n.id)?.label;
+      return Boolean(at) && at[0] >= visible[0] && at[0] <= visible[2] && at[1] >= visible[1] && at[1] <= visible[3];
+    };
+    return findList(matches, chosen, inView);
+  }, [listing, matches, chosen, visible, scene]);
+  // A lens already colours its matches, so the map rings them only once chips narrow them; a search's are always ringed.
+  const marked = found && (panelMode === 'find' || chosen.length) ? found.marked : null;
+  useEffect(() => setFindActive(0), [query, chosen]);
+  useEffect(() => {
+    if (!searching) setChosen([]);
+  }, [searching]);
+  // The panel opening or closing changes what is in view beside it.
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(mapRef.current?.visible() ?? null), 50);
+    return () => clearTimeout(t);
+  }, [panelMode, scene, panelW]);
+  const pickMatch = useCallback(
+    (m) => {
+      pick(m.node.id);
+      setQuery('');
+    },
+    [pick],
+  );
   // Choosing the Review lens fetches what's waiting now, so its count and list are fresh the moment it opens (REVIEW-01).
   useEffect(() => {
     if (lensId !== approval.id) return;
@@ -761,6 +813,7 @@ export function App() {
           initialView={initial.view}
           commenting={commenting}
           outlineId={placePick?.id ?? null}
+          marked={marked}
           onSelect={onMapSelect}
           onMarker={pick}
           onCommentPick={onCommentPick}
@@ -772,7 +825,21 @@ export function App() {
       )}
 
       <div className="top">
-        <SearchBar tree={tree} projectTitle={tree?.root.title} onPick={pick} onMenu={() => setDrawerOpen(true)} />
+        <SearchBar
+          q={query}
+          projectTitle={tree?.root.title}
+          onQuery={(q) => {
+            setQuery(q);
+            if (q.trim()) setSelectedId(null);
+          }}
+          onMove={(d) => setFindActive((a) => Math.max(0, Math.min((found?.rows.length ?? 1) - 1, a + d)))}
+          onEnter={() => {
+            const m = panelMode === 'find' && found?.rows[findActive];
+            if (m) pickMatch(m);
+            return Boolean(m);
+          }}
+          onMenu={() => setDrawerOpen(true)}
+        />
         {tree && <Chips tree={tree} lensId={lensId} setLens={setLens} showLinks={showLinks} setShowLinks={setShowLinks} lenses={lenses} />}
         {tree && <Breadcrumbs tree={tree} focusId={focusId} onFly={(id) => mapRef.current?.flyTo(id)} />}
       </div>
@@ -823,7 +890,33 @@ export function App() {
                   }}
                 />
               )}
-              {panelMode === 'results' && <Results lens={lens} tree={tree} focusId={focusId} onPick={pick} onClose={() => setResultsOpen(false)} />}
+              {panelMode === 'find' && (
+                <Matches
+                  eyebrow={<><Icon name="search" size={14} /> Search</>}
+                  heading={`${found.rows.length} ${found.rows.length === 1 ? 'match' : 'matches'} for “${query.trim()}”`}
+                  list={found}
+                  chosen={chosen}
+                  active={findActive}
+                  live={live}
+                  onChoose={setChosen}
+                  onPick={pickMatch}
+                  onClose={closePanel}
+                />
+              )}
+              {panelMode === 'results' && (
+                <Matches
+                  eyebrow={<><span aria-hidden="true">{lens.icon}</span> {lens.name}</>}
+                  heading={`${found.rows.length} ${lens.chip.toLowerCase()} in the project`}
+                  blurb={lens.blurb}
+                  list={found}
+                  chosen={chosen}
+                  live={live}
+                  stat={lens.stat}
+                  onChoose={setChosen}
+                  onPick={(m) => pick(m.node.id)}
+                  onClose={() => (setResultsOpen(false), setChosen([]))}
+                />
+              )}
               {panelMode === 'review' && <ReviewList review={review} onPick={pickReview} onClose={closePanel} />}
               </ErrorBoundary>
             </div>

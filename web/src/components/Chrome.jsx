@@ -5,16 +5,14 @@ import { renderThumbnail } from '../map/scene.js';
 import { symbolsInUse } from '../map/labels.js';
 import { symbolPath } from '../map/symbols.js';
 import { pathOf } from '../model/tree.js';
-import { search } from '../model/search.js';
 import { Icon } from './Icon.jsx';
-import { KindBadge } from './Panel.jsx';
 
-export function SearchBar({ tree, projectTitle, onPick, onMenu }) {
-  const [q, setQ] = useState('');
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
+/**
+ * The search box. What it finds is listed in the panel, beside the map that marks it (#53 FIND-01): arrows move through the
+ * list and Enter picks, so the box is the keyboard's way into the list. `/` focuses it from anywhere.
+ */
+export function SearchBar({ q, projectTitle, onQuery, onMove, onEnter, onMenu }) {
   const inputRef = useRef(null);
-  const results = useMemo(() => search(tree, q), [q, tree]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -27,13 +25,6 @@ export function SearchBar({ tree, projectTitle, onPick, onMenu }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const pick = ({ node }) => {
-    onPick(node.id);
-    setOpen(false);
-    setQ('');
-    inputRef.current?.blur();
-  };
-
   return (
     <div className="search" role="search">
       <button className="icon-btn" onClick={onMenu} aria-label="Projects and settings">
@@ -44,57 +35,26 @@ export function SearchBar({ tree, projectTitle, onPick, onMenu }) {
         value={q}
         placeholder={projectTitle ? `Search ${projectTitle}` : 'Search'}
         aria-label="Search this project"
-        aria-expanded={open && results.length > 0}
-        aria-controls="search-results"
-        role="combobox"
-        onChange={(e) => {
-          setQ(e.target.value);
-          setOpen(true);
-          setActive(0);
-        }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onChange={(e) => onQuery(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'ArrowDown') setActive((a) => Math.min(results.length - 1, a + 1));
-          else if (e.key === 'ArrowUp') setActive((a) => Math.max(0, a - 1));
-          else if (e.key === 'Enter' && results[active]) pick(results[active]);
+          if (e.key === 'ArrowDown') onMove(1);
+          else if (e.key === 'ArrowUp') onMove(-1);
+          else if (e.key === 'Enter') onEnter() && inputRef.current?.blur();
           else if (e.key === 'Escape') {
-            setQ('');
+            onQuery('');
             inputRef.current?.blur();
           } else return;
           e.preventDefault();
         }}
       />
       {q ? (
-        <button className="icon-btn" onClick={() => setQ('')} aria-label="Clear search">
+        <button className="icon-btn" onClick={() => onQuery('')} aria-label="Clear search">
           <Icon name="close" />
         </button>
       ) : (
         <span className="search-icon">
           <Icon name="search" />
         </span>
-      )}
-      {open && results.length > 0 && (
-        <ul className="search-results" id="search-results" role="listbox">
-          {results.map((r, i) => (
-            <li key={r.behaviour ? `${r.node.id}:${r.behaviour.id}` : r.node.id} role="option" aria-selected={i === active}>
-              <button className={i === active ? 'active' : ''} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(r)}>
-                <KindBadge kind={r.behaviour ? 'behavior' : r.node.kind} />
-                <span className="row-main">
-                  <span className="row-title">{r.behaviour ? `${r.behaviour.id} ${r.behaviour.words}` : r.node.title}</span>
-                  <span className="row-sub">
-                    {r.behaviour
-                      ? r.node.title
-                      : pathOf(r.node)
-                          .slice(1, -1)
-                          .map((p) => p.title)
-                          .join(' › ') || 'Project'}
-                  </span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
       )}
     </div>
   );
@@ -149,7 +109,7 @@ export function Breadcrumbs({ tree, focusId, onFly }) {
   );
 }
 
-function MapSymbol({ name, size = 14 }) {
+export function MapSymbol({ name, size = 14 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d={symbolPath(name)} />
