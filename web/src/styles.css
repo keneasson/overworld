@@ -1174,6 +1174,7 @@ section h3 {
   flex: 1;
 }
 button.primary,
+a.button.primary,
 .button-row button,
 .inline-form button,
 .stack-form button,
@@ -1193,7 +1194,11 @@ button.primary,
   font-weight: 500;
   white-space: nowrap;
 }
-button.primary {
+a.button.primary {
+  text-decoration: none;
+}
+button.primary,
+a.button.primary {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--surface);

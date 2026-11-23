@@ -27,11 +27,25 @@ Parameters:
   GitHubAppSlug:
     Type: String
     Default: ''
+  SignInGitHubClientId:
+    Type: String
+    Default: ''
+    Description: The GitHub OAuth App people sign in with (#52). Empty keeps sign-in off and the access key the way in. Its secret, and the bridge secret, are SecureString parameters under /<stack>/sign-in/ (scripts/sign-in-secrets.mjs).
+  SignInAllowed:
+    Type: String
+    Default: ''
+    Description: The GitHub logins let in, comma-separated, until the store decides who may reach a project (#56). Empty lets nobody in by signing in.
+  SignInBaseUrl:
+    Type: String
+    Default: ''
+    Description: Where the app is served, if not its function URL. The GitHub OAuth App's callback is <this>/api/auth/github/callback.
 
 Conditions:
   IsPreview: !Equals [!Ref Stage, preview]
   HasBoundary: !Not [!Equals [!Ref PermissionsBoundary, '']]
   HasGitHubApp: !And [!Not [!Equals [!Ref GitHubAppId, '']], !Not [!Equals [!Ref GitHubInstallationId, '']]]
+  # Previews never sign in: they have no OAuth App of their own, and keep the access key (SHIP-11).
+  HasSignIn: !And [!Not [!Equals [!Ref SignInGitHubClientId, '']], !Not [!Condition IsPreview]]
 
 Resources:
   Table:
@@ -90,11 +104,25 @@ Resources:
           GITHUB_APP_SSM_PREFIX: !Sub /${AWS::StackName}/github-app
           SCHEDULER_ROLE_ARN: !GetAtt SchedulerRole.Arn
           SCHEDULE_PREFIX: !Ref AWS::StackName
+          # Sign-in with GitHub (#52); off without the OAuth App's client id.
+          SIGN_IN_POOL_ID: !If [HasSignIn, !Ref SignInPool, '']
+          SIGN_IN_CLIENT_ID: !If [HasSignIn, !Ref SignInClient, '']
+          SIGN_IN_GITHUB_CLIENT_ID: !If [HasSignIn, !Ref SignInGitHubClientId, '']
+          SIGN_IN_SSM_PREFIX: !Sub /${AWS::StackName}/sign-in
+          SIGN_IN_ALLOWED: !Ref SignInAllowed
+          SIGN_IN_BASE_URL: !Ref SignInBaseUrl
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref Table
         - SSMParameterReadPolicy:
             ParameterName: !Sub ${AWS::StackName}/github-app/*
+        - SSMParameterReadPolicy:
+            ParameterName: !Sub ${AWS::StackName}/sign-in/*
+        - Statement:
+            # Sign-in's bridge (free-tier-auth): native pool users for GitHub people, signed in by custom auth, and the client's secret.
+            - Effect: Allow
+              Action: [cognito-idp:AdminCreateUser, cognito-idp:AdminSetUserPassword, cognito-idp:AdminInitiateAuth, cognito-idp:AdminRespondToAuthChallenge, cognito-idp:RevokeToken, cognito-idp:DescribeUserPoolClient]
+              Resource: !If [HasSignIn, !GetAtt SignInPool.Arn, !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/none']
         - Statement:
             # One-off retry schedules for this stack's sync, which delete themselves after running.
             - Effect: Allow
@@ -133,6 +161,70 @@ Resources:
       Tags:
         app: projectmap
         stage: !Ref Stage
+
+  # Sign-in with GitHub (#52), from packages/free-tier-auth/template.yaml: a Lite-tier pool with no federated provider, so
+  # GitHub people count as direct users, and the triggers that check the bridge's answer.
+  SignInTriggers:
+    Type: AWS::Serverless::Function
+    Condition: HasSignIn
+    Properties:
+      Description: Overworld sign-in's Cognito triggers (free-tier-auth)
+      CodeUri: packages/free-tier-auth/
+      Handler: src/triggers.handler
+      Runtime: nodejs24.x
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 5
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
+      Environment:
+        Variables:
+          BRIDGE_SECRET_PARAMETER: !Sub /${AWS::StackName}/sign-in/bridge-secret
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Sub ${AWS::StackName}/sign-in/bridge-secret
+      Tags:
+        app: projectmap
+
+  SignInPool:
+    Type: AWS::Cognito::UserPool
+    Condition: HasSignIn
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-people
+      UserPoolTier: LITE
+      UsernameConfiguration: { CaseSensitive: false }
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: true }
+      AccountRecoverySetting: { RecoveryMechanisms: [{ Name: admin_only, Priority: 1 }] }
+      LambdaConfig:
+        PreSignUp: !GetAtt SignInTriggers.Arn
+        DefineAuthChallenge: !GetAtt SignInTriggers.Arn
+        CreateAuthChallenge: !GetAtt SignInTriggers.Arn
+        VerifyAuthChallengeResponse: !GetAtt SignInTriggers.Arn
+      UserPoolTags: { app: projectmap }
+
+  SignInTriggersPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasSignIn
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SignInTriggers
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt SignInPool.Arn
+
+  SignInClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: HasSignIn
+    Properties:
+      UserPoolId: !Ref SignInPool
+      GenerateSecret: true
+      ExplicitAuthFlows: [ALLOW_CUSTOM_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      RefreshTokenValidity: 30
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      TokenValidityUnits: { RefreshToken: days, AccessToken: minutes, IdToken: minutes }
 
   # Where sync's retry schedules get their permission to wake the function, and nothing more.
   SchedulerRole:

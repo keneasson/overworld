@@ -1,4 +1,12 @@
-export class AuthError extends Error {}
+// Not let in: `signIn` lists the providers to sign in with (#52), empty when only the access key opens it; `notLetIn` means
+// signed in, but this account hasn't been let in.
+export class AuthError extends Error {
+  constructor(message, { signIn = [], notLetIn = false } = {}) {
+    super(message);
+    this.signIn = signIn;
+    this.notLetIn = notLetIn;
+  }
+}
 
 const KEY = 'projectmap.key';
 const storage = {
@@ -30,16 +38,20 @@ export function setAccessKey(k) {
 async function request(method, path, body) {
   const res = await fetch(path, {
     method,
-    headers: { 'content-type': 'application/json', ...(accessKey ? { 'x-projectmap-key': accessKey } : {}) },
+    // The CSRF header: a signed-in person's changes must carry it (#52), and a page on another site can't send it.
+    headers: { 'content-type': 'application/json', 'x-projectmap-csrf': '1', ...(accessKey ? { 'x-projectmap-key': accessKey } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401) throw new AuthError(data.error ?? 'Access key required');
+  if (res.status === 401) throw new AuthError(data.error ?? 'Access key required', { signIn: data.signIn ?? [] });
+  if (res.status === 403 && data.notLetIn) throw new AuthError(data.error, { notLetIn: true });
   if (!res.ok) throw Object.assign(new Error(data.error ?? `Request failed (${res.status})`), { status: res.status, conflicts: data.conflicts });
   return data;
 }
 
 export const api = {
+  session: () => request('GET', '/api/session'),
+  signOut: () => fetch('/api/auth/signout', { method: 'POST', headers: { 'x-projectmap-csrf': '1' } }),
   listProjects: () => request('GET', '/api/projects'),
   getProject: (id) => request('GET', `/api/projects/${id}`),
   createProject: (body) => request('POST', '/api/projects', body),

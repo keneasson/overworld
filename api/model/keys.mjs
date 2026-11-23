@@ -25,6 +25,7 @@
 //   Action    PROJECT#<id>    ACTION#<at>#<id>   ACTIONS#<id>#<agentId> <at>   what an agent changed (MCP-14)
 //   Request   PROJECT#<id>    KEY#<agentId>#<requestKey>  a change's result, kept a day for repeats (MCP-12)
 //   Limit     PROJECT#<id>    LIMIT#<agentId>#<minute>    an agent's calls this minute (MCP-13)
+//   Sign-in   SIGNIN#<kind>   <rest of the record's name>  a session (by its hash), person, identity or sign-in state (#52)
 //   Finding   PROJECT#<id>    COHERE#<pairKey>   two behaviours close in meaning, the model that found them, and a judgement (#36 COHERE-04)
 //   Coverage  PROJECT#<id>    COVERAGE           the latest coverage report from CI, compressed (#20 COVER-03)
 //   Photo     PROJECT#<id>    IMAGE#<itemKey>#<photoId>  a screenshot in an item's Photos: what it is, not its bytes (#16)
@@ -105,6 +106,8 @@ export const keys = {
   inboxOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: 'INBOX#' }),
   finding: (projectId, key) => ({ PK: projectPartition(projectId), SK: `COHERE#${key}` }),
   findingsOf: (projectId) => ({ pk: projectPartition(projectId), skBeginsWith: 'COHERE#' }),
+  signIn: (kind, rest) => ({ PK: `SIGNIN#${kind}`, SK: rest || '#' }),
+  signInsOf: (kind, rest = '') => ({ pk: `SIGNIN#${kind}`, ...(rest ? { skBeginsWith: rest } : {}) }),
   commentsOf: (projectId, itemKey = '') => ({ pk: projectPartition(projectId), skBeginsWith: `${COMMENT_PREFIX}${itemKey ? `${itemKey}#` : ''}` }),
 };
 

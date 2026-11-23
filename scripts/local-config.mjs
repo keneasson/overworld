@@ -28,3 +28,17 @@ export function readGitHubApp() {
   const { appId, installationId, slug } = JSON.parse(readFileSync(GITHUB_APP_CONFIG, 'utf8'));
   return { appId, installationId, slug, privateKey: async () => readFileSync(GITHUB_APP_KEY, 'utf8') };
 }
+
+// Sign-in with GitHub (#52): sign-in.json holds the OAuth App's client id, the GitHub logins let in and, if the app isn't served
+// at its function URL, where it is ({ githubClientId, allowed: "ada, bob", baseUrl }). github-oauth-secret holds the OAuth App's
+// client secret, and sign-in-bridge-secret the bridge's; scripts/sign-in-secrets.mjs puts both into SSM.
+export const SIGN_IN_CONFIG = `${dir}sign-in.json`;
+export const SIGN_IN_GITHUB_SECRET = `${dir}github-oauth-secret`;
+export const SIGN_IN_BRIDGE_SECRET = `${dir}sign-in-bridge-secret`;
+
+/** The ids sign-in is deployed with, or null when this checkout has none. Never the secrets. */
+export function readSignIn() {
+  if (!existsSync(SIGN_IN_CONFIG)) return null;
+  const { githubClientId, allowed, baseUrl } = JSON.parse(readFileSync(SIGN_IN_CONFIG, 'utf8'));
+  return { githubClientId, allowed: Array.isArray(allowed) ? allowed.join(',') : allowed, baseUrl };
+}

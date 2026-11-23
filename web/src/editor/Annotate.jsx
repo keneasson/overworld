@@ -9,7 +9,7 @@ import { commentHtml } from './comment-text.js';
 import { useLinks } from '../components/links-context.js';
 
 // Who is commenting (#15 NOTE-21): the name saved in this browser, and how to save one. With none saved, the box asks for it
-// before posting, so no comment shows as "Someone". Sign-in replaces this (#52 AUTH-07).
+// before posting, so no comment shows as "Someone". Signed in, the person's own name is used and nobody is asked (#52 AUTH-07).
 export const YouContext = createContext({ you: '', setYou: null });
 
 export function useAskName() {

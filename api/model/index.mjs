@@ -13,6 +13,7 @@ import { coverage } from './access-patterns/coverage.mjs';
 import { photos, uploads } from './access-patterns/photos.mjs';
 import { audits, budgets, jobs, leases, links } from './access-patterns/sync.mjs';
 import { findings } from './access-patterns/coherence.mjs';
+import { signIn } from './access-patterns/sign-in.mjs';
 import { actions, agents, builds, claims, facts, handoffs, limits, requests } from './access-patterns/agents.mjs';
 
 export async function createModel(env = process.env) {
@@ -27,5 +28,6 @@ export function modelFor(table) {
     findings: findings(table),
     coverage: coverage(table),
     photos: photos(table), uploads: uploads(table),
+    signIn: signIn(table),
   };
 }

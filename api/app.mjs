@@ -1,4 +1,5 @@
-// HTTP-agnostic API. `handle({ method, path, headers, body })` -> { status, body }.
+// HTTP-agnostic API. `handle({ method, path, headers, query, body })` -> { status, body }, or, for sign-in's routes,
+// { status, headers, cookies, raw } with the body already written.
 // Used by the Lambda handler in AWS and by the Vite dev server locally.
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -44,16 +45,41 @@ const digest = (s) => createHash('sha256').update(String(s)).digest();
  * @param {(projectId: string) => void} [o.onSaved] runs after a save: in AWS the table's stream wakes the worker instead
  * @param {() => number} [o.clock] the time, in milliseconds: agents' claims, limits and standups, and comments' times, run on it
  * @param {number} [o.agentCallsPerMinute] each agent's limit on MCP tool calls
+ * @param {object} [o.auth] sign-in with GitHub (#52): a free-tier-auth instance, mounted at /api/auth. With it, people sign in, and
+ *   the access key is left for scripts (AUTH-08)
+ * @param {(person: object) => boolean} [o.mayEnter] who of those signed in may reach the app, until the store decides it (#56)
  */
-export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, stores = createStores({ fetchImpl }), webhookSecret = null, onSaved = null, clock = Date.now, agentCallsPerMinute }) {
+export function createApi({ model, accessKey = '', fetchImpl = fetch, log = console, sync = null, stores = createStores({ fetchImpl }), webhookSecret = null, onSaved = null, clock = Date.now, agentCallsPerMinute, auth = null, mayEnter = () => false }) {
   const expected = accessKey ? digest(accessKey) : null;
   const agents = createAgents({ model, clock, callsPerMinute: agentCallsPerMinute });
 
-  function authorize(headers) {
-    if (!expected) return;
+  const signIn = auth ? auth.providers : [];
+  const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+  // Who is calling: a signed-in person, or null for a script holding the access key (or anyone, when neither is set up, as in
+  // local development). With sign-in, people come in through it and the key is only for scripts (AUTH-08).
+  async function authorize(headers, method) {
     const given = headers['x-projectmap-key'] ?? headers.authorization?.replace(/^Bearer\s+/i, '') ?? '';
-    if (!given || !timingSafeEqual(digest(given), expected)) throw new HttpError(401, 'Access key required');
+    if (expected && given && timingSafeEqual(digest(given), expected)) return null;
+    const person = auth ? await auth.person(headers) : null;
+    if (person) {
+      if (!mayEnter(person)) throw Object.assign(new HttpError(403, `${person.profile?.login ?? 'This account'} hasn't been let in to this Overworld yet`), { extra: { notLetIn: true } });
+      // The session rides in a cookie, so a change must also carry a header a page on another site can't send without CORS,
+      // which this API never grants: a forged form or fetch from elsewhere is refused.
+      if (!SAFE.has(method) && headers['x-projectmap-csrf'] !== '1') throw new HttpError(403, 'Missing the x-projectmap-csrf header');
+      return person;
+    }
+    if (!expected && !auth) return null;
+    throw Object.assign(new HttpError(401, auth ? 'Sign in first' : 'Access key required'), { extra: { signIn } });
   }
+
+  // The name a signed-in person's changes and comments carry (AUTH-07), whatever the request says.
+  const nameOf = (person) => String(person.profile?.name || person.profile?.login || 'Someone').trim().slice(0, 80);
+  const asPerson = (body, person) => {
+    if (!person || !body || typeof body !== 'object' || Array.isArray(body)) return body;
+    const name = nameOf(person);
+    return { ...body, ...('author' in body ? { author: name } : {}), ...('by' in body ? { by: name } : {}) };
+  };
 
   async function loadProject(id) {
     const data = await model.projects.getWithNodes(id);
@@ -319,9 +345,10 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
   }
 
   const routes = [
-    ['GET', /^\/api\/health$/, async () => ({ ok: true, auth: Boolean(expected) }), { public: true }],
+    ['GET', /^\/api\/health$/, async () => ({ ok: true, auth: Boolean(expected || auth), signIn }), { public: true }],
 
-    ['GET', /^\/api\/session$/, async () => ({ ok: true })],
+    // Who is signed in, if anyone (AUTH-07): the app writes as them, and offers to sign out.
+    ['GET', /^\/api\/session$/, async ({ person }) => ({ ok: true, signIn, ...(person ? { person: { name: nameOf(person), login: person.profile?.login ?? null, picture: person.profile?.picture ?? null } } : {}) })],
 
     [
       'GET',
@@ -1390,15 +1417,20 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
 
   return handle;
 
-  async function handle({ method, path, headers = {}, body = null, rawBody = null, rawBytes = null, trusted = false }) {
+  async function handle({ method, path, headers = {}, query = {}, body = null, rawBody = null, rawBytes = null, trusted = false }) {
     try {
       if (path === '/api/mcp') return await mcp({ method, headers, body });
+      // Sign-in's own routes (#52): /api/auth/github, its callback, /api/auth/me and /api/auth/signout. They answer with cookies.
+      if (auth && !trusted && (path === '/api/auth' || path.startsWith('/api/auth/'))) {
+        const out = await auth.handle({ method, path, query, headers });
+        if (out) return { status: out.status, headers: out.headers, cookies: out.cookies, raw: out.body };
+      }
       for (const [m, re, fn, opts = {}] of routes) {
         const match = path.match(re);
         if (!match || m !== method) continue;
-        if (!opts.public && !trusted) authorize(headers);
+        const person = !opts.public && !trusted ? await authorize(headers, method) : null;
         if (opts.people && trusted) throw new HttpError(403, 'Only a person can do this');
-        const result = await fn({ params: match.slice(1), body, headers, rawBody, rawBytes });
+        const result = await fn({ params: match.slice(1), body: asPerson(body, person), headers, rawBody, rawBytes, person });
         return { status: opts.status ?? 200, body: result };
       }
       const pathKnown = routes.some(([, re]) => re.test(path));
@@ -1406,7 +1438,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     } catch (err) {
       const status = err.status ?? 500;
       if (status >= 500) log.error?.(err);
-      return { status, body: { error: status >= 500 ? 'Internal error' : err.message, ...(err.conflicts ? { conflicts: err.conflicts } : {}) } };
+      return { status, body: { error: status >= 500 ? 'Internal error' : err.message, ...(err.conflicts ? { conflicts: err.conflicts } : {}), ...(err.extra ?? {}) } };
     }
   }
 }

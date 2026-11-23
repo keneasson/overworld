@@ -41,6 +41,7 @@ model.
 | Photo (a screenshot, #16) | `PROJECT#<id>` | `IMAGE#<itemKey>#<photoId>` | | |
 | Photo part (its bytes) | `PROJECT#<id>` | `IMGPART#<photoId>#<version>#<n>` | | |
 | Upload link | `UPLOAD#<sha256 of the link>` | `UPLOAD` | | |
+| Sign-in record (#52) | `SIGNIN#<kind>` | the rest of its name, e.g. `<session hash>` | | |
 
 A project and its nodes share a partition, and sort last in it (`NODE#…`, then `PROJECT`), so one
 query reads a whole map and nothing else. A new entity in the partition must sort before `NODE#`. Changesets and
@@ -133,6 +134,7 @@ agents' tokens first. The token itself is never stored.
 | Add a screenshot, or a newer one in its place (SHOT-02) | `photos.put(projectId, photo, bytes)` | Batched puts of its parts, PutItem, then batched deletes of the last version's parts |
 | Remove a screenshot | `photos.delete(projectId, photo)` | DeleteItem, Query its parts, batched deletes |
 | Give an agent a one-time link to send a screenshot to; use it (SHOT-04) | `uploads.put(hash, row)`, `uploads.take(hash, now)` | PutItem with TTL; GetItem, DeleteItem |
+| Sign-in's records: a session by its hash, a person, an identity, a sign-in's state; one person's sessions (#52) | `signIn.get` / `put` / `delete`, `signIn.list(prefix)` | GetItem; PutItem with TTL; DeleteItem; Query `PK = SIGNIN#<kind>`, `begins_with(SK, …)` |
 | Count an agent's call this minute | `limits.count(projectId, agentId, minute, limit)` | UpdateItem `ADD`, conditional on the limit |
 
 ## Adding a feature

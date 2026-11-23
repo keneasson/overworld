@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { APP_NAME } from '@shared/brand.js';
 import { Icon } from './Icon.jsx';
 
-export function Drawer({ projects, currentId, onOpen, onClose, onCreate, onDelete, onImportGithub, onRefreshGithub, onImportJson, onExport, onLock, onConnectAgent, busy }) {
+export function Drawer({ projects, currentId, onOpen, onClose, onCreate, onDelete, onImportGithub, onRefreshGithub, onImportJson, onExport, onLock, onConnectAgent, busy, person, onSignOut }) {
   const [title, setTitle] = useState('');
   const [repo, setRepo] = useState('');
   const [token, setToken] = useState('');
@@ -143,17 +143,58 @@ export function Drawer({ projects, currentId, onOpen, onClose, onCreate, onDelet
         </section>
 
         <footer className="drawer-foot">
-          <button className="link-btn" onClick={onLock}>
-            <Icon name="lock" size={16} /> Forget access key on this device
-          </button>
+          {person ? (
+            <button className="link-btn" onClick={onSignOut}>
+              <Icon name="lock" size={16} /> Sign out{person.login ? ` (${person.login})` : ''}
+            </button>
+          ) : (
+            <button className="link-btn" onClick={onLock}>
+              <Icon name="lock" size={16} /> Forget access key on this device
+            </button>
+          )}
         </footer>
       </aside>
     </div>
   );
 }
 
-export function Unlock({ onSubmit, error }) {
+// The start screen. With sign-in set up, people sign in with GitHub and are never asked for the access key, which is left for
+// scripts (#52 AUTH-08); without it, the key opens the app as before.
+export function Unlock({ onSubmit, error, signIn = [], notLetIn = false, message = '', onSignOut }) {
   const [key, setKey] = useState('');
+  const brand = (
+    <>
+      <div className="brand big">
+        <Icon name="map" size={28} /> {APP_NAME}
+      </div>
+      <p>See your project the way you read a map.</p>
+    </>
+  );
+  if (notLetIn)
+    return (
+      <div className="unlock">
+        <div className="unlock-card">
+          {brand}
+          <p className="error">{message}</p>
+          <p className="muted small">Ask whoever runs this {APP_NAME} to let your GitHub account in.</p>
+          <button className="primary" onClick={onSignOut}>
+            Sign out
+          </button>
+        </div>
+      </div>
+    );
+  if (signIn.includes('github'))
+    return (
+      <div className="unlock">
+        <div className="unlock-card">
+          {brand}
+          <a className="button primary" href="/api/auth/github">
+            Sign in with GitHub
+          </a>
+          <p className="muted small">{APP_NAME} asks GitHub only who you are, never for your repositories.</p>
+        </div>
+      </div>
+    );
   return (
     <div className="unlock">
       <form
@@ -163,10 +204,7 @@ export function Unlock({ onSubmit, error }) {
           onSubmit(key.trim());
         }}
       >
-        <div className="brand big">
-          <Icon name="map" size={28} /> {APP_NAME}
-        </div>
-        <p>See your project the way you read a map.</p>
+        {brand}
         <label htmlFor="key">Access key</label>
         <input id="key" type="password" autoComplete="current-password" value={key} onChange={(e) => setKey(e.target.value)} autoFocus required />
         {error && <p className="error">{error}</p>}
