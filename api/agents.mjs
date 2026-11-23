@@ -141,7 +141,9 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
           wanted = top.behaviours.map((b) => ({ id: b.id, node: data.nodes.find((n) => keyOf(n) === top.item) }));
         }
       } else {
-        wanted = placeBehaviours(data.nodes, behaviours.map(String), data.project?.tested);
+        // What this agent already holds it may claim again, to name its pull request, though its item is now in progress.
+        const mine = new Set([...live].filter(([, c]) => c.owner === agent.id).map(([id]) => id));
+        wanted = placeBehaviours(data.nodes, behaviours.map(String), data.project?.tested, mine);
         const held = holders(behaviours, othersHold);
         if (held.length) throw new Refused(`Already claimed: ${held.map((h) => `${h.behaviour} by ${h.agent} until ${h.until}`).join('; ')}`, { held_by: held });
       }
@@ -169,7 +171,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
   }
 
   /** Each named behaviour's item, if it is work an agent may claim, or a refusal saying why not. */
-  function placeBehaviours(nodes, ids, tested = []) {
+  function placeBehaviours(nodes, ids, tested = [], mine = new Set()) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const kids = childrenOf(nodes);
     const have = new Set(tested);
@@ -177,6 +179,10 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     for (const id of ids) {
       const node = nodes.find((n) => behavioursOf(n).some((b) => b.id === id));
       if (!node) throw new Refused(`${id} isn't a behaviour on the map`);
+      if (mine.has(id)) {
+        out.push({ id, node });
+        continue;
+      }
       if (!isWork(node)) throw new Refused(`${id} belongs to ${node.title}, which is ${node.status.replace('_', ' ')}, not ready`);
       if (behavioursOf(node).find((b) => b.id === id).fog) throw new Refused(`${id} isn't worked out yet, so it can't be built`);
       const split = splitOf(node, kids.get(node.id) ?? [], have);
