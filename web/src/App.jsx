@@ -20,6 +20,7 @@ import { LinkContext } from './components/links-context.js';
 import { claimsByNode, openedBy, waitingByNode } from './map/houses.js';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import { waitingForReview } from './model/review.js';
+import { changesetContents } from './model/changesets.js';
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
@@ -487,6 +488,13 @@ export function App() {
     closePanel();
   }, [closePanel]);
 
+  // The changeset's box (#62 SYNC-01): what it holds across issues, and its comments, kept on the area its edits are in.
+  const box = useMemo(() => changesetContents({ tree, edited: editing.edited, unsaved: editing.unsaved, drafts: editing.drafts }), [tree, editing.edited, editing.unsaved, editing.drafts]);
+  const boxArea = box ? itemKeyOf(box.area) : null;
+  useEffect(() => {
+    if (boxArea) loadComments([boxArea]);
+  }, [boxArea, loadComments]);
+
   // Everything waiting on someone's review (#62): the Review lens, its list and the "to review" marker.
   const review = useMemo(() => waitingForReview({ changesets: editing.others, notes: openNotes, tree }), [editing.others, openNotes, tree]);
   const approval = useMemo(() => needsApproval(review), [review]);
@@ -783,6 +791,7 @@ export function App() {
                   builds={builds}
                   claims={claims}
                   review={reviewingId === selected.id ? review : null}
+                  box={box}
                   onNextReview={pickReview}
                   onBuild={build}
                   commenting={commenting}

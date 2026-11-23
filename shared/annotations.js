@@ -5,8 +5,9 @@
 
 import { ValidationError } from './schema.js';
 
-// What an annotation can be about (NOTE-15). Words, a phrase and a paragraph quote their text; the rest name it.
-export const ANCHOR_ON = ['word', 'phrase', 'paragraph', 'behaviour', 'section', 'image', 'place'];
+// What an annotation can be about (NOTE-15). Words, a phrase and a paragraph quote their text; the rest name it. A
+// changeset's comments are on the area its edits are in, about the changeset as a whole (#62 SYNC-01).
+export const ANCHOR_ON = ['word', 'phrase', 'paragraph', 'behaviour', 'section', 'image', 'place', 'changeset'];
 const QUOTED = new Set(['word', 'phrase', 'paragraph']);
 const CONTEXT = 32; // characters kept on each side of a quote, to tell repeated words apart
 
@@ -34,6 +35,7 @@ export function whereOf(a = {}) {
   const on = onOf(a);
   if (a.refinement) return `${a.behaviour ?? 'a change'} in a refinement`;
   if (on === 'place') return 'the place on the map';
+  if (on === 'changeset') return 'the changeset';
   if (on === 'image') return `an image in ${a.section ?? 'the text'}`;
   return a.behaviour ?? a.section ?? 'the text';
 }
@@ -87,7 +89,7 @@ const str = (v, max, what) => {
 /** An anchor as the API keeps it: what it is on, and only what that needs. */
 export function cleanAnchor(a = {}) {
   const on = onOf(a);
-  if (on === 'place') return { on };
+  if (on === 'place' || on === 'changeset') return { on };
   const behaviour = str(a.behaviour, 40, 'anchor.behaviour');
   // On a behaviour as a refinement proposes it (#13 ADOPT-14), not the adopted text: the thread stays with that behaviour
   // through every revision of the refinement.

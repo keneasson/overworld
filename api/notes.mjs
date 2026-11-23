@@ -27,6 +27,8 @@ function anchorWords(a = {}) {
   switch (a.on) {
     case 'place':
       return ['on its place on the map'];
+    case 'changeset':
+      return ['on the changeset of edits in this area that are not on GitHub yet, as a whole'];
     case 'section':
       return [`on the whole ${a.section} section`];
     case 'behaviour':
