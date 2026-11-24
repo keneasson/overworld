@@ -90,3 +90,9 @@ const server = await createServer({
 });
 await server.listen();
 server.printUrls();
+
+// Live documents (prototype): one shared document per item, edited together by people, agents and the store. LIVE=0 turns it off.
+if (process.env.LIVE !== '0') {
+  const { startLiveServer } = await import('./live/server.mjs');
+  await startLiveServer({ api, model, load: (path) => server.ssrLoadModule(path), port: Number(process.env.LIVE_PORT ?? 1234), accessKey: process.env.ACCESS_KEY ?? '' });
+}

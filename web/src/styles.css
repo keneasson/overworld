@@ -3439,3 +3439,89 @@ button.danger.armed {
 .report-actions {
   margin: 16px 0 8px;
 }
+
+/* ---- The live document (prototype): who is here, their carets, and suggestions by author ---- */
+.live-joining {
+  color: var(--muted);
+  font-size: 13px;
+}
+.live-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font: 600 12px/1.4 system-ui, sans-serif;
+}
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #27ae60;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #27ae60 25%, transparent);
+}
+.live-who {
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--who) 16%, transparent);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1.5px var(--who);
+  font-weight: 600;
+}
+.collaboration-carets__caret {
+  position: relative;
+  margin: 0 -1px;
+  border-left: 2px solid;
+  border-right: 0;
+  word-break: normal;
+  pointer-events: none;
+}
+.collaboration-carets__label {
+  position: absolute;
+  top: -1.45em;
+  left: -2px;
+  padding: 1px 6px;
+  border-radius: 4px 4px 4px 0;
+  color: #fff;
+  font: 600 11px/1.3 system-ui, sans-serif;
+  white-space: nowrap;
+  user-select: none;
+}
+.sugg-ins {
+  background: color-mix(in srgb, var(--sugg, #d97757) 22%, transparent);
+  box-shadow: inset 0 -2px 0 var(--sugg, #d97757);
+  text-decoration: none;
+  border-radius: 2px;
+}
+.sugg-del {
+  color: var(--muted);
+  text-decoration: line-through 2px var(--sugg, #d97757);
+}
+.sugg-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 2px 0 4px;
+  padding: 1px 2px 1px 6px;
+  border-radius: 10px;
+  background: var(--sugg, #d97757);
+  color: #fff;
+  font: 600 11px/1.4 system-ui, sans-serif;
+  vertical-align: 1px;
+  white-space: nowrap;
+  user-select: none;
+}
+.sugg-btn {
+  min-width: 20px;
+  height: 18px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--sugg, #d97757);
+  font: 700 11px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+.sugg-btn:hover {
+  background: #fff;
+}

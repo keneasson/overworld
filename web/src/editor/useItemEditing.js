@@ -332,6 +332,15 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
       return false;
     }
   }
+  // A collaborator in the live document posted a comment (prototype): the item's comments are read again.
+  const reloadComments = useCallback(
+    (key) =>
+      api
+        .itemComments(projectId, key)
+        .then((d) => setComments((cs) => [...cs.filter((c) => c.itemKey !== key), ...d.comments]))
+        .catch(() => {}),
+    [projectId, setComments],
+  );
   const replace = (next) => setComments((cs) => cs.map((x) => (x.id === next.id && x.itemKey === next.itemKey ? next : x)));
   // Any comment becomes a child task, new in this changeset like any item added here; its thread says so, and it is dismissed (NOTE-06).
   async function promote(c) {
@@ -437,5 +446,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
     storage.set(NAME, v || null);
   };
 
-  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, split, splitOf, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, movePin, projectId, fail, toast, answer, answerPrompt, hasRead, markRead, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, split, splitOf, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, movePin, projectId, fail, toast, answer, answerPrompt, hasRead, markRead, flush, reloadComments };
 }
