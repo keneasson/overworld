@@ -10,6 +10,7 @@ to be seen running before it merges.
 | `production.yml` | a push to main | the tests, then deploy, smoke test, and roll back to the last version that passed if the smoke test fails (SHIP-02, SHIP-03) |
 | `preview.yml` | a pull request labelled `preview`, from this repository | its own stack `projectmap-pr-<N>` with an empty table, one comment with the URL, torn down on close or unlabel (SHIP-04 to SHIP-07). Sync with GitHub is off in a preview (SHIP-11). |
 | `sweep.yml` | daily at 07:17 UTC, or by hand | tears down previews past their rules, and deletes deployment records nobody needs (SHIP-07, SHIP-08) |
+| `coherence.yml` | after each successful production deploy, hourly at :41, or by hand | the spec's check (#36): embeds the behaviours whose words or model changed, keeps their vectors in Overworld and sends the close pairs (COHERE-08) |
 | `cla.yml` | pull requests | the CLA check |
 | `build.yml` | a build request from Overworld (`repository_dispatch: overworld-build`), or by hand | the project's runner: builds the request with the configured coding agent on `build/<item>-<run>`, and opens a pull request (#14 HANDOFF-07 to HANDOFF-09) |
 
@@ -153,6 +154,15 @@ and passes; the tests still decide CI. Production's run gets the secret through 
 gh secret set OVERWORLD_AGENT_TOKEN -R keneasson/overworld      # an agent token from Connect an agent in Overworld
 gh variable set OVERWORLD_URL -R keneasson/overworld --body https://overworld.kene.info
 ```
+
+## The spec's check (#36)
+
+`coherence.yml` runs `scripts/coherence.mjs` with the same `OVERWORLD_AGENT_TOKEN` and `OVERWORLD_URL` as coverage. Overworld
+keeps each behaviour's vector (int8, about 400 bytes) with its text hash and model, so the job first runs `--plan`, which
+compares them without any model and takes a few seconds. Only when a behaviour changed does it install
+`@huggingface/transformers`, restore the model's weights from the Actions cache and embed what changed. It runs hourly as
+well as after a deploy, because adopting a refinement in Overworld changes the spec without a push. It is its own
+workflow, started by Production's finishing, so it never holds up a deploy.
 
 ## The runner (#14)
 

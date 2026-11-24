@@ -13,6 +13,7 @@ import { coverage } from './access-patterns/coverage.mjs';
 import { photos, uploads } from './access-patterns/photos.mjs';
 import { audits, budgets, jobs, leases, links } from './access-patterns/sync.mjs';
 import { findings } from './access-patterns/coherence.mjs';
+import { vectors } from './access-patterns/vectors.mjs';
 import { signIn } from './access-patterns/sign-in.mjs';
 import { actions, agents, builds, claims, facts, handoffs, limits, requests } from './access-patterns/agents.mjs';
 
@@ -25,7 +26,7 @@ export function modelFor(table) {
     projects: projects(table), nodes: nodes(table), flags: flags(table), errors: errors(table), changesets: changesets(table), comments: comments(table), inbox: inbox(table), questions: questions(table),
     jobs: jobs(table), leases: leases(table), budgets: budgets(table), audits: audits(table), links: links(table),
     agents: agents(table), builds: builds(table), claims: claims(table), handoffs: handoffs(table), facts: facts(table), actions: actions(table), requests: requests(table), limits: limits(table),
-    findings: findings(table),
+    findings: findings(table), vectors: vectors(table),
     coverage: coverage(table),
     photos: photos(table), uploads: uploads(table),
     signIn: signIn(table),

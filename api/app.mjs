@@ -32,6 +32,7 @@ class HttpError extends Error {
 
 const BEHAVIOUR = /^[A-Z][A-Z0-9]*-\d+$/;
 const VERDICTS = ['duplicate', 'contradiction', 'related', 'unrelated'];
+const VECTOR_PAGE = 2000; // about 800 KB of vectors a page, well inside a Lambda response
 
 /** Every behaviour on the map, as the spec's check reads them (#36): { id, item, title, text, hash }. */
 const behavioursOn = (nodes) => nodes.flatMap((n) => behavioursOf(n).map((b) => ({ id: b.id, item: keyOf(n), title: n.title, text: b.text, hash: textHash(b.text) })));
@@ -1080,7 +1081,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     ],
 
     // Every behaviour with the hash of its words: what a check embeds, and how it tells what changed since it last ran.
-    ['GET', /^\/api\/projects\/([\w-]+)\/coherence\/behaviours$/, async ({ params: [pid] }) => ({ behaviours: behavioursOn((await loadProject(pid)).nodes) })],
+    // CI runs the check with the project's agent token (COHERE-08), so these take it as well as the access key.
+    ['GET', /^\/api\/projects\/([\w-]+)\/coherence\/behaviours$/, async ({ params: [pid] }) => ({ behaviours: behavioursOn((await loadProject(pid)).nodes) }), { agents: true }],
 
     [
       'PUT',
@@ -1112,6 +1114,67 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         await model.findings.put(pid, list);
         return { recorded: list.length };
       },
+      { agents: true },
+    ],
+
+    // Each behaviour's vector as the check last kept it (COHERE-08), packed, a page at a time in item and ID order.
+    [
+      'GET',
+      /^\/api\/projects\/([\w-]+)\/vectors$/,
+      async ({ params: [pid], query }) => {
+        await loadProjectHead(pid);
+        const all = await model.vectors.list(pid);
+        const after = String(query?.after ?? '');
+        const from = after ? all.findIndex((v) => `${v.item}:${v.behaviourId}` > after) : 0;
+        const page = from < 0 ? [] : all.slice(from, from + VECTOR_PAGE);
+        const more = from >= 0 && from + VECTOR_PAGE < all.length;
+        return { vectors: page, next: more ? `${page.at(-1).item}:${page.at(-1).behaviourId}` : null };
+      },
+      { agents: true },
+    ],
+
+    [
+      'PUT',
+      /^\/api\/projects\/([\w-]+)\/vectors$/,
+      // A check's new vectors, over the old ones, and the behaviours gone since. Each names its model, so a new model re-embeds all.
+      async ({ params: [pid], body }) => {
+        await loadProjectHead(pid);
+        const puts = Array.isArray(body?.vectors) ? body.vectors : [];
+        const removes = Array.isArray(body?.remove) ? body.remove : [];
+        if (puts.length > 500 || removes.length > 1000) throw new ValidationError('at most 500 vectors and 1000 removals at once');
+        const at = new Date(clock()).toISOString();
+        const which = (v, what) => {
+          if (!KEY.test(String(v?.item)) || !BEHAVIOUR.test(String(v?.id))) throw new ValidationError(`${what}: expected { id, item }`);
+          return { id: v.id, item: v.item };
+        };
+        const rows = puts.map((v, i) => {
+          const { id, item } = which(v, `vectors[${i}]`);
+          if (!/^[0-9a-f]{16}$/.test(String(v.hash))) throw new ValidationError(`vectors[${i}].hash: expected the behaviour's text hash`);
+          const modelName = text(v.model ?? '', 200, `vectors[${i}].model`);
+          if (!modelName) throw new ValidationError(`vectors[${i}].model: required, so a new model re-embeds everything`);
+          const dims = Number(v.dims);
+          const packed = String(v.vector ?? '');
+          if (!(Number.isInteger(dims) && dims > 0 && dims <= 4096) || !/^[A-Za-z0-9+/]+=*$/.test(packed) || Buffer.from(packed, 'base64').length !== 4 + dims) {
+            throw new ValidationError(`vectors[${i}].vector: expected { dims, vector } packed as shared/coherence.js packVector does`);
+          }
+          return { behaviourId: id, item, textHash: v.hash, model: modelName, dims, vector: packed, savedAt: at };
+        });
+        await model.vectors.write(pid, { puts: rows, removes: removes.map((r, i) => which(r, `remove[${i}]`)) });
+        return { saved: rows.length, removed: removes.length };
+      },
+      { agents: true },
+    ],
+
+    // Which project an agent token belongs to, so CI, holding only the token, can find its project's routes.
+    [
+      'GET',
+      /^\/api\/agent$/,
+      async ({ headers }) => {
+        const who = await agents.authenticate(String(headers.authorization ?? '').replace(/^Bearer\s+/i, ''));
+        if (!who) throw new HttpError(401, 'An agent token is required, as "Authorization: Bearer <token>"');
+        return { projectId: who.projectId, agent: { id: who.agent.id, name: who.agent.name } };
+      },
+      { public: true },
     ],
 
     [
@@ -1442,6 +1505,12 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
   // The MCP server signs agents in with their own tokens, and reaches the routes above as a trusted caller.
   const mcp = createMcp({ model, agents, log, call: (method, path, body) => handle({ method, path, body, trusted: true }) });
 
+  async function agentOf(headers, pid) {
+    const token = String(headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+    const who = token && !headers['x-projectmap-key'] ? await agents.authenticate(token) : null;
+    return Boolean(who && who.projectId === pid);
+  }
+
   async function loadProjectHead(pid) {
     const project = await model.projects.get(pid);
     if (!project) throw new HttpError(404, 'Project not found');
@@ -1461,9 +1530,11 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       for (const [m, re, fn, opts = {}] of routes) {
         const match = path.match(re);
         if (!match || m !== method) continue;
-        const person = !opts.public && !trusted ? await authorize(headers, method) : null;
+        // A route open to agents also takes an agent token, but only for the agent's own project (the route's first part).
+        const asAgent = opts.agents && !trusted && (await agentOf(headers, match[1]));
+        const person = !opts.public && !trusted && !asAgent ? await authorize(headers, method) : null;
         if (opts.people && trusted) throw new HttpError(403, 'Only a person can do this');
-        const result = await fn({ params: match.slice(1), body: asPerson(body, person), headers, rawBody, rawBytes, person });
+        const result = await fn({ params: match.slice(1), body: asPerson(body, person), headers, query, rawBody, rawBytes, person });
         return { status: opts.status ?? 200, body: result };
       }
       const pathKnown = routes.some(([, re]) => re.test(path));

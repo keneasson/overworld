@@ -1,0 +1,55 @@
+# #36 COHERE-08: the spec's check, run after every production deploy and every hour, so changes made in Overworld itself
+# (adoptions, which never push to git) are checked too. It compares each behaviour's text hash and model with the vector
+# the project keeps first, and only installs and loads the model when something changed. It runs on its own, after the
+# deploy, so it never holds up or slows a deploy, and a failure here never fails one.
+name: Coherence
+
+on:
+  workflow_run:
+    workflows: [Production]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coherence
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'keneasson/overworld' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OVERWORLD_URL: ${{ vars.OVERWORLD_URL }}
+      OVERWORLD_AGENT_TOKEN: ${{ secrets.OVERWORLD_AGENT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: plan
+        name: What changed since the vectors were kept
+        run: |
+          if [ -z "$OVERWORLD_URL" ] || [ -z "$OVERWORLD_AGENT_TOKEN" ]; then
+            echo "Not checked: OVERWORLD_URL and OVERWORLD_AGENT_TOKEN aren't both set (see .github/workflows/README.md)."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node scripts/coherence.mjs --plan
+      - if: steps.plan.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: .cache/coherence/models
+          key: coherence-model-bge-small-en-v1.5
+      - if: steps.plan.outputs.changed == 'true'
+        name: Install the embedding runtime
+        run: npm ci --no-audit --no-fund && npm install --no-save --no-audit --no-fund @huggingface/transformers@4
+      - if: steps.plan.outputs.changed == 'true'
+        name: Embed what changed, keep the vectors, send the close pairs
+        run: node scripts/coherence.mjs

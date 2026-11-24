@@ -129,3 +129,51 @@ export function nearPairs({ behaviours, vectors, changed = null, threshold = NEA
 }
 
 const side = (b) => ({ id: b.id, item: b.item, hash: b.hash });
+
+/**
+ * A vector as the project keeps it: int8, with one float32 scale in front, base64 (388 bytes for bge-small's 384 dims).
+ * Rounding moves a cosine by about 0.001, well under what separates a close pair from the rest.
+ */
+export function packVector(vector) {
+  const max = vector.reduce((m, x) => Math.max(m, Math.abs(x)), 0);
+  const scale = max / 127 || 1;
+  const bytes = new Uint8Array(4 + vector.length);
+  new DataView(bytes.buffer).setFloat32(0, scale, true);
+  const q = new Int8Array(bytes.buffer, 4);
+  vector.forEach((x, k) => (q[k] = Math.max(-127, Math.min(127, Math.round(x / scale)))));
+  return toBase64(bytes);
+}
+
+/** A stored vector back as numbers, normalised to length 1 again so a dot product is still a cosine. */
+export function unpackVector(packed) {
+  const bytes = fromBase64(packed);
+  const scale = new DataView(bytes.buffer, bytes.byteOffset).getFloat32(0, true);
+  const v = Array.from(new Int8Array(bytes.buffer, bytes.byteOffset + 4, bytes.length - 4), (x) => x * scale);
+  const n = Math.hypot(...v) || 1;
+  return v.map((x) => x / n);
+}
+
+const toBase64 = (bytes) => (typeof Buffer !== 'undefined' ? Buffer.from(bytes).toString('base64') : btoa(String.fromCharCode(...bytes)));
+const fromBase64 = (s) => (typeof Buffer !== 'undefined' ? new Uint8Array(Buffer.from(s, 'base64')) : Uint8Array.from(atob(s), (c) => c.charCodeAt(0)));
+
+/** Where a behaviour's vector is kept: by item and ID, since one ID can sit in two items (duplicateIds). */
+export const vectorKey = (b) => `${b.item}:${b.id}`;
+
+/**
+ * What a check has to do, worked out before any model loads: the behaviours whose words or model changed since their
+ * vectors were kept, the vectors still good (by text hash), and the kept vectors whose behaviour is gone.
+ * @param {object[]} behaviours every behaviour now, each with its hash
+ * @param {{ behaviourId: string, item: string, textHash: string, model: string, vector: string }[]} stored what the project keeps
+ * @returns {{ embed: object[], vectors: Map<string, number[]>, remove: { id: string, item: string }[] }}
+ */
+export function planVectors(behaviours, stored, model) {
+  const kept = new Map(stored.filter((v) => v.model === model).map((v) => [`${v.item}:${v.behaviourId}`, v]));
+  const vectors = new Map();
+  for (const v of kept.values()) if (!vectors.has(v.textHash)) vectors.set(v.textHash, unpackVector(v.vector));
+  const now = new Set(behaviours.map(vectorKey));
+  return {
+    embed: behaviours.filter((b) => kept.get(vectorKey(b))?.textHash !== (b.hash ?? textHash(b.text))),
+    vectors,
+    remove: stored.filter((v) => !now.has(`${v.item}:${v.behaviourId}`)).map((v) => ({ id: v.behaviourId, item: v.item })),
+  };
+}

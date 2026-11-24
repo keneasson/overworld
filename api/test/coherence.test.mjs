@@ -1,5 +1,6 @@
 // The spec checks itself (#36): duplicate IDs and vocabulary drift (COHERE-01), close pairs across items from an injected
-// embedder (COHERE-04), each naming its model (COHERE-07), and judged pairs becoming open questions on both items (COHERE-05).
+// embedder (COHERE-04), each naming its model (COHERE-07), judged pairs becoming open questions on both items (COHERE-05), and
+// vectors kept with the project, so a check anywhere embeds only what changed (COHERE-08).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
@@ -9,7 +10,8 @@ import { createApi } from '../app.mjs';
 import { modelFor } from '../model/index.mjs';
 import { fileTable } from '../model/table.mjs';
 import { editableOf } from '../../shared/issue-shape.js';
-import { embedBehaviours, nearPairs } from '../../shared/coherence.js';
+import { embedBehaviours, nearPairs, packVector, unpackVector } from '../../shared/coherence.js';
+import { runCheck } from '../../scripts/coherence-check.mjs';
 
 const body = (behaviours) => `## Why\n\nBecause.\n\n## Behaviours\n\n${behaviours.map((b) => `- ${b}`).join('\n')}\n\n## Acceptance\n\nIt works.\n\n## Out of scope\n\nNothing.\n\n## Open questions\n\nNone.\n`;
 const issue = (n, title, behaviours) => ({ id: `i${n}`, url: `https://github.com/octo/app/issues/${n}`, title: `#${n} ${title}`, kind: 'story', status: 'ready', parentId: 'root', body: body(behaviours) });
@@ -132,4 +134,53 @@ test('COHERE-05 a pair judged a contradiction becomes an open question on both i
     const after = (await rest('GET', `/api/projects/${pid}`)).nodes;
     assert.equal(after.filter((n) => /look like a/.test(editableOf(n).markdown)).length, 2, 'unrelated asks nothing');
   }
+});
+
+test('COHERE-07 a kept vector reads back close enough to find the same pairs, in about 400 bytes', async () => {
+  const embedder = fake();
+  const texts = PROJECT.nodes.flatMap((n) => (n.body ? [...n.body.matchAll(/^- [A-Z]+-\d+ (.*)$/gm)].map((m) => m[1]) : []));
+  const vectors = await embedder.embed(texts);
+  const back = vectors.map((v) => unpackVector(packVector(v)));
+  const dot = (a, b) => a.reduce((s, x, k) => s + x * b[k], 0);
+  for (let i = 0; i < vectors.length; i++) for (let j = i + 1; j < vectors.length; j++) assert.ok(Math.abs(dot(vectors[i], vectors[j]) - dot(back[i], back[j])) < 0.01);
+  const big = Array.from({ length: 384 }, (_, k) => Math.sin(k + 1) / 14);
+  assert.equal(Buffer.from(packVector(big), 'base64').length, 388, 'bge-small\'s 384 dimensions keep in 388 bytes');
+  assert.ok(Math.abs(dot(unpackVector(packVector(big)), big.map((x) => x / Math.hypot(...big))) - 1) < 1e-4);
+});
+
+test('COHERE-08 a check embeds only behaviours whose words or model changed since the project kept their vectors', async () => {
+  const { api, rest, pid } = await setup();
+  const { token } = await rest('POST', `/api/projects/${pid}/agents`, { name: 'CI' });
+  // As CI calls it: with the agent token alone.
+  const call = async (method, url, body) => {
+    const [path, qs] = url.split('?');
+    const res = await api({ method, path, query: Object.fromEntries(new URLSearchParams(qs ?? '')), body, headers: { authorization: `Bearer ${token}` } });
+    assert.ok(res.status < 400, `${method} ${path}: ${res.body.error}`);
+    return res.body;
+  };
+  const embedder = fake();
+  let loads = 0;
+  const check = (model = 'fake-embedder') => runCheck({ call, pid, model, loadEmbedder: async () => (loads++, { ...embedder, model }) });
+
+  const first = await check();
+  assert.equal(first.kept, first.behaviours, 'the first run embeds every behaviour');
+  assert.ok(first.pairs.some((p) => [p.a.id, p.b.id].sort().join('~') === 'PAY-01~PAY-02'));
+  assert.equal((await rest('GET', `/api/projects/${pid}/vectors`)).vectors.length, first.behaviours);
+
+  const again = await check();
+  assert.deepEqual([again.embedded, again.pairs.length, loads], [0, 0, 1], 'nothing changed, so the model never loads');
+
+  const { nodes } = await rest('GET', `/api/projects/${pid}`);
+  const editor = nodes.find((n) => n.title === '#5 Editor');
+  await rest('PATCH', `/api/projects/${pid}/nodes/${editor.id}`, { body: body(['EDIT-01 Given an item, when edited, then each section is its own field.', 'PAY-01 Given a cart, when paid, then the card is charged twice.']) });
+  const changed = await check();
+  assert.deepEqual([changed.kept, changed.embedded], [1, 1], 'only the edited behaviour is embedded again');
+  await rest('DELETE', `/api/projects/${pid}/nodes/${nodes.find((n) => n.title === '#8 Changesets').id}`);
+  const gone = await check();
+  assert.deepEqual([gone.kept, gone.removed], [0, 2], 'the deleted item\'s vectors go, and nothing is embedded');
+  assert.equal((await rest('GET', `/api/projects/${pid}/vectors`)).vectors.length, gone.behaviours);
+
+  const other = await check('another-model');
+  assert.equal(other.kept, other.behaviours, 'a new model embeds everything again');
+  assert.ok((await rest('GET', `/api/projects/${pid}/vectors`)).vectors.every((v) => v.model === 'another-model'));
 });
