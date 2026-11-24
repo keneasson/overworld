@@ -9,7 +9,7 @@ import { OTHER_CHANGES, TITLE_CHANGE, changeKeys, compareItems, editableOf, issu
 import { isEditable, isMapped } from '../editor/items.js';
 import { Composer, Thread, useAskName } from '../editor/Annotate.jsx';
 import { questionsIn } from '@shared/questions.js';
-import { changeSummary, foldUnchanged, wordDiff } from '@shared/word-diff.js';
+import { changeSummary, foldUnchanged, markedMarkdown, wordDiff } from '@shared/word-diff.js';
 import { clausesOf, isDismissed, locate, piecesOf, quoteOf, refinementThreads, threadsOf } from '@shared/annotations.js';
 import { AddLink, Properties } from './Properties.jsx';
 import { syncBadge } from '../model/sync.js';
@@ -262,11 +262,20 @@ const CONFLICT = (
  * the part itself as one text with its edits marked in it (an added one marked whole, a removed one struck), its
  * conversation, and its own Adopt and Decline (ADOPT-05), so each is decided on its own.
  */
-function ChangeHere({ at, label, summary = null, change, before, after, conflict = false, ready = false, cs, item, threads, editing, talkable = true, offered = true, current = false, tick = null, decide, title = false }) {
+function ChangeHere({ at, label, summary = null, change, before, after, conflict = false, ready = false, cs, item, threads, editing, talkable = true, offered = true, current = false, tick = null, decide, title = false, rich = false }) {
   const talk = useTalk({ cs, item, on: at, label, text: after, before: change === 'changed' ? before : '', threads, editing });
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
+  const [picked, setPicked] = useState(null); // words selected in a section as it reads: { start, end } in its text
   const shown = talkable ? talk : null;
+  // A section reads as itself (its lists, tables, emphasis) with its edits marked; words selected in it can still be commented on.
+  const marked = useMemo(() => (rich && change !== 'removed' ? markedMarkdown(change === 'added' ? '' : before, after) : null), [rich, change, before, after]);
+  const select = (e) => {
+    const sel = window.getSelection();
+    const words = sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode) ? sel.toString().trim() : '';
+    const start = words ? after.indexOf(words) : -1;
+    setPicked(start >= 0 ? { start, end: start + words.length } : null);
+  };
   return (
     <div className={`inline-change change-${change}${current ? ' current' : ''}${title ? ' title-change' : ''}`} data-change={at}>
       <div className="change-head">
@@ -281,7 +290,18 @@ function ChangeHere({ at, label, summary = null, change, before, after, conflict
         {conflict && CONFLICT}
         {shown?.head}
       </div>
-      {change === 'removed' ? (
+      {marked != null ? (
+        <>
+          <div className="change-after markdown-diff" onMouseUp={select} onKeyUp={select}>
+            <Markdown text={marked} />
+          </div>
+          {picked && (
+            <button type="button" className="link-btn pick-comment" onMouseDown={(e) => e.preventDefault()} onClick={() => (talk.about(picked.start, picked.end), setPicked(null))}>
+              <Icon name="comment" size={12} /> Comment on these words
+            </button>
+          )}
+        </>
+      ) : change === 'removed' ? (
         <del className="change-before">{before}</del>
       ) : (
         (shown?.proposed ??
@@ -380,6 +400,7 @@ function useTalk({ cs, item, on, label, text = '', before = '', threads, editing
   };
   const show = (ts) => setShut((s) => new Set([...s].filter((id) => !ts.some((t) => t.root.id === id))));
   return {
+    about,
     head: (
       <span className="change-talk">
         {here.unanswered > 0 && (
@@ -548,7 +569,7 @@ function Refinement({ cs, item, node, editing, comments, inline, onShow = null, 
   const titleChange = diff.title && here(TITLE_CHANGE, { label: 'Title', summary: 'changed', change: 'changed', ...diff.title, title: true });
   const sectionChange = (p) => {
     const c = diff.sections.find((s) => s.name === p.section);
-    return c && here(p.key, { label: sectionLabel(c.name), summary: changeSummary(c), change: c.change, before: c.before, after: c.after, conflict: Boolean(c.conflict) });
+    return c && here(p.key, { label: sectionLabel(c.name), summary: changeSummary(c), change: c.change, before: c.before, after: c.after, conflict: Boolean(c.conflict), rich: true });
   };
   const behaviourChange = (k) => {
     const b = diff.behaviours.find((x) => x.key === k);

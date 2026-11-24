@@ -717,7 +717,7 @@ button {
   overflow: auto;
 }
 .inline-change {
-  scroll-margin-top: 96px;
+  scroll-margin-top: 128px;
   margin: 10px -8px;
   padding: 6px 8px;
   border-left: 3px solid var(--accent);
@@ -744,6 +744,12 @@ button {
 }
 .inline-change .change-after {
   margin-top: 2px;
+}
+.change-after.markdown-diff {
+  white-space: normal;
+}
+.change-after.markdown-diff .markdown > :last-child {
+  margin-bottom: 0;
 }
 .inline-change.change-added .change-after {
   background: rgb(30 142 62 / 0.12);

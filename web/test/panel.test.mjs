@@ -175,9 +175,12 @@ test('ADOPT-05 ADOPT-17 ADOPT-18 a refinement is read in the item itself: each c
   const atWhy = doc.indexOf('data-change="section:Why"'), behaviour = doc.indexOf('data-change="PR-01"'), heading = doc.indexOf('>Behaviours</h2>');
   assert.ok(atWhy >= 0 && atWhy < heading && heading < behaviour, 'the Why change at the Why, the behaviour at its row');
   assert.match(doc, /<span class="change-label">Why<\/span><span class="change-what">1 sentence reworded<\/span>/, 'a line saying what it did');
-  assert.match(doc, /Word19 <del class="diff-del">Word20<\/del><ins class="diff-ins">Twenty<\/ins> Word21/, 'the whole Why, its edit marked in it');
-  assert.match(doc, /Word0 Word1/);
-  assert.doesNotMatch(doc, /diff-fold/, 'nothing folded away');
+  assert.match(doc, /data-change="section:Why"[\s\S]*?class="change-after markdown-diff"/, 'the whole Why, as it reads, under its line');
+  const { markedMarkdown } = await import('@shared/word-diff.js');
+  const marked = markedMarkdown(`${why}.`, `${why.replace('Word20', 'Twenty')}.`);
+  assert.match(marked, /^Word0 Word1 [\s\S]*Word19 <del class="diff-del">Word20<\/del><ins class="diff-ins">Twenty<\/ins> Word21/, 'its edit marked in it, nothing folded away');
+  assert.equal(markedMarkdown('- One.\n\n| A |\n|---|\n| x |', '- One.\n- Two.\n\n| A |\n|---|\n| x |\n| y |'), '- One.\n- <ins class="diff-ins">Two.</ins>\n\n| A |\n|---|\n| x |\n| <ins class="diff-ins">y</ins> |', 'a list stays a list, a table a table');
+  assert.doesNotMatch(doc, /diff-fold/);
   assert.match(doc, /then it shows as <del class="diff-del">Fog,<\/del><ins class="diff-ins">#22 STRAY-01 says,<\/ins> because/, 'a behaviour as one text, its edits in place');
   assert.doesNotMatch(doc, /class="change-before"/, 'never the old block above the new');
   assert.equal(doc.match(/class="edit-actions change-actions"/g).length, 2, 'each change has its own Adopt and Decline');
