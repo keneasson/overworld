@@ -21,11 +21,15 @@
     "destroy": "node scripts/destroy.mjs"
   },
   "dependencies": {
+    "@hocuspocus/provider": "^4.9.0",
+    "@tiptap/extension-collaboration": "^3.33.0",
+    "@tiptap/extension-collaboration-caret": "^3.33.0",
     "@tiptap/extensions": "^3.33.0",
     "@tiptap/markdown": "^3.33.0",
     "@tiptap/pm": "^3.33.0",
     "@tiptap/react": "^3.33.0",
     "@tiptap/starter-kit": "^3.33.0",
+    "@tiptap/y-tiptap": "^3.3.1",
     "d3": "^7.9.0",
     "d3-voronoi-map": "^2.1.1",
     "d3-weighted-voronoi": "^1.1.3",
@@ -34,13 +38,17 @@
     "marked": "^18.1.2",
     "polylabel": "^2.1.0",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^1.13.0",
     "@aws-sdk/client-dynamodb": "^3.1161.0",
     "@aws-sdk/client-scheduler": "^3.1164.0",
     "@aws-sdk/client-ssm": "^3.1164.0",
     "@aws-sdk/lib-dynamodb": "^3.1161.0",
+    "@hocuspocus/server": "^4.9.0",
     "@vitejs/plugin-react": "^6.2.1",
     "esbuild": "^0.28.2",
     "vite": "^8.3.5"

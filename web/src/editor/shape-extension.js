@@ -79,6 +79,8 @@ export const HINTS = {
 /** The hint an empty line shows (EDIT-20): only the first line of a section that has nothing else in it. */
 export function hintAt(doc, node, pos) {
   if (node.type.name !== 'paragraph' || node.content.size || pos === 0) return '';
+  // In a live document the hint can be asked about a newer document than the editor's state holds yet: no hint until they agree.
+  if (pos + node.nodeSize > doc.content.size || doc.nodeAt(pos) !== node) return '';
   const $pos = doc.resolve(pos);
   if ($pos.depth !== 0 || !isSection($pos.nodeBefore)) return '';
   const next = doc.nodeAt(pos + node.nodeSize);

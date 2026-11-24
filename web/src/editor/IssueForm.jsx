@@ -6,7 +6,11 @@ import { Placeholder } from '@tiptap/extensions';
 import { titleShown, titleToSave } from './title.js';
 import { behaviourPrefix, parseBehaviours, parseIssue, placeholderId, sectionText } from '@shared/issue-shape.js';
 import { initials, isDismissed, threadsOf, whereOf } from '@shared/annotations.js';
-import { EXTENSIONS, parseMarkdown } from './rich-text.js';
+import Collaboration from '@tiptap/extension-collaboration';
+import CollaborationCaret from '@tiptap/extension-collaboration-caret';
+import { EXTENSIONS, LIVE_EXTENSIONS, parseMarkdown } from './rich-text.js';
+import { Suggestions } from './suggestions.js';
+import { joinLive, liveOn, liveUser } from './live.js';
 import { fromDocument, toDocument } from './document.js';
 import { IssueShape, hintAt, openWithBodies, refreshNotes, swapIds } from './shape-extension.js';
 import { onNumbered } from './useItemEditing.js';
@@ -36,8 +40,59 @@ function Outline({ rects, picked }) {
  * what a comment would be on; a click, or a second tap, opens the comment box there.
  * Each unanswered open question (`questions`, from questionsIn) has its Answer control directly under it in the text (#68
  * ANSWER-01): `onAnswer(question, text, prompt)` writes the answer, `onAnswerPrompt(question, text)` builds its prompt.
+ * Live (prototype, `projectId` given and the collaboration server there): the text is the item's one shared document, edited
+ * with everyone who has it open, agents and the store included, each with their own caret. `onLiveSaid(message)` hears what
+ * they say beside the text (a comment posted).
  */
-export function IssueForm({ value, itemKey = null, issueNumber, areaTexts, comments, questions = [], commenting = false, placeholderTitle = null, onChange, onComment, onAnswer, onAnswerPrompt, onPromote, onDismiss, onRestore, hasRead, onRead, conflict }) {
+export function IssueForm(props) {
+  const { projectId = null, itemKey = null, onLiveSaid } = props;
+  const on = liveOn() && Boolean(projectId && itemKey);
+  const [live, setLive] = useState(null); // the joined document, or 'off' when the server isn't there
+  const said = useRef(onLiveSaid);
+  said.current = onLiveSaid;
+  useEffect(() => {
+    if (!on) return undefined;
+    const joined = joinLive({ projectId, itemKey, onSaid: (m) => said.current?.(m) });
+    let done = false;
+    const t = setTimeout(() => !done && setLive('off'), 4000);
+    joined.provider.on('synced', () => {
+      if (done) return;
+      clearTimeout(t);
+      setLive(joined);
+    });
+    return () => {
+      done = true;
+      clearTimeout(t);
+      setLive(null);
+      joined.destroy();
+    };
+  }, [on, projectId, itemKey]);
+  if (!on || live === 'off') return <ItemDocument {...props} />;
+  if (!live) return <p className="live-joining">Joining the live document…</p>;
+  return <ItemDocument {...props} shared={live} />;
+}
+
+/** Who is in a live document now, from its awareness: each person's or agent's name and colour, you first. */
+function useHere(live) {
+  const [here, setHere] = useState([]);
+  useEffect(() => {
+    if (!live) return undefined;
+    const { awareness } = live.provider;
+    const update = () =>
+      setHere(
+        [...awareness.getStates().entries()]
+          .filter(([, st]) => st?.user?.name)
+          .map(([id, st]) => ({ id, ...st.user, you: id === awareness.clientID }))
+          .sort((a, b) => Number(b.you) - Number(a.you)),
+      );
+    update();
+    awareness.on('change', update);
+    return () => awareness.off('change', update);
+  }, [live]);
+  return here;
+}
+
+function ItemDocument({ shared = null, value, itemKey = null, issueNumber, areaTexts, comments, questions = [], commenting = false, placeholderTitle = null, onChange, onComment, onAnswer, onAnswerPrompt, onPromote, onDismiss, onRestore, hasRead, onRead, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   // The title that stands in for an empty one (EDIT-22): a new item's placeholder, or the title it opened with.
@@ -84,9 +139,11 @@ export function IssueForm({ value, itemKey = null, issueNumber, areaTexts, comme
 
   // Empty sections open with a line to type on (EDIT-16).
   const content = useMemo(() => openWithBodies(parseMarkdown(toDocument(original)), getSchema(EXTENSIONS)), [original]);
+  const me = useMemo(() => (shared ? liveUser() : null), [shared]);
+  const here = useHere(shared);
   const editor = useEditor({
     extensions: [
-      ...EXTENSIONS,
+      ...(shared ? LIVE_EXTENSIONS : EXTENSIONS),
       Markdown,
       IssueShape.configure({ nextId: () => nextId(), onThread: (id, b) => onThread(id, b), onAnswer: (id, b) => onAnswerControl(id, b) }),
       IssueLinks.configure({ onFollow: (ref) => !live.current.commenting && live.current.links.follow(ref) }),
@@ -94,15 +151,19 @@ export function IssueForm({ value, itemKey = null, issueNumber, areaTexts, comme
         showOnlyCurrent: false,
         placeholder: ({ editor: e, node, pos }) => hintAt(e.state.doc, node, pos),
       }),
+      Suggestions,
+      ...(shared ? [Collaboration.configure({ document: shared.doc, field: 'default' }), CollaborationCaret.configure({ provider: shared.provider, user: me })] : []),
     ],
-    content,
+    // Live, the text comes from the shared document, which the collaboration server seeded from the item.
+    content: shared ? undefined : content,
     editorProps: { attributes: { class: 'issue-doc-text', 'aria-label': issueNumber ? `#${issueNumber}` : 'Item text', 'aria-multiline': 'true', role: 'textbox' } },
     onCreate: ({ editor: e }) => {
       opened.current = e.getMarkdown();
     },
     // Changes before the editor has opened are its own setup, not the person's; nor is redrawing the comment markers,
     // which changes no text: without this, an item changed underneath (part of a refinement adopted) got its old text back as a draft.
-    onUpdate: ({ editor: e, transaction }) => opened.current != null && transaction.docChanged && live.current.onChange({ title: live.current.title, markdown: fromDocument(original, opened.current, e.getMarkdown()) }),
+    // Live, the collaboration server saves the shared document to the item; nothing goes into a changeset.
+    onUpdate: ({ editor: e, transaction }) => !shared && opened.current != null && transaction.docChanged && live.current.onChange({ title: live.current.title, markdown: fromDocument(original, opened.current, e.getMarkdown()) }),
   });
 
   // The numbers its save gave new behaviours take their placeholders' places (#13 ADOPT-11).
@@ -276,7 +337,18 @@ export function IssueForm({ value, itemKey = null, issueNumber, areaTexts, comme
 
   return (
     <div className={`issue-doc${commenting ? ' commenting' : ''}`} ref={wrap}>
-      {conflict && (
+      {shared && (
+        <div className="live-bar" role="status" aria-label="Who is in this document">
+          <span className="live-dot" /> Live
+          {here.map((u) => (
+            <span key={u.id} className="live-who" style={{ '--who': u.color }} title={u.you ? 'You, in this tab' : `${u.name} is in this document`}>
+              {u.name}
+              {u.you ? ' (you)' : ''}
+            </span>
+          ))}
+        </div>
+      )}
+      {conflict && !shared && (
         <p className="conflict" role="alert">
           This changed on GitHub after you started editing it. Your version is kept here; compare it with the source before accepting.
         </p>
@@ -289,7 +361,9 @@ export function IssueForm({ value, itemKey = null, issueNumber, areaTexts, comme
         maxLength={190}
         value={title}
         placeholder={standIn}
-        readOnly={commenting}
+        // The title isn't in the live document yet (prototype): kept as it is while the text is live.
+        readOnly={commenting || Boolean(shared)}
+        title={shared ? 'The title is not live yet: edit it with ?live=0' : undefined}
         onBlur={() => !placeholderTitle && !title.trim() && setTitle(standIn)}
         onChange={(e) => setTitleText(e.target.value.replace(/\n/g, ' '))}
         onKeyDown={(e) => {
