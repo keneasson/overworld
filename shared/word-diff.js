@@ -126,3 +126,35 @@ export function changeSummary({ name = '', change, before = '', after = '' }) {
   const counts = { reworded, added: fresh - reworded, removed: gone - reworded };
   return parts.map((p, i) => (i === 0 ? `${plural(counts[p], unit)} ${p}` : `${counts[p]} ${p}`)).join(', ');
 }
+
+// ---- A change marked in its markdown -----------------------------------------------------------
+
+// What starts a line of markdown (a bullet, a number, a quote, a heading): kept outside a mark, so the line stays what it is.
+const LEAD = /^(\s*(?:[-*+]|\d+[.)]|>|#{1,6})\s+)/;
+
+/**
+ * The proposed markdown with a change marked in it (#13 ADOPT-18): removed words as <del>, added ones as <ins>, so the
+ * section renders as itself (its lists, tables and emphasis) with its edits in place. A mark never spans a line or a
+ * table cell, and never swallows what starts a line.
+ */
+export function markedMarkdown(before, after) {
+  let atStart = true;
+  return wordDiff(before, after)
+    .map((p) => {
+      const text = p.kind === 'same' ? p.text : p.text.split(/(\n)/).map((line) => {
+        if (line === '\n') return (atStart = true), line;
+        if (!line) return line;
+        const lead = atStart ? (line.match(LEAD)?.[1] ?? '') : '';
+        atStart = false;
+        const tag = p.kind === 'ins' ? 'ins' : 'del';
+        const body = line.slice(lead.length).split(/(\|)/).map((cell) => {
+          const m = cell.match(/^(\s*)(.*?)(\s*)$/s);
+          return m[2] && cell !== '|' ? `${m[1]}<${tag} class="diff-${p.kind}">${m[2]}</${tag}>${m[3]}` : cell;
+        });
+        return lead + body.join('');
+      }).join('');
+      if (p.kind === 'same') atStart = /\n[ \t]*$/.test(p.text) || (atStart && !p.text.trim());
+      return text;
+    })
+    .join('');
+}
