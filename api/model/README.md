@@ -37,6 +37,7 @@ model.
 | Request key | `PROJECT#<id>` | `KEY#<agentId>#<requestKey>` | | |
 | Call count | `PROJECT#<id>` | `LIMIT#<agentId>#<minute>` | | |
 | Coherence finding | `PROJECT#<id>` | `COHERE#<pairKey>` | | |
+| Behaviour vector | `PROJECT#<id>` | `EMBED#<itemKey>#<behaviourId>` | | |
 | Coverage report | `PROJECT#<id>` | `COVERAGE` | | |
 | Photo (a screenshot, #16) | `PROJECT#<id>` | `IMAGE#<itemKey>#<photoId>` | | |
 | Photo part (its bytes) | `PROJECT#<id>` | `IMGPART#<photoId>#<version>#<n>` | | |
@@ -127,6 +128,8 @@ agents' tokens first. The token itself is never stored.
 | A change's request key: start, read, finish, forget | `requests.start` / `get` / `finish` / `forget` | Conditional PutItem; GetItem; PutItem; DeleteItem |
 | Pairs of behaviours close in meaning, to judge or judged (#36 COHERE-04, COHERE-05) | `findings.list(projectId)` | Query `begins_with(SK, COHERE#)` |
 | One finding; record a check's pairs or a judgement | `findings.get(projectId, key)`, `findings.put(projectId, list)` | GetItem; batched puts |
+| Each behaviour's embedding, with its text hash and model, packed to int8 (#36 COHERE-08) | `vectors.list(projectId)` | Query `begins_with(SK, EMBED#)` |
+| Keep new vectors and drop those of behaviours that are gone | `vectors.write(projectId, { puts, removes })` | Batched puts and deletes |
 | The latest coverage report from CI, for the proof layer; save one over it (#20 COVER-03) | `coverage.get(projectId)`, `coverage.put(projectId, report, savedAt)` | GetItem; PutItem (gzipped, so it fits an item) |
 | An item's screenshots, without their bytes (#16) | `photos.list(projectId, itemKey)` | Query `begins_with(SK, IMAGE#<itemKey>#)` |
 | One screenshot | `photos.get(projectId, { itemKey, id })` | GetItem |
