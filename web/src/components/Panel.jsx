@@ -1402,7 +1402,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
               questions={questions}
               commenting={commenting}
               placeholderTitle={Boolean(node.refinement) && !theirs ? `New ${node.kind}` : null}
-              conflict={editing.conflicts.has(key)}
+              conflict={editing.conflicts.get(key) ?? null}
               onChange={(after) => editing.change(key, after)}
               onComment={(anchor, text, extra) => editing.comment(key, anchor, text, extra)}
               onAnswer={(q, text, prompt) => editing.answer(key, q, text, prompt)}

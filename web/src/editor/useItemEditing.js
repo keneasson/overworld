@@ -36,7 +36,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
   const [others, setOthers] = useState([]); // open refinements by someone else: an agent or another person (ADOPT-02)
   const [drafts, setDrafts] = useState(() => new Map());
   const [generation, setGeneration] = useState(0); // remounts the documents after an accept or a discard
-  const [conflicts, setConflicts] = useState(() => new Set());
+  const [conflicts, setConflicts] = useState(() => new Map()); // item key → what changed it since (the store, or who in Overworld)
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(0);
   const [name, setNameState] = useState(() => storage.get(NAME) ?? '');
@@ -57,7 +57,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
     setChangeset(null);
     setOthers([]);
     setDrafts(new Map());
-    setConflicts(new Set());
+    setConflicts(new Map());
     api
       .listChangesets(projectId)
       .then(({ changesets }) => {
@@ -248,7 +248,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
     csPromise.current = null;
     setChangeset(null);
     setDrafts(new Map());
-    setConflicts(new Set());
+    setConflicts(new Map());
     setGeneration((g) => g + 1);
   }
 
@@ -265,7 +265,7 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
       toast(`Accepted ${n} edit${n === 1 ? '' : 's'}. Save to send ${n === 1 ? 'it' : 'them'} to GitHub.`);
       reset();
     } catch (err) {
-      if (err.status === 409 && err.conflicts) setConflicts(new Set(err.conflicts));
+      if (err.status === 409 && err.conflicts) setConflicts(new Map(err.conflicts.map((k) => [k, err.changedBy?.[k] ?? {}])));
       fail(err);
     } finally {
       setBusy(false);

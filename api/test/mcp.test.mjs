@@ -9,6 +9,7 @@ import { modelFor } from '../model/index.mjs';
 import { fileTable } from '../model/table.mjs';
 import { fakeShop } from './fake-github.mjs';
 import { refinementThreads } from '../../shared/annotations.js';
+import { editableOf, itemKeyOf } from '../../shared/issue-shape.js';
 import { createHmac } from 'node:crypto';
 import { githubKey } from '../stores/github/index.mjs';
 
@@ -1027,6 +1028,54 @@ test('REPORT-07 next_work offers ready bugs before ready features, whatever thei
   const web = (await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title === 'Web');
   const { nodes: [bug] } = await rest('POST', `/api/projects/${pid}/nodes`, { node: { parentId: web.id, kind: 'bug', title: 'Counts are wrong', status: 'ready', priority: 'P3', body: body({ behaviours: ['COUNT-01 Given a child, when shown, then its counts are right; now they are off by one.'] }) } });
   assert.deepEqual((await a.use('next_work')).work.map((w) => w.item).slice(0, 2), [`node-${bug.id}`, 'issue-11'], 'the P3 bug before the P0 feature');
+});
+
+test('STATE-14 a split keeps the person\'s edit to the item, is based on the item as it is now, and moves what is left into the child that already holds the rest', async () => {
+  const { rest, shop } = await setup();
+  const ready = { labels: [{ name: 'status:ready' }] };
+  shop.issues.push(shop.issue(30, 'Half built', body({ behaviours: ['HB-01 Given one, when built, then tested.', 'HB-02 Given two, when not, then not.'] }), ready));
+  shop.tree.push({ path: 'test/app.test.mjs', type: 'blob' });
+  shop.docs['test/app.test.mjs'] = "test('HB-01 one is built', () => {});\n";
+  const pid = (await rest('POST', '/api/import/github', { repo: 'octo/shop' })).project.id;
+  const text = async () => editableOf((await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title.startsWith('#30 ')));
+  const accept = async (markdown, who) => {
+    const { changeset: cs } = await rest('POST', `/api/projects/${pid}/changesets`, { author: who });
+    await rest('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-30', title: 'Half built', markdown });
+    return rest('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`);
+  };
+  // Ken edits the Why in his refinement; meanwhile Ann's change to the Acceptance is accepted.
+  const { changeset: mine } = await rest('POST', `/api/projects/${pid}/changesets`, { author: 'Ken' });
+  await rest('PUT', `/api/projects/${pid}/changesets/${mine.id}/items`, { key: 'issue-30', title: 'Half built', markdown: (await text()).markdown.replace('Because.', 'Because Ken says so.') });
+  await accept((await text()).markdown.replace('It works.', 'It works, said Ann.'), 'Ann');
+
+  const { changeset } = await rest('POST', `/api/projects/${pid}/items/issue-30/split`, { by: 'Ken', changeset: mine.id });
+  const entry = changeset.items.find((it) => it.key === 'issue-30');
+  assert.deepEqual(entry.base, await text(), 'based on the item as it is now');
+  assert.match(entry.after.markdown, /Because Ken says so\./, "Ken's edit is kept");
+  assert.match(entry.after.markdown, /It works, said Ann\./);
+  assert.ok((await rest('POST', `/api/projects/${pid}/changesets/${mine.id}/accept`)).changeset, 'it can be accepted');
+
+  // Later the item has another behaviour still to build: it joins the child already holding what was left.
+  await accept((await text()).markdown.replace('- HB-01 Given one, when built, then tested.', '- HB-01 Given one, when built, then tested.\n- HB-03 Given three, when not, then not.'), 'Ken');
+  const again = await rest('POST', `/api/projects/${pid}/items/issue-30/split`, { by: 'Ken' });
+  assert.deepEqual(again.moved, ['HB-03']);
+  const children = (await rest('GET', `/api/projects/${pid}`)).nodes.filter((n) => n.title.endsWith("Half built: what's left to build"));
+  assert.equal(children.length, 1, 'one child holds what is left, never two');
+  const child = again.changeset.items.find((it) => it.key === itemKeyOf(children[0])).after.markdown;
+  assert.match(child, /^- HB-02 Given two, when not, then not\.\n- HB-03 Given three, when not, then not\.$/m, 'moved word for word, after what it already holds');
+});
+
+test('ADOPT-20 an agent\'s proposal that is just the item as it is never takes a person\'s edit out of their refinement', async () => {
+  const { rest, pid, agent } = await setup();
+  const a = await agent('Builder');
+  const claims = (await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title === '#11 Claims');
+  const { changeset: cs } = await rest('POST', `/api/projects/${pid}/changesets`, { author: 'Ken' });
+  const kens = editableOf(claims).markdown.replace('then it is held.', 'then it is held until done.');
+  await rest('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-11', title: 'Claims', markdown: kens });
+  const { error } = await a.refused('propose', { refinement: cs.id, item: 'issue-11', markdown: editableOf(claims).markdown });
+  assert.match(error, /Propose only what you change/);
+  const [entry] = (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((c) => c.id === cs.id).items;
+  assert.equal(entry?.after.markdown, kens, "Ken's edit stays as he left it");
 });
 
 test('ADOPT-20 a person\'s own edit goes to an agent with a prompt, and the agent answers it in the same refinement: a thread on the behaviour, then a clean revision marked ready', async () => {
