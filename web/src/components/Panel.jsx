@@ -1143,6 +1143,9 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
   // and on the behaviour in the text once the refinement has closed.
   const reviewing = new Set([...editing.others.map((cs) => cs.id), ...(editing.changeset ? [editing.changeset.id] : [])]);
   const proposals = editing.others.flatMap((cs) => cs.items.filter((it) => it.key === key && !it.new && it.after).map((it) => ({ cs, item: it })));
+  // Your own change to it, as an agent sees it (#13 ADOPT-21): with an agent until one marks it ready.
+  const yourEdit = editing.changeset?.items?.find((it) => it.key === key && !it.new);
+  const yourTurn = yourEdit ? turnOf(editing.changeset, yourEdit) : null;
   const madeIn = theirs ? editing.others.find((cs) => cs.id === node.refinement && cs.items.some((it) => it.key === key && it.new)) : null;
   // The item's open questions as the map has them, each answered directly under itself in the text (#68 ANSWER-01).
   const questions = useMemo(() => (editable ? questionsIn(key, editableOf(node).markdown) : []), [editable, key, node.body]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1259,6 +1262,12 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       {proposals.map(({ cs, item }) => (
         <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} comments={comments.filter((c) => c.itemKey === key)} />
       ))}
+      {yourTurn && (
+        <p className="turn-note your-turn" role="status">
+          <Icon name="comment" size={16} /> <strong>{yourTurn === 'agent' ? 'Your change is with an agent · waiting' : 'An agent answered your change · not ready yet'}</strong>
+          <span className="empty-note"> Keep editing: each edit goes back to it.</span>
+        </p>
+      )}
       <div className="doc" ref={docRef} onFocusCapture={onDocFocus}>
         {editable ? (
           <Suspense fallback={readOnly}>
