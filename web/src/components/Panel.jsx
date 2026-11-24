@@ -494,10 +494,10 @@ const sectionLabel = (name) => (name === 'Head' ? 'Part of · Kind · Place' : n
  * who proposed it and how many changes are left, and steps through them; each change sits in its place in the document,
  * the Why's at the Why and a behaviour's at its row, with its own Adopt and Decline. Deciding one moves on to the next.
  * Ticks, "Select all" and the bulk Adopt stay in the bar for deciding several at once; those marked ready (ADOPT-04)
- * start ticked. Open questions show as badges, and never hold it back (ADOPT-08). With `inline` off (the text is open in
- * the editor), the changes are listed in the bar instead.
+ * start ticked. Open questions show as badges, and never hold it back (ADOPT-08). While the text is open in the editor
+ * (`listed`), the changes are listed in the bar instead; another refinement on the item waits as its bar alone.
  */
-function Refinement({ cs, item, node, editing, comments, inline, onShow = null, onEdit = null }) {
+function Refinement({ cs, item, node, editing, comments, inline, listed = false, onShow = null, onEdit = null }) {
   // What it changed from the item as it found it (ADOPT-17), in its place in the item.
   const review = useMemo(() => reviewOf(editableOf(node), item.after, item.base ?? null), [node, item.after, item.base]);
   const { diff } = review;
@@ -655,7 +655,7 @@ function Refinement({ cs, item, node, editing, comments, inline, onShow = null, 
             </span>
           </div>
         )}
-        {!inline && left > 0 && (
+        {listed && left > 0 && (
           <ul className="changes">
             {order.map((k) => (
               <li key={k} className="change">
@@ -1378,6 +1378,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
           editing={editing}
           comments={comments.filter((c) => c.itemKey === key)}
           inline={cs === inReview}
+          listed={editingText === node.id}
           onShow={() => (setActive(cs.id), setEditingText(null))}
           onEdit={editable ? () => setEditingText(node.id) : null}
         />
