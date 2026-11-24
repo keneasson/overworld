@@ -159,7 +159,7 @@ test('ADOPT-17 ADOPT-18 a refinement shows only what it changed: a behaviour as 
     // Since it was proposed, the item gained an Acceptance section: not the refinement's change.
     { id: 'p', parentId: 'root', kind: 'task', title: '#20 Proof', url: url(20), status: 'ready', body: base.markdown.replace('## Open questions', '## Acceptance\n\nIt holds.\n\n## Open questions') },
   ]);
-  const cs = { id: 'cs9', author: 'Builder (a1)', status: 'open', updatedAt: new Date().toISOString(), items: [{ key: key(20), base, after }] };
+  const cs = { id: 'cs9', author: 'Builder (a1b2c)', status: 'open', updatedAt: new Date().toISOString(), items: [{ key: key(20), base, after }] };
   const noop = () => {};
   const { prelude } = await prerender(h(Details, { node: t.byId.get('p'), tree: t, lens: LENSES[0], editing: editing({ others: [cs] }), onPick: noop, onFly: noop, onAdd: noop, onPatch: noop, onDelete: noop, onClose: noop, onCopyLink: noop }));
   let html = '';
@@ -170,4 +170,30 @@ test('ADOPT-17 ADOPT-18 a refinement shows only what it changed: a behaviour as 
   assert.match(review, /<summary><span class="change-label">Why<\/span>: <!-- -->1 sentence reworded/, 'a line for what changed in the Why');
   assert.doesNotMatch(review, /It holds|Acceptance/, "an edit made since isn't the refinement's");
   assert.match(review, /diff-fold/, 'a long section folds what it left alone');
+});
+
+test('ADOPT-21 a person\'s own change shows as with an agent, not as a decision, with a small way out, until an agent marks it ready', async () => {
+  const { Details } = await import('../src/components/Panel.jsx');
+  const base = { title: 'Numbers', markdown: 'Part of #1\n\n## Why\n\nIds.\n\n## Behaviours\n\n- ID-01 Given a new behaviour, when saved, then it gets the next number.\n\n## Open questions\n\nNone\n' };
+  const after = { title: 'Numbers', markdown: base.markdown.replace('next number.', 'next number. (Question - why not reserve a hash?)') };
+  const t = buildTree([
+    { id: 'root', kind: 'project', title: 'o/r', url: 'https://github.com/o/r' },
+    { id: 'p', parentId: 'root', kind: 'task', title: '#20 Numbers', url: url(20), status: 'ready', body: base.markdown },
+  ]);
+  const show = async (item) => {
+    const cs = { id: 'k1', author: 'Ken', status: 'open', updatedAt: new Date().toISOString(), items: [{ key: key(20), base, after, ...item }] };
+    const noop = () => {};
+    const { prelude } = await prerender(h(Details, { node: t.byId.get('p'), tree: t, lens: LENSES[0], editing: editing({ others: [cs] }), onPick: noop, onFly: noop, onAdd: noop, onPatch: noop, onDelete: noop, onClose: noop, onCopyLink: noop }));
+    let html = '';
+    for await (const chunk of prelude) html += Buffer.from(chunk).toString();
+    return /<section class="refinement"[\s\S]*?<\/section>/.exec(html)[0];
+  };
+  const waiting = await show({});
+  assert.match(waiting, /Sent to an agent · waiting/);
+  assert.doesNotMatch(waiting, /class="primary"|Decline<!-- -->/, 'no Adopt or Decline offered');
+  assert.match(waiting, /aria-label="More"/, 'a small menu, with Adopt as is and Withdraw in it');
+  assert.match(await show({ looked: { by: 'Builder (a1b2c)', at: new Date().toISOString() } }), /An agent answered · not ready yet/);
+  const ready = await show({ looked: { by: 'Builder (a1b2c)', at: new Date().toISOString() }, readyForAdoption: ['ID-01'] });
+  assert.match(ready, / Adopt<!-- --> 1</, 'Adopt is offered once an agent marks it ready');
+  assert.doesNotMatch(ready, /Sent to an agent/);
 });

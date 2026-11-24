@@ -84,3 +84,45 @@ function refinementHow(note, key) {
     `It is a comment on your proposal, before anyone adopts it: pushback or a question. Answer it in the thread with reply(annotation: "${note.id}", item: "${key}", text, refinement: "${id}"). If it asks for a change, or is right, revise the proposal: propose(refinement: "${id}", item: "${key}", markdown: the whole new text in the strict shape, annotations: ["${note.id}"]), then reply saying what you changed. The thread stays with the behaviour through the revision, and a person adopts or declines it. Don't dismiss the comment: the person who wrote it decides. If something can't be decided from here, say so in your reply rather than guessing.`,
   ];
 }
+
+/**
+ * The prompt a person's own edit reaches an agent with (#13 ADOPT-20): a person's change in a refinement is a turn in the
+ * conversation, not a decision waiting to be made. It holds the change against its base, behaviour by behaviour, and
+ * how to answer it: questions out of the text and into conversation, then a clean revision into the same refinement.
+ * @param {{ nodes: object[], refinement: object, item: object }} o  the person's refinement, and its entry for the item
+ */
+export function editPrompt({ nodes, refinement, item }) {
+  const node = nodes.find((n) => itemKeyOf(n) === item.key);
+  if (!node || !item.after) return '';
+  const key = itemKeyOf(node);
+  const cs = refinement.id;
+  const diff = compareItems(editableOf(node), item.after, item.base ?? null);
+  const changed = diff.behaviours.map((b) => [
+    '',
+    `${b.id || 'A behaviour'}, ${b.change}${b.conflict ? ' (it has also changed in the spec since: rebase on it)' : ''}:`,
+    ...(b.before ? ['The spec says:', quote(b.before)] : []),
+    ...(b.after ? [`${refinement.author} wrote:`, quote(b.after)] : ['They took it out.']),
+  ]).flat();
+  const other = [...(diff.title ? [`its title, to "${diff.title.after}"`] : []), ...diff.sections.map((s) => s.name)];
+  const ids = diff.behaviours.map((b) => b.id).filter(Boolean);
+  return [
+    `${refinement.author} edited ${node.title} (${key}) in their refinement "${cs}". It is their turn in the conversation, and now yours: nobody adopts it until an agent has looked at it. This prompt holds everything you need.`,
+    ...changed,
+    ...(other.length ? ['', `They also changed ${other.join(', ')}; the whole text is below.`] : []),
+    '',
+    'Their whole text, as the refinement proposes it:',
+    '',
+    '~~~markdown',
+    item.after.markdown.trim(),
+    '~~~',
+    '',
+    ...itemContext(nodes, node),
+    '',
+    'What to do:',
+    '1. Read their change against the spec above. A person often thinks aloud in the text: a parenthesis, a "?", "Question:", "Possible solution", a doubt or a half-formed idea. None of that belongs in a behaviour.',
+    `2. Take each one out of the behaviour and make it conversation. On the behaviour itself: comment(item: "${key}", behaviour: the ID, refinement: "${cs}", text), which ${refinement.author} sees under that behaviour in their refinement and can answer there. A question about the direction (a design choice the spec has to record) is an Open question instead: ask(place: "${key}", question). Answer what you can in the thread yourself, with your reasoning, and say what you recommend; leave what only they can decide to them.`,
+    `3. Propose a clean revision into the same refinement: propose(refinement: "${cs}", item: "${key}", markdown: the whole text in the strict shape, with each behaviour as Given … when … then …). Keep their meaning and IDs; never write over a part of the spec they didn't touch. Mark ready_for_adoption: [${ids.map((id) => `"${id}"`).join(', ')}] only for behaviours that are clear and testable now.`,
+    `4. If their change is already a clean, testable behaviour, propose it as it is with ready_for_adoption, and comment one line on it saying so.`,
+    `Until you mark something ready, ${refinement.author} sees it as with an agent, not as a decision. Don't adopt or decline it: a person does. If they edit it again, it comes back to you.`,
+  ].join('\n');
+}
