@@ -7,7 +7,7 @@ import { Icon } from './Icon.jsx';
 import { fogReason } from '../map/fog.js';
 import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
-import { AnswerBox, Composer, Thread, useAskName } from '../editor/Annotate.jsx';
+import { Composer, Thread, useAskName } from '../editor/Annotate.jsx';
 import { questionsIn } from '@shared/questions.js';
 import { changeSummary, foldUnchanged, wordDiff } from '@shared/word-diff.js';
 import { clausesOf, isDismissed, locate, piecesOf, quoteOf, refinementThreads, threadsOf } from '@shared/annotations.js';
@@ -653,47 +653,6 @@ function claimWords({ agent, ids, pr }) {
 }
 
 /**
- * The item's open questions, each with its own Answer control (ANSWER-01), so nobody types the convention: the answer is
- * written directly under its question. They are read from the item as it is on the map; one only in your draft is
- * answered here once it is accepted.
- */
-function OpenQuestions({ node, editing }) {
-  const key = itemKeyOf(node);
-  const questions = useMemo(() => questionsIn(key, editableOf(node).markdown), [key, node.body]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [answering, setAnswering] = useState(null);
-  if (!questions.length) return null;
-  return (
-    <section className="open-questions" aria-label="Open questions">
-      <h3>Open questions</h3>
-      <ul>
-        {questions.map((q) => (
-          <li key={q.id}>
-            <p className="question-text">
-              <span className="question-mark" aria-hidden="true">
-                ?
-              </span>
-              <span>{q.text}</span>
-            </p>
-            {q.answer && (
-              <p className="question-answer">
-                <strong>Answer:</strong> {q.answer}
-              </p>
-            )}
-            {answering === q.id ? (
-              <AnswerBox question={q} onPrompt={(t) => editing.answerPrompt(key, q, t)} onAnswer={(t, p) => editing.answer(key, q, t, p)} onCancel={() => setAnswering(null)} />
-            ) : (
-              <button type="button" className="link-btn" onClick={() => setAnswering(q.id)}>
-                {q.answer ? 'Change the answer' : 'Answer'}
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-/**
  * Wasteland (#24 WASTE-03, WASTE-04): why this ground is waste and which mark said so, the behaviours that cross it, the
  * repair handed to an agent as a comment addressed to it (handed over at once, #15 NOTE-17) with those behaviours' tests as
  * the safety net, and the repairs already made with the pull request that made each.
@@ -1145,6 +1104,8 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
   const reviewing = new Set([...editing.others.map((cs) => cs.id), ...(editing.changeset ? [editing.changeset.id] : [])]);
   const proposals = editing.others.flatMap((cs) => cs.items.filter((it) => it.key === key && !it.new && it.after).map((it) => ({ cs, item: it })));
   const madeIn = theirs ? editing.others.find((cs) => cs.id === node.refinement && cs.items.some((it) => it.key === key && it.new)) : null;
+  // The item's open questions as the map has them, each answered directly under itself in the text (#68 ANSWER-01).
+  const questions = useMemo(() => (editable ? questionsIn(key, editableOf(node).markdown) : []), [editable, key, node.body]); // eslint-disable-line react-hooks/exhaustive-deps
   // Every behaviour already written, drafts included, so a new behaviour's ID never collides.
   const texts = useMemo(() => (editable ? tree.list.map((n) => editing.drafts.get(itemKeyOf(n))?.markdown ?? n.body ?? '') : []), [editable, tree, editing.drafts]);
   const readOnly = (
@@ -1267,11 +1228,14 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
               issueNumber={issue?.number}
               areaTexts={texts}
               comments={comments.filter((c) => c.itemKey === key && c.anchor?.on !== 'changeset' && !c.anchor?.photo && !(c.anchor?.refinement && reviewing.has(c.anchor.refinement)))}
+              questions={questions}
               commenting={commenting}
               placeholderTitle={Boolean(node.refinement) && !theirs ? `New ${node.kind}` : null}
               conflict={editing.conflicts.has(key)}
               onChange={(after) => editing.change(key, after)}
               onComment={(anchor, text, extra) => editing.comment(key, anchor, text, extra)}
+              onAnswer={(q, text, prompt) => editing.answer(key, q, text, prompt)}
+              onAnswerPrompt={(q, text) => editing.answerPrompt(key, q, text)}
               onPromote={editing.promote}
               onDismiss={editing.dismiss}
               onRestore={editing.restore}
@@ -1283,7 +1247,6 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
           readOnly
         )}
       </div>
-      {editable && <OpenQuestions node={node} editing={editing} />}
       <EditBar editing={editing} box={box} comments={comments} onPick={onPick} />
 
       <ProofSection node={node} atBehaviour={atBehaviour} proof={proof} />

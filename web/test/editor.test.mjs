@@ -7,7 +7,8 @@ import { liftListItem, sinkListItem } from '@tiptap/pm/schema-list';
 import { editableOf, firstPlace, isWellFormed, itemKeyOf, newItemMarkdown, parseIssue, placeOf, sectionText } from '@shared/issue-shape.js';
 import { EXTENSIONS, parseMarkdown, throughEditor } from '../src/editor/rich-text.js';
 import { fromDocument, toDocument } from '../src/editor/document.js';
-import { hintAt, openWithBodies, sectionBodies } from '../src/editor/shape-extension.js';
+import { hintAt, openWithBodies, questionPlaces, sectionBodies } from '../src/editor/shape-extension.js';
+import { questionsIn } from '@shared/questions.js';
 import { commentHtml } from '../src/editor/comment-text.js';
 import { linkAt } from '../src/editor/issue-links.js';
 import { backOf, followLink, linkTarget } from '../src/model/links.js';
@@ -268,4 +269,44 @@ test('EDIT-24 one refused edit never blocks editing a new item: its refinement i
   const elsewhere = await call('PUT', `/api/projects/${pid}/changesets/${changesets.at(-1).id}/items`, { key, title: 'x', markdown }).catch((err) => err);
   assert.equal(elsewhere.status, 409, 'a new item is only edited in its own refinement');
   assert.equal(refinementGone(elsewhere), false);
+});
+
+test('ANSWER-01 each unanswered question has its Answer control directly under it, in the item\'s own Open questions with its links; an answered one shows its answer', () => {
+  const markdown = [
+    'Part of #1',
+    '',
+    '## Why',
+    '',
+    'Because.',
+    '',
+    '## Open questions',
+    '',
+    '- Which store keeps the drafts, given [#13](https://github.com/o/r/issues/13)?',
+    '- Who signs off?',
+    'Answer: Ken does.',
+    '- Tabbed or **multi** page?',
+    '',
+  ].join('\n');
+  const doc = schema.nodeFromJSON(openWithBodies(parseMarkdown(markdown), schema));
+  const questions = questionsIn('issue-20', markdown);
+  const places = questionPlaces(doc, questions);
+  const under = (p) => {
+    const $p = doc.resolve(p.pos);
+    return { item: $p.parent.type.name, text: $p.parent.textContent, last: $p.index() === $p.parent.childCount };
+  };
+  assert.deepEqual(
+    places.map(under),
+    [
+      { item: 'listItem', text: 'Which store keeps the drafts, given #13?', last: true },
+      { item: 'listItem', text: 'Tabbed or multi page?', last: true },
+    ],
+    'one control under each unanswered question, at the end of its own list item',
+  );
+  assert.deepEqual(places.map((p) => p.id), [questions[0].id, questions[2].id], 'each answers its own question');
+  assert.match(doc.textContent, /Ken does/, 'the answer is in the text, under its question');
+
+  const prose = '## Open questions\n\nWhich embeddings provider?\n';
+  const pdoc = schema.nodeFromJSON(parseMarkdown(prose));
+  assert.equal(questionPlaces(pdoc, questionsIn('issue-20', prose)).length, 1, 'a question written as prose has one too');
+  assert.deepEqual(questionPlaces(doc, []), [], 'a question only in a draft waits until it is accepted');
 });

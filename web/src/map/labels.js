@@ -2,7 +2,8 @@
 // title and its badges; the summary and the body belong to the place card (#11). The renderer measures
 // and draws what this module decides, so this is where "less text on the map" is kept.
 
-import { hasOpenQuestions, parseIssue, sectionText, splitNote } from '@shared/issue-shape.js';
+import { splitNote } from '@shared/issue-shape.js';
+import { questionsOf } from '@shared/questions.js';
 import { STATUS_FILLS, statusColor, statusKey } from './lenses.js';
 
 // Badges in the order they sit beside a symbol.
@@ -13,7 +14,7 @@ export const BADGE_LABEL = {
   agent: 'Agent working on it',
   waiting: 'Waiting for a builder',
   comment: 'Comments',
-  question: 'Open questions',
+  question: 'Needs a decision',
   refine: 'To review: proposed changes waiting for adoption', // #62 REVIEW-04
 };
 export const KIND_SYMBOL_LABEL = { project: 'Project', area: 'Area', epic: 'Epic', feature: 'Feature', story: 'Story', task: 'Task', bug: 'Bug', behavior: 'Behaviour' };
@@ -22,14 +23,15 @@ export const KIND_SYMBOL_LABEL = { project: 'Project', area: 'Area', epic: 'Epic
 export const shortTitle = (n) => String(n.title ?? '').replace(/^#\d+\s+/, '').trim();
 
 const questionCache = new Map();
-/** How many open questions an item's "Open questions" section holds: one per list item, or one for prose. */
+/**
+ * How many of an item's open questions still need a decision: one per question in its "Open questions" section (a list
+ * item, or prose), and none once it has an `Answer:` under it (#68 ANSWER-01), since then it waits on an agent, not a person.
+ */
 export function openQuestionCount(n) {
   const key = `${n.id}|${n.updatedAt}|${n.body?.length}`;
   if (questionCache.has(key)) return questionCache.get(key);
   if (questionCache.size > 5000) questionCache.clear();
-  const text = /^##\s+Open questions/im.test(n.body ?? '') ? sectionText(parseIssue(splitNote(n.body).markdown), 'Open questions') : '';
-  const items = text.split('\n').filter((l) => /^\s*(?:[-*+]|\d+[.)])\s+\S/.test(l)).length;
-  const count = hasOpenQuestions(text) ? Math.max(1, items) : 0;
+  const count = /^##\s+Open questions/im.test(n.body ?? '') ? questionsOf(splitNote(n.body).markdown).filter((q) => !q.answer).length : 0;
   questionCache.set(key, count);
   return count;
 }
