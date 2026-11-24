@@ -41,6 +41,7 @@ model.
 | Coverage report | `PROJECT#<id>` | `COVERAGE` | | |
 | Photo (a screenshot, #16) | `PROJECT#<id>` | `IMAGE#<itemKey>#<photoId>` | | |
 | Photo part (its bytes) | `PROJECT#<id>` | `IMGPART#<photoId>#<version>#<n>` | | |
+| Behaviour counter (#13 ADOPT-11) | `PROJECT#<id>` | `COUNTER#<prefix>` | | |
 | Upload link | `UPLOAD#<sha256 of the link>` | `UPLOAD` | | |
 | Sign-in record (#52) | `SIGNIN#<kind>` | the rest of its name, e.g. `<session hash>` | | |
 
@@ -138,6 +139,7 @@ agents' tokens first. The token itself is never stored.
 | Remove a screenshot | `photos.delete(projectId, photo)` | DeleteItem, Query its parts, batched deletes |
 | Give an agent a one-time link to send a screenshot to; use it (SHOT-04) | `uploads.put(hash, row)`, `uploads.take(hash, now)` | PutItem with TTL; GetItem, DeleteItem |
 | Sign-in's records: a session by its hash, a person, an identity, a sign-in's state; one person's sessions (#52) | `signIn.get` / `put` / `delete`, `signIn.list(prefix)` | GetItem; PutItem with TTL; DeleteItem; Query `PK = SIGNIN#<kind>`, `begins_with(SK, …)` |
+| Give new behaviours their area's next numbers, never one given before (#13 ADOPT-11) | `ids.take(projectId, prefix, n, floor)` | UpdateItem `ADD`, conditional on being above the floor; the first time, a conditional write starts it there |
 | Count an agent's call this minute | `limits.count(projectId, agentId, minute, limit)` | UpdateItem `ADD`, conditional on the limit |
 
 ## Adding a feature

@@ -9,6 +9,7 @@ import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
 import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './edits.mjs';
 import { keepPending, markEdited, saveNow } from './sync.mjs';
+import { memoOf, numberNew } from './numbering.mjs';
 import { createStores } from './stores/index.mjs';
 import { eventsFromWebhook, githubKey, signedByGitHub } from './stores/github/index.mjs';
 import { answerPrompt, awaitsApplying, questionsOfNode, questionsOnMap, settleAnswers } from './answers.mjs';
@@ -433,6 +434,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           if (subtreeIds(nodes, nid).includes(patch.parentId)) throw new ValidationError('parentId: cannot move a node inside itself');
         }
         if (patch.kind === 'project') delete patch.kind;
+        if (typeof patch.body === 'string') patch.body = (await numberNew(model, pid, { markdown: patch.body, title: patch.title ?? current.title, nodes })).markdown; // #13 ADOPT-11
         if (patch.links) {
           const known = new Set(nodes.map((n) => n.id));
           patch.links = patch.links.filter((l) => known.has(l.to) && l.to !== nid);
@@ -488,18 +490,24 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { nodes } = await loadProject(pid);
         const node = findItem(nodes, key);
         if (!node) throw new HttpError(404, 'No such item on the map');
-        const after = version(body, 'item');
-        if (!after.title) throw new ValidationError('title: required');
+        const asked = version(body, 'item');
+        if (!asked.title) throw new ValidationError('title: required');
         if (node.refinement && node.refinement !== cs.id) throw new HttpError(409, 'This item is new in another refinement: it changes there until that one is adopted');
+        // Its new behaviours get their numbers now, on their first save (#13 ADOPT-11), and the answer says which.
+        const was = cs.items.find((it) => it.key === key);
+        const { markdown, given } = await numberNew(model, pid, { markdown: asked.markdown, title: asked.title, nodes, memo: was?.numbered });
+        const after = { ...asked, markdown };
+        const numbered = given.length ? { numbered: given } : {};
+        const remember = (it) => (given.some((g) => g.placeholder) ? { ...it, numbered: memoOf(given, it.numbered) } : it);
         if (node.refinement) {
           // A new item has no spec to protect: its edits change it in place, and everyone sees them (NEW-03).
           const changed = { ...applyTo(node, after, new Date().toISOString()), status: node.status };
           if (/^Kind:\s*Epic\b/im.test(after.markdown)) changed.kind = 'epic';
           await model.nodes.put(pid, [changed]);
-          cs.items = cs.items.map((it) => (it.key === key ? { ...it, nodeTitle: changed.title } : it));
+          cs.items = cs.items.map((it) => (it.key === key ? remember({ ...it, nodeTitle: changed.title }) : it));
           cs.updatedAt = changed.updatedAt;
           await model.changesets.put(pid, cs);
-          return { changeset: cs, node: changed };
+          return { changeset: cs, node: changed, ...numbered };
         }
         const at = cs.items.findIndex((it) => it.key === key);
         // A whole new text, written after reading the item as it is now (an agent's revision, ADOPT-13), is based on
@@ -510,8 +518,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           if (at >= 0) cs.items.splice(at, 1);
         } else if (at >= 0) {
           const { conflict, theirs, ...kept } = cs.items[at];
-          cs.items[at] = rebased ? { ...kept, base, after } : { ...cs.items[at], after };
-        } else cs.items.push({ key, nodeTitle: node.title, base, after, at: new Date().toISOString() }); // `at`: waiting since (#62 REVIEW-02)
+          cs.items[at] = remember(rebased ? { ...kept, base, after } : { ...cs.items[at], after });
+        } else cs.items.push(remember({ key, nodeTitle: node.title, base, after, at: new Date().toISOString() })); // `at`: waiting since (#62 REVIEW-02)
         cs.updatedAt = new Date().toISOString();
         // Whose turn it is (ADOPT-20): an agent writing into a person's refinement has looked at it; a person's own edit
         // goes to an agent, through the agents' inbox, and waits for one to look again whatever it had marked ready.
@@ -528,7 +536,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           const held = (await model.inbox.list(pid)).find((r) => r.id === id);
           await model.inbox.put(pid, { ...held, id, kind: 'edit', changeset: cs.id, itemKey: key, at: held?.at ?? cs.updatedAt });
         }
-        return { changeset: cs, ...(rebased ? { rebased: true } : {}) };
+        return { changeset: cs, ...(rebased ? { rebased: true } : {}), ...numbered };
       },
     ],
 
@@ -544,15 +552,16 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const kind = KINDS.includes(body?.kind) && !['project', 'area'].includes(body.kind) ? body.kind : 'task';
         const now = new Date().toISOString();
         const title = text(body?.title ?? '', 200, 'title').trim() || `New ${kind}`;
-        const markdown = body?.markdown != null ? text(body.markdown, 19000, 'markdown') : newItemMarkdown({ kind, partOf: partOf(stores.forProject(project), parent), place: placeOf(editableOf(parent).markdown) });
+        const asked = body?.markdown != null ? text(body.markdown, 19000, 'markdown') : newItemMarkdown({ kind, partOf: partOf(stores.forProject(project), parent), place: placeOf(editableOf(parent).markdown) });
+        const { markdown, given } = await numberNew(model, pid, { markdown: asked, title, nodes }); // #13 ADOPT-11
         const id = newId();
         const node = { ...applyTo({ ...sanitizeNode({ kind, title, status: 'idea', tags: kind === 'story' ? ['new-feature'] : [] }), id, parentId: parent.id, createdAt: now }, { title, markdown }, now), status: 'idea', refinement: cs.id, ...(['ready', 'in_progress'].includes(body?.adoptAs) ? { adoptAs: 'ready' } : {}) };
         await model.nodes.put(pid, [node]);
-        cs.items.push({ key: itemKeyOf(node), nodeTitle: node.title, new: true, at: now });
+        cs.items.push({ key: itemKeyOf(node), nodeTitle: node.title, new: true, at: now, ...(given.some((g) => g.placeholder) ? { numbered: memoOf(given) } : {}) });
         cs.updatedAt = now;
         await model.changesets.put(pid, cs);
         await touchProject(project, [...nodes, node]);
-        return { changeset: cs, node };
+        return { changeset: cs, node, ...(given.length ? { numbered: given } : {}) };
       },
       { status: 201 },
     ],

@@ -211,6 +211,21 @@ test('MCP-06 ADOPT-08 refine and propose open and fill a refinement; an agent ma
   assert.ok(!(await a.rpc('tools/list')).result.tools.some((t) => /adopt|accept/.test(t.name)), 'no tool adopts');
 });
 
+test('ADOPT-11 a placeholder in proposed markdown gets its area\'s next number when it is proposed', async () => {
+  const { agent, rest, pid } = await setup();
+  const [a, b] = [await agent('Builder'), await agent('Other')];
+  const { refinement } = await a.use('refine', { place: 'issue-11' });
+  const other = (await b.use('refine', { place: 'issue-12' })).refinement;
+  await Promise.all([
+    a.use('propose', { refinement, item: 'issue-11', markdown: body({ behaviours: ['CL-01 Given work, when claimed, then it is held.', 'CL-? Given a claim, when it ends, then it says so.'] }) }),
+    b.use('propose', { refinement: other, item: 'issue-12', markdown: body({ behaviours: ['CL-? Given a claim, when it is taken, then it is logged.'] }) }),
+  ]);
+  const proposed = async (id) => (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((x) => x.id === id).items[0].after.markdown;
+  const ids = [...(await proposed(refinement)).matchAll(/- (CL-\S+)/g), ...(await proposed(other)).matchAll(/- (CL-\S+)/g)].map((m) => m[1]);
+  assert.equal(ids[0], 'CL-01');
+  assert.deepEqual(ids.slice(1).sort(), ['CL-03', 'CL-04'], 'each its own number, though both agents wrote at once, and never CL-02, which this proposal drops');
+});
+
 test("ADOPT-05 ADOPT-10 a person adopts or declines an agent's refinement, and the agent hears which, and why, at its standup", async () => {
   const { agent, rest, pid, clock } = await setup();
   const a = await agent('Builder');

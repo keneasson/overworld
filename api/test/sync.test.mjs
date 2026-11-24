@@ -508,6 +508,27 @@ const behaviours = [
       assert.equal(h.storedTitled('Refund in cash').length, 0);
     },
   ],
+  [
+    'ADOPT-11 a behaviour that arrives from the store without a number gets its area\'s next one, and goes back with a save',
+    {},
+    async (h) => {
+      const before = h.stored(4).markdown;
+      const theirs = '## Why\n\nTokens.\n\n## Behaviours\n\n- PAY-10 Given a card, when saved, then it is a token.\n- Given a wallet, when saved, then it is kept.\n- PAY-? Given a refund, when asked, then it is paid.\n';
+      h.editInStore(4, { markdown: theirs });
+      await h.notify(4);
+      const four = await h.nodeOf(4);
+      assert.match(await h.textOf(4), /- PAY-11 Given a wallet[^\n]*\n- PAY-12 Given a refund/);
+      assert.equal(four.sync, 'unsaved', 'numbering it is an edit here, which waits for a save');
+      assert.equal(h.stored(4).markdown, theirs, 'nothing is written to the store until then');
+      assert.notEqual(before, theirs);
+      await h.save();
+      assert.equal((await h.sync.drain(h.pid)).status, 'synced');
+      assert.match(h.stored(4).markdown, /- PAY-11 Given a wallet/);
+      h.editInStore(4, { markdown: `${h.stored(4).markdown}- Given a card again, when saved, then it is a new token.\n` });
+      await h.notify(4);
+      assert.match(await h.textOf(4), /- PAY-13 Given a card again/, 'the next one, never one given before');
+    },
+  ],
 ];
 
 for (const [name, options, run] of behaviours) test(name, async () => run(await harness('github', options)));

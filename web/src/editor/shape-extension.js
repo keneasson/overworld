@@ -1,6 +1,6 @@
 // The strict shape, kept by the document rather than by forms (EDIT-02, EDIT-07): a missing section and a behaviour
 // without an ID are marked where they are, Given / When / Then are picked out, Enter
-// at the end of a behaviour starts the next one with its ID, and each annotation (#15) is a marker with its
+// at the end of a behaviour starts the next one with a placeholder for its ID, swapped for its number once saved (#13 ADOPT-11), and each annotation (#15) is a marker with its
 // author's initials at the words it is about, which stay highlighted (NOTE-13). Nothing here ever blocks typing.
 // A section's heading holds only its name (EDIT-16): every section has a line to type on, and words typed, pasted or
 // Entered into a shape heading go to that line instead. A section heading the shape doesn't have can't be made: one typed
@@ -16,7 +16,8 @@ import { rangeOf, sectionTexts } from './targets.js';
 import { addSection, missingSections } from './sections.js';
 
 const KEY = new PluginKey('issueShape');
-const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-\d+)\b/;
+// An ID, or a new behaviour's placeholder (AREA-?N) until its first save gives it a number (#13 ADOPT-11).
+const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-(?:\d+\b|\?\d*))/;
 const GWT = /\b(given)\b[\s\S]*?\b(when)\b[\s\S]*?\b(then)\b/di;
 const canonical = (name) => SECTIONS.find((s) => s.toLowerCase() === name.toLowerCase().replace(/^behaviors$/, 'behaviours')) ?? name;
 
@@ -312,8 +313,8 @@ export const IssueShape = Extension.create({
   name: 'issueShape',
 
   addOptions() {
-    // nextId(): the ID a new behaviour gets. onThread(id, marker): open an annotation's thread. onAnswer(id, control): answer a question.
-    return { nextId: () => 'ITEM-01', onThread: () => {}, onAnswer: () => {} };
+    // nextId(): the placeholder a new behaviour starts with (AREA-?N); the server numbers it on its first save (#13 ADOPT-11). onThread(id, marker): open an annotation's thread. onAnswer(id, control): answer a question.
+    return { nextId: () => 'ITEM-?1', onThread: () => {}, onAnswer: () => {} };
   },
 
   addStorage() {
@@ -350,6 +351,32 @@ export const IssueShape = Extension.create({
     };
   },
 });
+
+/**
+ * The numbers a save gave new behaviours, in place of their placeholders (#13 ADOPT-11): `given` is the server's list
+ * ({ placeholder, id }, in the order written). Only a placeholder at the start of a behaviour in Behaviours changes.
+ */
+export function swapIds(state, given) {
+  const queue = new Map();
+  for (const g of given) if (g.placeholder && g.id) queue.set(g.placeholder, [...(queue.get(g.placeholder) ?? []), g.id]);
+  if (!queue.size) return null;
+  const swaps = [];
+  state.doc.forEach((node, offset) => {
+    if (node.type.name !== 'bulletList' || sectionAt(state.doc, offset) !== 'Behaviours') return;
+    node.descendants((item, pos) => {
+      if (item.type.name !== 'listItem') return true;
+      const para = item.firstChild;
+      const id = para?.isTextblock ? para.textContent.match(ID)?.[1] : null;
+      const to = id && queue.get(id)?.shift();
+      if (to) swaps.push({ from: offset + 1 + pos + 2, length: id.length, to });
+      return true;
+    });
+  });
+  if (!swaps.length) return null;
+  const tr = state.tr;
+  for (const s of swaps.reverse()) tr.insertText(s.to, s.from, s.from + s.length);
+  return tr.setMeta('addToHistory', false);
+}
 
 /** Show annotations as they change, without waiting for an edit: each thread's first annotation, and the one open. */
 export function refreshNotes(editor, threads, active = null, questions = editor?.storage.issueShape.questions) {

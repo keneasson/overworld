@@ -161,7 +161,8 @@ export function newItemMarkdown({ kind, partOf = '', place = '' }) {
 // ---- Behaviours ----------------------------------------------------------------------------
 
 const ITEM = /^\s*[-*]\s+(.*)$/;
-const ID = /^(?:\*\*)?`?([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*)-(\d+)`?(?:\*\*)?:?\s+([\s\S]*)$/;
+// An ID is AREA-NN, or a draft's placeholder AREA-?N until its first save numbers it (#13 ADOPT-11).
+const ID = /^(?:\*\*)?`?([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*)-(\d+|\?\d*)`?(?:\*\*)?:?\s+([\s\S]*)$/;
 const GWT = /^given\s+([\s\S]+?),?\s+when\s+([\s\S]+?),?\s+then\s+([\s\S]+)$/i;
 
 let rowSeq = 0;
@@ -218,12 +219,16 @@ export const blankBehaviour = (id) => ({ key: rowKey(), id, given: '', when: '',
 // ---- Behaviour IDs ---------------------------------------------------------------------------
 
 const ANY_ID = /\b([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*)-(\d{1,4})\b/g;
+const PLACEHOLDER = /^([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*)-\?(\d*)$/;
+
+/** A draft behaviour's ID before its first save: AREA-?N, which the server swaps for the area's next number (#13 ADOPT-11). */
+export const isPlaceholder = (id) => PLACEHOLDER.test(String(id ?? ''));
 
 /** The prefix an issue's behaviours already use, or one made from its title ("Area editor" -> AREA). */
 export function behaviourPrefix(rows, title = '') {
   const counts = new Map();
   for (const r of rows) {
-    const p = r.id.replace(/-\d+$/, '');
+    const p = r.id.replace(/-(\d+|\?\d*)$/, '');
     if (p) counts.set(p, (counts.get(p) ?? 0) + 1);
   }
   if (counts.size) return [...counts].sort((a, b) => b[1] - a[1])[0][0];
@@ -235,11 +240,63 @@ export function behaviourPrefix(rows, title = '') {
   return (words[0] ?? 'ITEM').toUpperCase().slice(0, 6);
 }
 
-/** The next free ID for a prefix, counting every behaviour already written in the area. */
-export function nextBehaviourId(prefix, texts) {
-  let max = 0;
-  for (const t of texts) for (const m of String(t ?? '').matchAll(ANY_ID)) if (m[1] === prefix) max = Math.max(max, Number(m[2]));
-  return `${prefix}-${String(max + 1).padStart(2, '0')}`;
+/** The ID a new behaviour is drafted with: a placeholder, never a number, so an abandoned draft uses none (#13 ADOPT-11). */
+export function placeholderId(prefix, markdown = '', after = 0) {
+  let n = after;
+  for (const m of String(markdown).matchAll(/\b([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*)-\?(\d+)/g)) if (m[1] === prefix) n = Math.max(n, Number(m[2]));
+  return `${prefix}-?${n + 1}`;
+}
+
+/** The highest number given for each prefix in these texts: what an area's counter must stay above. */
+export function highestIds(texts) {
+  const max = new Map();
+  for (const t of texts) for (const m of String(t ?? '').matchAll(ANY_ID)) max.set(m[1], Math.max(max.get(m[1]) ?? 0, Number(m[2])));
+  return max;
+}
+
+const BULLET = /^(\s*[-*]\s+(?:\*\*)?`?)([A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-(?:\d+|\?\d*))?/;
+
+/**
+ * The behaviours in an item's text still to be numbered, each with its prefix: every placeholder, and with `bare`, every
+ * behaviour written without an ID that `previous` (the item before) didn't have, as one arriving from the store may be.
+ * @returns {{ line: number, prefix: string, placeholder: string|null }[]}
+ */
+export function unnumbered(markdown = '', { title = '', bare = false, previous = null } = {}) {
+  const shape = parseIssue(markdown);
+  const rows = parseBehaviours(sectionText(shape, 'Behaviours'));
+  const had = new Set(previous == null ? [] : parseBehaviours(sectionText(parseIssue(previous), 'Behaviours')).map((r) => said({ ...r, raw: null })));
+  const prefix = behaviourPrefix(rows.filter((r) => r.id && !isPlaceholder(r.id)), title);
+  const out = [];
+  let section = null;
+  String(markdown).split('\n').forEach((line, i) => {
+    const h = line.match(/^##\s+(.*?)\s*$/);
+    if (h) section = h[1].replace(/^behaviors$/i, 'Behaviours');
+    if (section !== 'Behaviours' || !ITEM.test(line)) return;
+    const row = readItem(line.match(ITEM)[1]);
+    if (isPlaceholder(row.id)) out.push({ line: i, prefix: row.id.replace(/-\?\d*$/, ''), placeholder: row.id });
+    else if (bare && !row.id && (row.text || row.given) && !had.has(said({ ...row, raw: null }))) out.push({ line: i, prefix, placeholder: null });
+  });
+  return out;
+}
+
+/** The text with each of `unnumbered`'s lines given its ID (`ids`, line -> ID), everything else exactly as it was. */
+export function withIds(markdown, ids) {
+  return String(markdown)
+    .split('\n')
+    .map((line, i) => (ids.has(i) ? line.replace(BULLET, (_, lead, old) => (old ? `${lead}${ids.get(i)}` : `${lead}${ids.get(i)} `)) : line))
+    .join('\n');
+}
+
+/**
+ * The text with placeholders swapped for the numbers a save gave them, as the editor then shows them. `given` lists them in
+ * the order they were written ({ placeholder, id }), so the same placeholder written twice still gets two numbers.
+ */
+export function renumbered(markdown, given = []) {
+  if (!given.length) return markdown;
+  const queue = new Map();
+  for (const g of given) queue.set(g.placeholder, [...(queue.get(g.placeholder) ?? []), g.id]);
+  const ids = new Map(unnumbered(markdown).flatMap((u) => (queue.get(u.placeholder)?.length ? [[u.line, queue.get(u.placeholder).shift()]] : [])));
+  return withIds(markdown, ids);
 }
 
 // ---- The note the mapper adds to an issue's body on the map ----------------------------------

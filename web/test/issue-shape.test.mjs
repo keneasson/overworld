@@ -8,7 +8,8 @@ import {
   compareItems,
   mergeChanges,
   isWellFormed,
-  nextBehaviourId,
+  placeholderId,
+  renumbered,
   parseBehaviours,
   parseIssue,
   sectionText,
@@ -116,10 +117,13 @@ test('EDIT-02 behaviours read as Given / When / Then, and untouched ones keep th
   assert.equal(out[0], rows[0].raw);
 });
 
-test('EDIT-02 a new behaviour gets the next ID in the area, written in the shape', () => {
-  const area = ISSUES.map((i) => i.body);
-  assert.equal(nextBehaviourId('EDIT', area), 'EDIT-06');
-  assert.equal(nextBehaviourId('NEW', area), 'NEW-01');
+test('EDIT-02 ADOPT-11 a new behaviour is drafted with a placeholder for its ID, written in the shape, until a save gives it the number', () => {
+  const draft = '## Behaviours\n\n- EDIT-01 Given a, when b, then c.\n- EDIT-?1 Given d, when e, then f.';
+  assert.equal(placeholderId('EDIT', draft), 'EDIT-?2', 'a placeholder, never a number');
+  assert.equal(placeholderId('NEW', draft, 4), 'NEW-?5', 'each one its own');
+  assert.deepEqual(parseBehaviours(sectionText(parseIssue(draft), 'Behaviours')).map((r) => r.id), ['EDIT-01', 'EDIT-?1'], 'it reads as the behaviour\'s ID');
+  assert.equal(behaviourPrefix(parseBehaviours('- EDIT-?1 Given a, when b, then c.')), 'EDIT');
+  assert.equal(renumbered(draft, [{ placeholder: 'EDIT-?1', id: 'EDIT-07' }]), '## Behaviours\n\n- EDIT-01 Given a, when b, then c.\n- EDIT-07 Given d, when e, then f.');
   const rows = parseBehaviours('- EDIT-01 Given a, when b, then c.');
   assert.equal(behaviourPrefix(rows), 'EDIT');
   assert.equal(behaviourPrefix([], '#9 Area editor for the strict issue shape'), 'AREA');

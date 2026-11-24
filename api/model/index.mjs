@@ -15,6 +15,7 @@ import { audits, budgets, jobs, leases, links } from './access-patterns/sync.mjs
 import { findings } from './access-patterns/coherence.mjs';
 import { vectors } from './access-patterns/vectors.mjs';
 import { signIn } from './access-patterns/sign-in.mjs';
+import { ids } from './access-patterns/ids.mjs';
 import { actions, agents, builds, claims, facts, handoffs, limits, requests } from './access-patterns/agents.mjs';
 
 export async function createModel(env = process.env) {
@@ -30,5 +31,6 @@ export function modelFor(table) {
     coverage: coverage(table),
     photos: photos(table), uploads: uploads(table),
     signIn: signIn(table),
+    ids: ids(table),
   };
 }

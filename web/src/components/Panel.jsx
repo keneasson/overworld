@@ -1274,6 +1274,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
             <IssueForm
               key={`${key}:${editing.generation}`}
               value={editing.drafts.get(key) ?? editableOf(node)}
+              itemKey={key}
               issueNumber={issue?.number}
               areaTexts={texts}
               comments={comments.filter((c) => c.itemKey === key && c.anchor?.on !== 'changeset' && !c.anchor?.photo && !(c.anchor?.refinement && reviewing.has(c.anchor.refinement)))}
