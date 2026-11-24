@@ -196,4 +196,9 @@ test('ADOPT-21 a person\'s own change shows as with an agent, not as a decision,
   const ready = await show({ looked: { by: 'Builder (a1b2c)', at: new Date().toISOString() }, readyForAdoption: ['ID-01'] });
   assert.match(ready, / Adopt<!-- --> 1</, 'Adopt is offered once an agent marks it ready');
   assert.doesNotMatch(ready, /Sent to an agent/);
+  // Your own change, still in the editor as your open refinement, says the same while you keep editing it.
+  const { prelude } = await prerender(h(Details, { node: t.byId.get('p'), tree: t, lens: LENSES[0], editing: editing({ changeset: { id: 'k1', author: 'Ken', status: 'open', items: [{ key: key(20), base, after }] }, drafts: new Map([[key(20), after]]) }), onPick: () => {}, onFly: () => {}, onAdd: () => {}, onPatch: () => {}, onDelete: () => {}, onClose: () => {}, onCopyLink: () => {} }));
+  let html = '';
+  for await (const chunk of prelude) html += Buffer.from(chunk).toString();
+  assert.match(html, /Your change is with an agent · waiting/);
 });
