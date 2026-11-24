@@ -8,9 +8,9 @@ import { pathOf } from './tree.js';
 /** Who a changeset is by, as the API writes it: a person's name, or "Name (id)" for an agent. */
 export const authorOf = (name) => String(name ?? '').trim().slice(0, 80) || 'Someone';
 
-/** Your open refinement: the latest one of yours with edits in it, else the latest of yours, else none. */
+/** Your open refinement: the latest one of yours with edits in it, else the latest of yours, else none. A bug report keeps its own (REPORT-04). */
 export function yourChangeset(changesets, name) {
-  const yours = changesets.filter((c) => c.status === 'open' && c.author === authorOf(name));
+  const yours = changesets.filter((c) => c.status === 'open' && !c.report && c.author === authorOf(name));
   return yours.filter((c) => c.items?.length).at(-1) ?? yours.at(-1) ?? null;
 }
 

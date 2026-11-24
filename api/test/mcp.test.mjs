@@ -1,4 +1,4 @@
-// The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, ANSWER-07, #68), annotations addressed to agents (NOTE-07, NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15), a comment never an open question (NOTE-22) and leaf-only work (STATE-09, STATE-10, #32) and build requests and the runner they start (HANDOFF-01, HANDOFF-05 to HANDOFF-07, HANDOFF-09, HANDOFF-10, #14), tested the way an agent uses it: JSON-RPC over HTTP.
+// Bug reports and their triage (REPORT-04 to REPORT-07). The MCP server's behaviours (MCP-01 to MCP-10, MCP-12 to MCP-14, #4), the standup (CONN-03 to CONN-05, #34), applying an answer (ANSWER-01 to ANSWER-05, ANSWER-07, #68), annotations addressed to agents (NOTE-07, NOTE-08, NOTE-14, NOTE-17 to NOTE-19, #15), a comment never an open question (NOTE-22) and leaf-only work (STATE-09, STATE-10, #32) and build requests and the runner they start (HANDOFF-01, HANDOFF-05 to HANDOFF-07, HANDOFF-09, HANDOFF-10, #14), tested the way an agent uses it: JSON-RPC over HTTP.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -974,4 +974,42 @@ test('PROVEN-06 PROVEN-07 PROVEN-05 a done behaviour is done only while its proo
   await rest('POST', '/api/deploys', { repo: 'octo/app', sha: 'def5678aaa', outcome: 'success', pulls: [] });
   const { coverage, code } = await rest('GET', `/api/projects/${pid}/coverage`);
   assert.deepEqual([coverage.commit, code], ['abc1234', 'def5678aaa'], 'the report and the code each say their commit, so the map can tell the report is older');
+});
+
+test('REPORT-04 REPORT-05 REPORT-06 a bug report is a draft bug in its own refinement, and its thread goes back and forth with the agent triaging it', async () => {
+  const { rest, pid, agent, item } = await setup();
+  const a = await agent('Triage');
+  const zoom = await item(10);
+  const made = await rest('POST', `/api/projects/${pid}/reports`, { text: 'Zooming in shows the children twice.', parentId: zoom.id, behaviours: ['ZOOM-01'], items: ['issue-11'], author: 'Ken' });
+  assert.equal(made.node.kind, 'bug');
+  assert.equal(made.node.parentId, zoom.id);
+  assert.match(made.node.body, /Kind: Bug/);
+  assert.match(made.node.body, /## Why\n\nZooming in shows the children twice\.\n\nIt seems to break ZOOM-01\./);
+  assert.ok(made.changeset.report && made.changeset.items.some((it) => it.key === `node-${made.node.id}` && it.new), 'its own refinement, by the reporter');
+  assert.ok(!(await a.use('next_work')).work.some((w) => w.item === `node-${made.node.id}`), 'a draft is not work');
+
+  const up = await a.use('standup');
+  const [note] = up.addressed_to_you.annotations;
+  assert.equal(note.item, `node-${made.node.id}`);
+  assert.match(up.first_step, /^Act on what Ken addressed to you/);
+  assert.match(note.prompt, /bug report/);
+  assert.match(note.prompt, /Zooming in shows the children twice/);
+  assert.match(note.prompt, new RegExp(`propose\\(refinement: "${made.changeset.id}"`));
+
+  await a.use('reply', { annotation: note.annotation, item: note.item, text: 'Which children: issues or behaviours?' });
+  await rest('POST', `/api/projects/${pid}/comments`, { itemKey: note.item, replyTo: note.annotation, text: 'Behaviours, every time.', author: 'Ken' });
+  const back = (await a.use('zoom')).addressed_to_you_now;
+  assert.equal(back?.[0].annotation, note.annotation, 'the reply reaches the triaging agent without an @');
+  assert.match(back[0].prompt, /Behaviours, every time\./);
+
+  const fixed = await a.use('propose', { refinement: made.changeset.id, item: note.item, markdown: made.node.body.replace(/## Behaviours\n\n<!--[\s\S]*?-->/, '## Behaviours\n\n- ZOOM-01 Given a place, when zoomed, then its children show once; now each shows twice.'), ready_for_adoption: ['ZOOM-01'] });
+  assert.deepEqual(fixed.ready_for_adoption, ['ZOOM-01'], 'the agent triages it in the report\'s refinement');
+});
+
+test('REPORT-07 next_work offers ready bugs before ready features, whatever their priority', async () => {
+  const { rest, pid, agent } = await setup();
+  const a = await agent('Builder');
+  const web = (await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title === 'Web');
+  const { nodes: [bug] } = await rest('POST', `/api/projects/${pid}/nodes`, { node: { parentId: web.id, kind: 'bug', title: 'Counts are wrong', status: 'ready', priority: 'P3', body: body({ behaviours: ['COUNT-01 Given a child, when shown, then its counts are right; now they are off by one.'] }) } });
+  assert.deepEqual((await a.use('next_work')).work.map((w) => w.item).slice(0, 2), [`node-${bug.id}`, 'issue-11'], 'the P3 bug before the P0 feature');
 });

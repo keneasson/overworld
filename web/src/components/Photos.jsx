@@ -15,7 +15,7 @@ const LONGEST = 2560; // pixels: bigger screenshots are scaled down before they 
 const shown = new Map(); // `${project}/${photo}/${version}` -> an object URL, so a screenshot loads once
 
 /** A screenshot as the API takes it: base64, scaled down and re-encoded when it is too big to send as it is. */
-async function encode(file) {
+export async function encode(file) {
   if (!PHOTO_TYPES.includes(file.type)) throw new Error('That isn’t a PNG, JPEG, WebP or GIF screenshot');
   const bitmap = await createImageBitmap(file).catch(() => null);
   const fits = file.size <= MAX_PHOTO_BYTES * 0.7 && (!bitmap || Math.max(bitmap.width, bitmap.height) <= LONGEST);

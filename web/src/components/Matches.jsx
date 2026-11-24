@@ -42,7 +42,7 @@ function Row({ m, live, active, sub, onPick }) {
  * @param {{ eyebrow: any, heading: string, blurb?: string, list: ReturnType<import('../model/find.js').findList>, chosen: string[],
  *   active?: number, live?: object, stat?: (node: object) => string, onChoose: (chosen: string[]) => void, onPick: (m: object) => void, onClose: () => void }} p
  */
-export function Matches({ eyebrow, heading, blurb, list, chosen, active = -1, live, stat, onChoose, onPick, onClose }) {
+export function Matches({ eyebrow, heading, blurb, action = null, list, chosen, active = -1, live, stat, onChoose, onPick, onClose }) {
   const { rows, chips, inView } = list;
   const sub = ({ node, behaviour }) => (behaviour ? node.title : [stat?.(node), pathOf(node).slice(1, -1).map((p) => p.title).join(' › ') || 'Project'].filter(Boolean).join(' — '));
   return (
@@ -57,6 +57,7 @@ export function Matches({ eyebrow, heading, blurb, list, chosen, active = -1, li
         </button>
       </header>
       {blurb && <p className="summary">{blurb}</p>}
+      {action}
       {(chosen.length > 0 || chips.length > 0) && (
         <div className="filter-chips" role="group" aria-label="Filters">
           {chosen.map((k) => (

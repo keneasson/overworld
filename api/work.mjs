@@ -118,7 +118,7 @@ export function buildingOf(node, claim, behaviour = null, report = null) {
 export const brokenOf = (node, report) => (node.status === 'done' && report ? behavioursOf(node).filter((b) => !b.fog && doneOf(true, proofOf(b.id, { report, raw: b.raw })) === 'broken') : []);
 
 /**
- * Work that is new and unclaimed, grouped by item and ordered by priority, then by number. Only leaf issues (STATE-09);
+ * Work that is new and unclaimed, grouped by item: bugs first (REPORT-07), then by priority, then by number. Only leaf issues (STATE-09);
  * one that needs a split is listed apart, not offered (STATE-10).
  * @param {Map<string, object>} live live claims by behaviour id
  * A done item whose proof now fails is offered again, its broken behaviours only, ahead of the rest (PROVEN-07).
@@ -153,8 +153,9 @@ export function nextWork(nodes, live, { tested = [], report = null } = {}) {
     const by = blockersOf(node, byId);
     const entry = { item: keyOf(node), title: node.title, priority: node.priority || '', behaviours: open.map(({ id, text }) => ({ id, text })) };
     if (by.length) blocked.push({ item: entry.item, title: entry.title, by });
-    else work.push({ ...entry, order: node.order ?? 0 });
+    else work.push({ ...entry, order: node.order ?? 0, bug: node.kind === 'bug' });
   }
-  work.sort((a, b) => Number(Boolean(b.broken)) - Number(Boolean(a.broken)) || (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9) || a.order - b.order || a.item.localeCompare(b.item));
-  return { work: work.map(({ order, ...w }) => w), blocked, needsSplit, toVerify };
+  // Something broken comes first: behaviours whose proof failed, then bugs, before any new feature (REPORT-07).
+  work.sort((a, b) => Number(Boolean(b.broken)) - Number(Boolean(a.broken)) || Number(Boolean(b.bug)) - Number(Boolean(a.bug)) || (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9) || a.order - b.order || a.item.localeCompare(b.item));
+  return { work: work.map(({ order, bug, ...w }) => w), blocked, needsSplit, toVerify };
 }

@@ -1,5 +1,6 @@
 // Serves the built web app (bundled into the Lambda zip under ./public).
 
+import { EMBED_RUNTIME, EMBED_WASM, EMBED_WEIGHTS } from '../shared/embedding.js';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,11 +22,15 @@ const TYPES = {
 };
 const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.json', '.svg', '.webmanifest', '.txt']);
 
+// A bug report places itself with the embedding model behaviours are kept in (#9 REPORT-02), run in the browser: its runtime
+// comes from exact versions on the CDN, and its weights from Hugging Face. Nothing else is let in.
+const EMBED_MODEL = EMBED_WEIGHTS.join(' ');
+
 export const SECURITY_HEADERS = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'strict-origin-when-cross-origin',
   'content-security-policy':
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    `default-src 'self'; script-src 'self' 'wasm-unsafe-eval' ${EMBED_RUNTIME} ${EMBED_WASM}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' ${EMBED_WASM} ${EMBED_MODEL}; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
 };
 
 const cache = new Map();
