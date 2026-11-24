@@ -6,10 +6,10 @@
 // refinement makes it part of the spec; dropping it, or discarding the refinement, removes it (NEW-06).
 //
 // Accepting one changes the map now. Its items reach GitHub only when they are saved (api/sync.mjs).
-// If the map has moved on from `base` since editing began, that item is a conflict, and a person
-// decides; nothing is overwritten.
+// Accepting takes only what each item's edit changed from `base` (#13 ADOPT-17): a part it didn't touch stays as the map has
+// it now, whoever changed it. A part it touched that has also changed since is a conflict, and a person decides; nothing is overwritten.
 
-import { editableOf, issueOf, itemKeyOf, splitNote } from '../shared/issue-shape.js';
+import { changeKeys, compareItems, conflictKeys, editableOf, issueOf, itemKeyOf, mergeChanges, splitNote } from '../shared/issue-shape.js';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { firstLine } from './engine/project.mjs';
 
@@ -33,11 +33,20 @@ export function applyTo(node, after, now) {
   return out;
 }
 
-/** Items whose node changed since editing began (or is gone): these need a person, not an overwrite. */
+/** An item's edit, part by part, against the item as the map has it now (ADOPT-17): what it changes, and which of those changed since. */
+export const partsAgainst = (it, node) => compareItems(editableOf(node), it.after, it.base);
+
+/** Items a part of whose edit has changed since editing began (or that are gone): these need a person, not an overwrite. */
 export function conflictsOf(changeset, nodes) {
   return changeset.items.filter((it) => {
     if (it.new) return false; // a new item belongs to this refinement alone: nobody else can have changed it
     const node = findItem(nodes, it.key);
-    return !node || (!same(editableOf(node), it.base) && !same(editableOf(node), it.after));
+    return !node || conflictKeys(partsAgainst(it, node)).length > 0;
   });
+}
+
+/** The item now, with just what an edit changed from its base: the parts it didn't touch are never overwritten (ADOPT-17). */
+export function mergedOnto(it, node) {
+  const now = editableOf(node);
+  return mergeChanges(now, it.after, changeKeys(partsAgainst(it, node)), it.base);
 }

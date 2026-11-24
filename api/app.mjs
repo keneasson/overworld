@@ -4,10 +4,10 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
-import { changeKeys, compareItems, conflictKeys, expandPicks, issueOf, mergeChanges, newItemMarkdown, parseBehaviours, parseIssue, placeOf, sectionText, writeIssue } from '../shared/issue-shape.js';
+import { TITLE_CHANGE, changeKeys, compareItems, conflictKeys, expandPicks, issueOf, mergeChanges, newItemMarkdown, parseBehaviours, parseIssue, placeOf, sectionText, writeIssue } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
-import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './edits.mjs';
+import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, mergedOnto, partsAgainst, same } from './edits.mjs';
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { memoOf, numberNew } from './numbering.mjs';
 import { createStores } from './stores/index.mjs';
@@ -19,7 +19,7 @@ import { addresseesOf } from './notes.mjs';
 import { byAgent, turnOf } from '../shared/turns.js';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
-import { behavioursOf, childrenOf, keyOf, missingOf, nextWork, splitOf } from './work.mjs';
+import { behavioursOf, childrenOf, isFinished, keyOf, missingOf, nextWork, splitOf } from './work.mjs';
 import { VOCABULARY, duplicateIds, pairKey, textHash, vocabularyDrift } from '../shared/coherence.js';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { imageInfo } from './photos.mjs';
@@ -180,6 +180,30 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     if (!cs) throw new HttpError(404, 'Changeset not found');
     if (open && cs.status !== 'open') throw new HttpError(409, `This changeset was already ${cs.status}`);
     return cs;
+  }
+
+  /**
+   * What changed an item under an edit in progress, for the editor to say so: the store (marked by sync's markConflicts), or
+   * the latest adoption or accepted refinement in Overworld since the edit began that touched a part in conflict, with who
+   * and which behaviours, when known.
+   */
+  async function whoChanged(pid, cs, it, keys) {
+    if (it.conflict || it.theirs) return { on: 'store' };
+    const since = it.at ?? cs.createdAt ?? '';
+    const touched = (picks) => expandPicks(picks, keys).filter((k) => keys.includes(k));
+    let last = null;
+    const consider = (by, at, picks) => {
+      const hit = touched(picks);
+      if (hit.length && at >= since && (!last || at > last.at)) last = { by, at, behaviours: hit.filter((k) => !k.startsWith('text:') && k !== TITLE_CHANGE && !k.startsWith('section:')) };
+    };
+    for (const other of await model.changesets.list(pid)) {
+      if (other.id === cs.id) continue;
+      for (const d of other.adopted ?? []) if (d.key === it.key) consider(d.by, d.at, d.behaviours ?? []);
+      if (other.status !== 'accepted' || other.adopted?.length) continue;
+      const x = other.items.find((y) => y.key === it.key && y.base);
+      if (x) consider(other.author, other.acceptedAt, changeKeys(compareItems(x.base, x.after)));
+    }
+    return { on: 'overworld', ...(last?.by ? { by: last.by } : {}), ...(last?.behaviours.length ? { behaviours: last.behaviours } : {}) };
   }
 
   /** A thread's first comment: reading, dismissing and making a task act on the thread, never on one reply in it. */
@@ -514,6 +538,12 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         // that, so an edit made since the refinement opened doesn't leave it a conflict that can never be adopted.
         const rebased = Boolean(body?.rebase) && at >= 0 && !same(cs.items[at].base, editableOf(node));
         const base = at >= 0 && !rebased ? cs.items[at].base : editableOf(node);
+        const agentSaid = typeof body?.agent === 'string' && byAgent(body.agent);
+        // An agent answering a person's edit never takes it out of their refinement (ADOPT-20): a text that is the item as it
+        // is (or as it was) proposes nothing, so it is refused, and the person's edit stays as they left it.
+        if (at >= 0 && agentSaid && !byAgent(cs.author) && !changeKeys(compareItems(base, after)).length) {
+          throw new HttpError(409, `That text is the item as it is, so it would take ${cs.author}'s edit out of their refinement. Propose only what you change, on top of their text: their edit stays as it is.`);
+        }
         if (same(base, after)) {
           if (at >= 0) cs.items.splice(at, 1);
         } else if (at >= 0) {
@@ -718,13 +748,18 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project, nodes } = await loadProject(pid);
         const untitled = nodes.filter((n) => n.refinement === cs.id && !editableOf(n).title.trim());
         if (untitled.length) throw new ValidationError('every new item needs a title');
+        // Only a part it changed that has also changed since is a conflict; the rest of the item may have moved on (#13 ADOPT-17).
         const conflicts = conflictsOf(cs, nodes);
-        if (conflicts.length) throw Object.assign(new HttpError(409, `Changed since you started editing: ${conflicts.map((c) => c.nodeTitle).join(', ')}`), { conflicts: conflicts.map((c) => c.key) });
-        // Accepting changes the map. Items from a store are then unsaved: nothing reaches the store until a save (SYNC-07).
+        if (conflicts.length) {
+          const changedBy = Object.fromEntries(await Promise.all(conflicts.map(async (it) => [it.key, await whoChanged(pid, cs, it, findItem(nodes, it.key) ? conflictKeys(partsAgainst(it, findItem(nodes, it.key))) : [])])));
+          throw Object.assign(new HttpError(409, `Changed since you started editing: ${conflicts.map((c) => c.nodeTitle).join(', ')}`), { conflicts: conflicts.map((c) => c.key), extra: { changedBy } });
+        }
+        // Accepting changes the map, part by part: what each edit changed from its base, over the item as it is now.
+        // Items from a store are then unsaved: nothing reaches the store until a save (SYNC-07).
         const store = stores.forProject(project);
-        const edits = cs.items.filter((it) => !it.new).map((it) => {
+        const edits = cs.items.filter((it) => !it.new && changeKeys(partsAgainst(it, findItem(nodes, it.key))).length).map((it) => {
           const before = findItem(nodes, it.key);
-          return markEdited(before, applyTo(before, it.after, now), store);
+          return markEdited(before, applyTo(before, mergedOnto(it, before), now), store);
         });
         // New items join the spec, and wait for a save like any accepted edit: a save creates them in the store (NEW-04).
         const adopted = nodes.filter((n) => n.refinement === cs.id).map(({ refinement, ...n }) => ({ ...n, status: openQuestions(editableOf(n).markdown) ? 'needs_decision' : n.status, updatedAt: now, ...(store ? { sync: 'unsaved' } : {}) }));
@@ -1009,7 +1044,13 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           if (res.status >= 400) throw new HttpError(res.status, res.body?.error ?? 'Failed');
           return res.body;
         };
-        const was = editableOf(parent);
+        const cid = body?.changeset ? String(body.changeset) : (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: parent.id, author: by })).changeset.id;
+        const cs = await loadChangeset(pid, cid, { open: true });
+        // The item as this refinement has it: a person's edit to it in progress is split along with it. Where none of what it
+        // changed has also changed since, that edit is carried onto the item as it is now, so the split is based on now (rebased).
+        const entry = cs.items.find((it) => it.key === key && !it.new);
+        const rebase = !entry || !conflictKeys(partsAgainst(entry, parent)).length;
+        const was = entry ? (rebase ? mergedOnto(entry, parent) : entry.after) : editableOf(parent);
         const shape = parseIssue(was.markdown);
         const leaving = new Set(split.still_to_build);
         const kept = [];
@@ -1027,15 +1068,26 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         }
         const short = parent.title.replace(/^#\d+\s+/, '');
         const title = `${short}: what's left to build`.slice(0, 120);
-        const cid = body?.changeset ? String(body.changeset) : (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: parent.id, author: by })).changeset.id;
-        const template = newItemMarkdown({ kind: 'task', partOf: partOf(stores.forProject(project), parent), place: placeOf(was.markdown) });
-        const why = `Split from ${parent.title} (STATE-10): the behaviours it still had to build, moved here word for word. ${parent.title} keeps ${split.looks_built.join(', ') || 'what is built'}.`;
-        const markdown = writeIssue(parseIssue(template), { Why: why, Behaviours: moved.join('\n'), 'Open questions': 'None.' });
-        const { node } = await call('POST', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/new`, { parentId: parent.id, kind: 'task', title, markdown, adoptAs: parent.status }); // what was ready stays ready once the split is adopted
+        // A child already holding what was left to build (in the spec, or new in this refinement) takes these too: one such child, never two.
+        const leftChild = (childrenOf(nodes).get(parent.id) ?? []).find((n) => !isFinished(n) && n.title.replace(/^#\d+\s+/, '') === title && (!n.refinement || n.refinement === cid));
+        let node;
+        if (leftChild) {
+          const childKey = itemKeyOf(leftChild);
+          const draft = cs.items.find((it) => it.key === childKey)?.after ?? editableOf(leftChild);
+          const its = parseIssue(draft.markdown);
+          const rows = sectionText(its, 'Behaviours').trim();
+          await call('PUT', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/items`, { key: childKey, title: draft.title, markdown: writeIssue(its, { Behaviours: [rows, ...moved].filter(Boolean).join('\n') }) });
+          node = findItem((await loadProject(pid)).nodes, childKey);
+        } else {
+          const template = newItemMarkdown({ kind: 'task', partOf: partOf(stores.forProject(project), parent), place: placeOf(was.markdown) });
+          const why = `Split from ${parent.title} (STATE-10): the behaviours it still had to build, moved here word for word. ${parent.title} keeps ${split.looks_built.join(', ') || 'what is built'}.`;
+          const markdown = writeIssue(parseIssue(template), { Why: why, Behaviours: moved.join('\n'), 'Open questions': 'None.' });
+          ({ node } = await call('POST', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/new`, { parentId: parent.id, kind: 'task', title, markdown, adoptAs: parent.status })); // what was ready stays ready once the split is adopted
+        }
         const oldWhy = sectionText(shape, 'Why').trim();
-        const note = `What was left to build (${split.still_to_build.join(', ')}) moved to the child "${node.title}".`;
+        const note = `What was left to build (${split.still_to_build.join(', ')}) moved to the child "${node.title.replace(/^#\d+\s+/, '')}".`;
         const after = { title: was.title, markdown: writeIssue(shape, { Why: oldWhy ? `${oldWhy}\n\n${note}` : note, Behaviours: kept.join('\n') }) };
-        const { changeset } = await call('PUT', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/items`, { key, ...after });
+        const { changeset } = await call('PUT', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/items`, { key, ...after, rebase });
         return { node, changeset, moved: split.still_to_build };
       },
       { status: 201 },

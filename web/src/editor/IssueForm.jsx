@@ -16,6 +16,7 @@ import { SelectionMenu } from './SelectionMenu.jsx';
 import { SectionMenu } from './SectionMenu.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { useLinks } from '../components/links-context.js';
+import { changedSince } from '../model/sync.js';
 import { IssueLinks, linkAt } from './issue-links.js';
 
 const TAP = 10; // a touch that moves less than this is a tap, not a scroll
@@ -278,7 +279,7 @@ export function IssueForm({ value, itemKey = null, issueNumber, areaTexts, comme
     <div className={`issue-doc${commenting ? ' commenting' : ''}`} ref={wrap}>
       {conflict && (
         <p className="conflict" role="alert">
-          This changed on GitHub after you started editing it. Your version is kept here; compare it with the source before accepting.
+          {changedSince(conflict)}
         </p>
       )}
       <textarea

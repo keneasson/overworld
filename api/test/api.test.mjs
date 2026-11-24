@@ -651,6 +651,27 @@ test("ADOPT-17 adopting a refinement takes only what it changed: an edit made si
   assert.match(now, /numbers never reach us/, "Ken's edit to the Why is kept");
 });
 
+test('ADOPT-17 accepting takes only what the edit changed: an adoption made since stays, and only a part both changed is a conflict, saying who changed it', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const open = async (who) => (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: who })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const put = (cs, markdown) => call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown });
+  const [theirs, mine, clash] = [await open('Builder (a1b2)'), await open('Ken'), await open('Ann')];
+  await put(theirs, four.replace('then it is a token.', 'then it is a token, never a number.'));
+  await put(mine, four.replace('Cards need tokens.', 'Cards need tokens, so numbers never reach us.'));
+  await put(clash, four.replace('then it is a token.', 'then it is a vault reference.'));
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${theirs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200);
+
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${mine.id}/accept`)).status, 200, 'a part nobody else changed is no conflict');
+  const now = (await map()).find((n) => n.title.startsWith('#4 ')).body;
+  assert.match(now, /numbers never reach us/);
+  assert.match(now, /never a number/, 'the adoption made since is not undone');
+
+  const res = await call('POST', `/api/projects/${pid}/changesets/${clash.id}/accept`);
+  assert.equal(res.status, 409);
+  assert.deepEqual(res.body.changedBy, { 'issue-4': { on: 'overworld', by: 'Ken', behaviours: ['PAY-10'] } }, 'changed in Overworld, by whom and how');
+});
+
 test('ADOPT-08 open questions in a refinement show as badges, and never keep it from adoption', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;

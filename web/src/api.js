@@ -45,7 +45,7 @@ async function request(method, path, body) {
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) throw new AuthError(data.error ?? 'Access key required', { signIn: data.signIn ?? [] });
   if (res.status === 403 && data.notLetIn) throw new AuthError(data.error, { notLetIn: true });
-  if (!res.ok) throw Object.assign(new Error(data.error ?? `Request failed (${res.status})`), { status: res.status, conflicts: data.conflicts });
+  if (!res.ok) throw Object.assign(new Error(data.error ?? `Request failed (${res.status})`), { status: res.status, conflicts: data.conflicts, changedBy: data.changedBy });
   return data;
 }
 

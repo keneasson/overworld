@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { syncBadge, toSave } from '../src/model/sync.js';
+import { changedSince, syncBadge, toSave } from '../src/model/sync.js';
 import { buildTree } from '../src/model/tree.js';
 import { changesetContents } from '../src/model/changesets.js';
 import { cleanAnchor, whereOf } from '@shared/annotations.js';
@@ -39,4 +39,11 @@ test('SYNC-01 the changeset\'s box holds its edits across issues, with what each
   assert.equal(changesetContents({ tree, edited: [], unsaved: [], drafts }), null, 'an empty box has nothing to review');
   assert.deepEqual(cleanAnchor({ on: 'changeset', section: 'Why', quote: 'x' }), { on: 'changeset' }, 'on the changeset as a whole');
   assert.equal(whereOf({ on: 'changeset' }), 'the changeset');
+});
+
+test('ADOPT-17 an edit whose item changed underneath it says GitHub only when GitHub changed it, and otherwise who in Overworld', () => {
+  assert.match(changedSince({ on: 'store' }), /changed on GitHub/);
+  assert.match(changedSince({ on: 'overworld', by: 'Ken', behaviours: ['ADOPT-05'] }), /changed in Overworld since you started \(Ken adopted ADOPT-05\)/);
+  assert.doesNotMatch(changedSince({ on: 'overworld' }), /GitHub/);
+  assert.match(changedSince({}), /since you started\./);
 });

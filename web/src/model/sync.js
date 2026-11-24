@@ -15,3 +15,13 @@ export const syncBadge = (node) => (node?.sync && SYNC_BADGE[node.sync] ? { stat
 
 /** The items a save would send: changed here and not yet saved, or a save that failed. */
 export const toSave = (nodes) => nodes.filter((n) => n.sync === 'unsaved' || n.sync === 'failed').map(itemKeyOf);
+
+/**
+ * What the editor says when an item it is editing changed underneath it (#13 ADOPT-17): GitHub only when the store changed
+ * it (the API's `changedBy.on === 'store'`), otherwise who changed it in Overworld and how, when known.
+ */
+export function changedSince(changedBy = {}) {
+  if (changedBy.on === 'store') return 'This changed on GitHub after you started editing it. Your version is kept here; compare it with the source before accepting.';
+  const how = changedBy.by ? ` (${changedBy.by} ${changedBy.behaviours?.length ? `adopted ${changedBy.behaviours.join(', ')}` : 'changed it'})` : '';
+  return `This changed in Overworld since you started${how}. Your version is kept here; the parts you both changed need a look before accepting.`;
+}

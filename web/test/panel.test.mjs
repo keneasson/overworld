@@ -21,7 +21,7 @@ const editing = (more = {}) => ({
   changeset: { id: 'cs1', items: [] },
   drafts: new Map(),
   generation: 0,
-  conflicts: new Set(),
+  conflicts: new Map(),
   edited: [],
   unsaved: [],
   saving: false,
