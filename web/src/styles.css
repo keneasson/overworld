@@ -1089,6 +1089,15 @@ section h3 {
   margin: 14px 0 6px;
   color: var(--text);
 }
+/* An item read without the editor names its sections the way the editor does, so they look the same everywhere. */
+.doc .markdown h2 {
+  margin: 1.1em 0 0.35em;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .markdown ul {
   padding-left: 20px;
 }
@@ -2031,24 +2040,10 @@ button.danger.armed {
   text-decoration: underline wavy #d97706 1px;
   text-underline-offset: 3px;
 }
-.issue-doc-text h2.asking::after {
-  content: attr(data-note);
-  display: inline-block;
-  margin-left: 8px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  letter-spacing: 0;
-  text-transform: none;
-  vertical-align: 1px;
-  white-space: nowrap;
-}
-.issue-doc-text h2.asking {
-  color: #b45309;
-}
-.issue-doc-text h2.asking::after {
-  background: #fef3c7;
-  color: #92400e;
+/* An open question's Answer control, directly under it in the text (#68 ANSWER-01). */
+.issue-doc-text .answer-control {
+  margin: -0.3em 0 0.55em;
+  line-height: 1.4;
 }
 .selection-menu {
   display: flex;
@@ -2197,44 +2192,6 @@ button.danger.armed {
   opacity: 0.4;
   cursor: default;
 }
-/* An item's open questions, each with its own Answer control (#68 ANSWER-01). */
-.open-questions ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.open-questions li {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-}
-.open-questions .answer-box {
-  align-self: stretch;
-}
-.question-text {
-  display: flex;
-  gap: 8px;
-  margin: 0;
-  white-space: pre-wrap;
-}
-.question-mark {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #8b5cf6;
-  color: #fff;
-  font: 700 12px/18px system-ui, sans-serif;
-  text-align: center;
-}
-.question-answer {
-  margin: 0 0 0 26px;
-  color: var(--muted);
-}
 .answer-prompt {
   display: flex;
   flex-direction: column;
@@ -2311,7 +2268,6 @@ button.danger.armed {
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) .thread,
-  :root:not([data-theme='light']) .issue-doc-text h2.asking::after,
   :root:not([data-theme='light']) .comment-list .anchor {
     background: #3a3220;
     color: #fdd663;

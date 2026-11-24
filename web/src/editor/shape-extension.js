@@ -9,7 +9,7 @@
 import { Extension } from '@tiptap/core';
 import { EditorState, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
-import { SECTIONS, hasOpenQuestions } from '@shared/issue-shape.js';
+import { SECTIONS } from '@shared/issue-shape.js';
 import { initials } from '@shared/annotations.js';
 import { sectionAt } from './document.js';
 import { rangeOf, sectionTexts } from './targets.js';
@@ -123,22 +123,79 @@ function sectionGap(name) {
   };
 }
 
+// What a question's words come to once its markdown is written as text: links, emphasis and spacing aside.
+const plain = (s) =>
+  String(s ?? '')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[*_`~\\<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+const ANSWER_LINE = /^\s*answer:/i;
+
+/**
+ * Where each unanswered question is in the item's own Open questions section (#68 ANSWER-01), so its Answer control sits
+ * directly under it and the questions are never listed a second time. `questions` are the item's as the map has them
+ * (questionsIn), matched to the document by their words; one only in a draft has none until it is accepted.
+ * @returns {{ id: string, pos: number }[]} `pos`: just after the question's own text, inside its list item
+ */
+export function questionPlaces(doc, questions = []) {
+  const open = questions.filter((q) => !q.answer);
+  if (!open.length) return [];
+  const out = [];
+  const used = new Set();
+  const place = (text, pos) => {
+    const t = plain(text);
+    if (!t || ANSWER_LINE.test(t)) return;
+    const q = open.find((x) => !used.has(x.id) && plain(x.text) && (t.startsWith(plain(x.text.split('\n')[0])) || plain(x.text).startsWith(t)));
+    if (!q) return;
+    used.add(q.id);
+    out.push({ id: q.id, pos });
+  };
+  let section = null;
+  doc.forEach((node, offset) => {
+    if (node.type.name === 'heading' && node.attrs.level === 2) section = canonical(node.textContent.trim());
+    else if (section !== 'Open questions') return;
+    else if (node.type.name === 'bulletList' || node.type.name === 'orderedList') node.forEach((item, at) => place(item.firstChild?.textContent, offset + 1 + at + item.nodeSize - 1));
+    else if (node.isTextblock) place(node.textContent, offset + node.nodeSize);
+  });
+  return out;
+}
+
+// A question's Answer control (ANSWER-01), directly under it in the text.
+function answerControl(id, onAnswer) {
+  return () => {
+    const wrap = document.createElement('div');
+    wrap.className = 'answer-control';
+    wrap.contentEditable = 'false';
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'link-btn';
+    b.dataset.question = id;
+    b.textContent = 'Answer';
+    b.addEventListener('mousedown', (e) => e.preventDefault());
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onAnswer(id, b);
+    });
+    wrap.append(b);
+    return wrap;
+  };
+}
+
 function decorate(doc, opts) {
   const out = notes(doc, opts);
   for (const g of gaps(doc)) {
     if (g.on === 'section') out.push(Decoration.widget(g.pos, sectionGap(g.name), { side: -1, key: `gap:${g.name}`, ignoreSelection: true, stopEvent: () => true }));
     else out.push(Decoration.node(g.from, g.to, { class: 'no-id', title: 'No behaviour ID: tests and comments have nothing to hold on to' }));
   }
+  for (const q of questionPlaces(doc, opts.questions)) out.push(Decoration.widget(q.pos, answerControl(q.id, opts.onAnswer), { side: 1, key: `answer:${q.id}`, ignoreSelection: true, stopEvent: () => true }));
   let section = null;
-  let questions = null;
-  let questionText = '';
   doc.forEach((node, offset) => {
     if (node.type.name === 'heading' && node.attrs.level === 2) {
       section = canonical(node.textContent.trim());
-      if (section === 'Open questions') questions = [offset, offset + node.nodeSize];
       return;
     }
-    if (section === 'Open questions') questionText += `${node.textContent}\n`;
     if (section !== 'Behaviours' || node.type.name !== 'bulletList') return;
     node.forEach((item, itemOffset) => {
       const itemPos = offset + 1 + itemOffset;
@@ -152,7 +209,6 @@ function decorate(doc, opts) {
       if (g) for (const [s, e] of g.indices.slice(1)) out.push(Decoration.inline(at[s], at[e - 1] + 1, { class: 'kw' }));
     });
   });
-  if (questions && hasOpenQuestions(questionText)) out.push(Decoration.node(questions[0], questions[1], { class: 'asking', 'data-note': '? Needs a decision' }));
   return DecorationSet.create(doc, out);
 }
 
@@ -256,17 +312,18 @@ export const IssueShape = Extension.create({
   name: 'issueShape',
 
   addOptions() {
-    // nextId(): the ID a new behaviour gets. onThread(id, marker): open an annotation's thread.
-    return { nextId: () => 'ITEM-01', onThread: () => {} };
+    // nextId(): the ID a new behaviour gets. onThread(id, marker): open an annotation's thread. onAnswer(id, control): answer a question.
+    return { nextId: () => 'ITEM-01', onThread: () => {}, onAnswer: () => {} };
   },
 
   addStorage() {
-    return { threads: [], active: null };
+    return { threads: [], active: null, questions: [] };
   },
 
   addProseMirrorPlugins() {
     const ext = this;
-    const build = (doc) => decorate(doc, { threads: ext.storage.threads, active: ext.storage.active, onThread: (id, b) => ext.options.onThread(id, b) });
+    const build = (doc) =>
+      decorate(doc, { threads: ext.storage.threads, active: ext.storage.active, onThread: (id, b) => ext.options.onThread(id, b), questions: ext.storage.questions, onAnswer: (id, b) => ext.options.onAnswer(id, b) });
     return [
       new Plugin({
         key: KEY,
@@ -295,10 +352,11 @@ export const IssueShape = Extension.create({
 });
 
 /** Show annotations as they change, without waiting for an edit: each thread's first annotation, and the one open. */
-export function refreshNotes(editor, threads, active = null) {
+export function refreshNotes(editor, threads, active = null, questions = editor?.storage.issueShape.questions) {
   if (!editor || editor.isDestroyed) return;
   editor.storage.issueShape.threads = threads;
   editor.storage.issueShape.active = active;
+  editor.storage.issueShape.questions = questions ?? [];
   try {
     editor.view.dispatch(editor.state.tr.setMeta(KEY, true));
   } catch {

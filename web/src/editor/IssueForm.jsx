@@ -10,7 +10,7 @@ import { EXTENSIONS, parseMarkdown } from './rich-text.js';
 import { fromDocument, toDocument } from './document.js';
 import { IssueShape, hintAt, openWithBodies, refreshNotes } from './shape-extension.js';
 import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './targets.js';
-import { Composer, Thread, dismissedWords } from './Annotate.jsx';
+import { AnswerBox, Composer, Thread, dismissedWords } from './Annotate.jsx';
 import { SelectionMenu } from './SelectionMenu.jsx';
 import { SectionMenu } from './SectionMenu.jsx';
 import { Icon } from '../components/Icon.jsx';
@@ -33,8 +33,10 @@ function Outline({ rects, picked }) {
  * `value` is { title, markdown }, and `onChange` gets the same, with unchanged sections written back exactly as they came.
  * With the Comment control on (`commenting`, #15 NOTE-10), the text stops being editable and pointing at it outlines
  * what a comment would be on; a click, or a second tap, opens the comment box there.
+ * Each unanswered open question (`questions`, from questionsIn) has its Answer control directly under it in the text (#68
+ * ANSWER-01): `onAnswer(question, text, prompt)` writes the answer, `onAnswerPrompt(question, text)` builds its prompt.
  */
-export function IssueForm({ value, issueNumber, areaTexts, comments, commenting = false, placeholderTitle = null, onChange, onComment, onPromote, onDismiss, onRestore, hasRead, onRead, conflict }) {
+export function IssueForm({ value, issueNumber, areaTexts, comments, questions = [], commenting = false, placeholderTitle = null, onChange, onComment, onAnswer, onAnswerPrompt, onPromote, onDismiss, onRestore, hasRead, onRead, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   // The title that stands in for an empty one (EDIT-22): a new item's placeholder, or the title it opened with.
@@ -42,6 +44,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
   const [title, setTitle] = useState(() => titleShown(value.title, placeholderTitle));
   const savedTitle = titleToSave(title, standIn);
   const [thread, setThread] = useState(null); // { id, top }
+  const [answering, setAnswering] = useState(null); // the question being answered: { id, top }
   const [hover, setHover] = useState(null); // the target outlined, with its rects
   const [picked, setPicked] = useState(null); // the target the comment box is open on
   const [linkChip, setLinkChip] = useState(null); // the link the caret is on, to follow (EDIT-14): { ref, top, left }
@@ -62,7 +65,15 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     const box = wrap.current.getBoundingClientRect();
     const at = button.getBoundingClientRect();
     setPicked(null);
+    setAnswering(null);
     setThread((t) => (t?.id === id ? null : { id, top: at.bottom - box.top + 4 }));
+  };
+  const onAnswerControl = (id, button) => {
+    const box = wrap.current.getBoundingClientRect();
+    const at = button.getBoundingClientRect();
+    setPicked(null);
+    setThread(null);
+    setAnswering((a) => (a?.id === id ? null : { id, top: at.bottom - box.top + 4 }));
   };
 
   // Empty sections open with a line to type on (EDIT-16).
@@ -71,7 +82,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     extensions: [
       ...EXTENSIONS,
       Markdown,
-      IssueShape.configure({ nextId: () => nextId(), onThread: (id, b) => onThread(id, b) }),
+      IssueShape.configure({ nextId: () => nextId(), onThread: (id, b) => onThread(id, b), onAnswer: (id, b) => onAnswerControl(id, b) }),
       IssueLinks.configure({ onFollow: (ref) => !live.current.commenting && live.current.links.follow(ref) }),
       Placeholder.configure({
         showOnlyCurrent: false,
@@ -126,7 +137,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
   // whether it is unread for this person (NOTE-03); opening a thread reads it, and reading moves nothing.
   const openThreads = useMemo(() => threads.filter((t) => !isDismissed(t.root)), [threads]);
   const unread = (t) => Boolean(hasRead) && !hasRead(t);
-  useEffect(() => refreshNotes(editor, openThreads.map((t) => ({ ...t.root, unread: unread(t) })), thread?.id ?? null), [editor, openThreads, thread?.id, hasRead]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => refreshNotes(editor, openThreads.map((t) => ({ ...t.root, unread: unread(t) })), thread?.id ?? null, onAnswer ? questions : []), [editor, openThreads, thread?.id, hasRead, questions]); // eslint-disable-line react-hooks/exhaustive-deps
   const read = useRef(onRead);
   read.current = onRead;
   const shownThread = thread && openThreads.find((t) => t.root.id === thread.id);
@@ -140,6 +151,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
     window.getSelection?.()?.removeAllRanges();
     setHover(null);
     setThread(null);
+    setAnswering(null);
     setPicked(withRects(t));
   };
 
@@ -238,6 +250,7 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
   };
 
   const open = thread && openThreads.find((t) => t.root.id === thread.id);
+  const answeringQ = answering && questions.find((q) => q.id === answering.id);
   const openAt = open && editor && open.root.anchor?.on !== 'place' ? rangeOf(editor.state.doc, open.root.anchor ?? {}) : null;
   const onMap = openThreads.filter((t) => t.root.anchor?.on === 'place');
   // Dismissed, a thread is in the item's conversation log, still readable there, and can be brought back (NOTE-05).
@@ -356,6 +369,11 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, commenting 
             onPost={(text) => onComment(picked.anchor, text)}
             onCancel={() => setPicked(null)}
           />
+        </div>
+      )}
+      {answeringQ && (
+        <div className="thread-pop" style={{ top: answering.top }}>
+          <AnswerBox key={answeringQ.id} question={answeringQ} onPrompt={(t) => onAnswerPrompt(answeringQ, t)} onAnswer={(t, p) => onAnswer(answeringQ, t, p)} onCancel={() => setAnswering(null)} />
         </div>
       )}
       {open && (

@@ -89,6 +89,9 @@ test('SYM-03 badges show pull requests, agents, comments and open questions, and
   assert.deepEqual(badgesOf(tree.byId.get('c')), [], 'a done item has no open pull request');
   assert.ok(labelFor(tree.byId.get('b'), 400).badges.some((m) => m.type === 'question' && m.count === 2), 'the label carries the badge');
   assert.deepEqual(badgesOf(buildTree([root, item('d', 'root', { body: '## Open questions\nNone.' })]).byId.get('d')), []);
+  const answered = buildTree([root, item('d', 'root', { body: `${asked}\nAnswer: Ken does.` })]).byId.get('d');
+  assert.deepEqual(badgesOf(answered), [{ type: 'question', count: 1 }], 'an answered question no longer needs a decision');
+  assert.equal(symbolsInUse(tree).badges.find((b) => b.symbol === 'question')?.label, 'Needs a decision', 'the legend reads it at a glance');
 
   // The same items without the questions: every lens paints the land the same.
   const quiet = buildTree(nodes.map((n) => (n.id === 'b' ? { ...n, body: '' } : n)));
@@ -118,7 +121,7 @@ test('NOTE-03 NOTE-04 an item has one comments badge: how many are not dismissed
   assert.deepEqual(badgesOf(tree.byId.get('a'), liveFor('Bo')), [{ type: 'comment', count: 2, unread: true }, { type: 'question', count: 1 }], 'marked for whoever has not read them all');
   assert.deepEqual(badgesOf(tree.byId.get('b'), liveFor('Ana')), [{ type: 'comment', count: 1, unread: true }], 'a plain comment badges too');
   assert.ok(markersOf(tree.byId.get('epic'), liveFor('Bo')).some((m) => m.type === 'comment' && m.count === 3 && m.unread), 'a region rolls them up, unread if any are');
-  assert.deepEqual(symbolsInUse(tree, liveFor('Ana')).badges.map((b) => [b.symbol, b.label]), [['comment', 'Comments'], ['question', 'Open questions']], 'the legend explains them');
+  assert.deepEqual(symbolsInUse(tree, liveFor('Ana')).badges.map((b) => [b.symbol, b.label]), [['comment', 'Comments'], ['question', 'Needs a decision']], 'the legend explains them');
 });
 
 test('SYM-04 the legend lists every symbol and badge in use on the map and nothing else', () => {

@@ -13,6 +13,7 @@ const tree = buildTree([
   { id: 'e', parentId: 'root', kind: 'epic', title: '#12 Walk the map', url: url(12), status: 'ready' },
   { id: 't', parentId: 'e', kind: 'task', title: '#13 Follow a link', url: url(13), status: 'ready' },
   { id: 'n', parentId: 'e', kind: 'task', title: 'New task', status: 'idea', refinement: 'cs1' },
+  { id: 'q', parentId: 'e', kind: 'task', title: '#14 Pick a store', url: url(14), status: 'needs_decision', body: 'Part of #12\n\n## Why\n\nDrafts.\n\n## Open questions\n\n- Which store keeps the drafts, given #13?\n' },
 ]);
 const key = (n) => `issue-${n}`;
 const editing = (more = {}) => ({
@@ -42,6 +43,13 @@ async function panel(id, ed = editing()) {
   for await (const chunk of prelude) html += Buffer.from(chunk).toString();
   return html;
 }
+test('ANSWER-01 an item\'s open questions show once, in its own text with their links and Answer controls, never again below it', async () => {
+  const html = await panel('q');
+  assert.match(html, /class="issue-doc-title"[^>]*>Pick a store</, 'the item is open in the editor, which holds its Open questions');
+  assert.doesNotMatch(html, /Which store keeps the drafts/, 'no second list of the questions outside the text');
+  assert.doesNotMatch(html, /Needs a decision/, 'no pill beside the heading: the map carries that flag');
+});
+
 const titleRow = (html) => /<div class="title-row">([\s\S]*?)<\/div>/.exec(html)[1];
 
 test('EDIT-09 EDIT-11 an item open in the panel is edited right there: its text is the document, its properties change in place', async () => {
