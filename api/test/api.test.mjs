@@ -604,6 +604,36 @@ test('ADOPT-05 ADOPT-06 a person adopts or declines a refinement one behaviour a
   assert.equal((await decide('adopt', {})).status, 409, 'closed');
 });
 
+test('ADOPT-05 a person adopts one section of a refinement on its own: the rest stays open, and a section changed since is a conflict', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const proposed = four.replace('Cards need tokens.', 'Cards need tokens, so numbers never reach us.').replace('## Acceptance\n', '## Acceptance\n\n- A saved card is a token.\n');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens kept', markdown: proposed });
+  const decide = (action, body) => call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/${action}`, { by: 'Ken', ...body });
+  const spec = async () => (await map()).find((n) => n.title.startsWith('#4 '));
+
+  let res = await decide('adopt', { behaviours: ['section:Why'] });
+  assert.equal(res.status, 200);
+  assert.match((await spec()).body, /numbers never reach us/);
+  assert.doesNotMatch((await spec()).body, /A saved card is a token/, 'the Acceptance change is still to decide');
+  assert.doesNotMatch((await spec()).title, /kept/, 'and so is the title');
+  assert.equal(res.body.changeset.status, 'open');
+
+  res = await decide('decline', { behaviours: ['title'], reason: 'Keep the name.' });
+  assert.equal(res.status, 200);
+  assert.doesNotMatch(res.body.changeset.items[0].after.title, /kept/);
+
+  // Someone changes the Acceptance before it is adopted: adopting that one is a conflict to resolve first.
+  const mine = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Ken' })).body.changeset;
+  const now = (await spec()).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  await call('PUT', `/api/projects/${pid}/changesets/${mine.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: now.replace('## Acceptance\n', '## Acceptance\n\n- Tokens only.\n') });
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${mine.id}/accept`)).status, 200);
+  res = await decide('adopt', { behaviours: ['section:Acceptance'] });
+  assert.equal(res.status, 409);
+  assert.match(res.body.error, /Changed since/);
+});
+
 test("ADOPT-17 adopting a refinement takes only what it changed: an edit made since, to a part it didn't touch, stays and is no conflict", async () => {
   const { call, pid, node, map } = await shopProject();
   const theirs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;

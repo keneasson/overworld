@@ -4,7 +4,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/schema.js';
-import { changeKeys, compareItems, conflictKeys, issueOf, mergeChanges, newItemMarkdown, parseBehaviours, parseIssue, placeOf, sectionText, writeIssue } from '../shared/issue-shape.js';
+import { changeKeys, compareItems, conflictKeys, expandPicks, issueOf, mergeChanges, newItemMarkdown, parseBehaviours, parseIssue, placeOf, sectionText, writeIssue } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
 import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, same } from './edits.mjs';
@@ -642,8 +642,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       'POST',
       /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/items\/(issue-\d+|node-[\w-]+)\/(adopt|decline)$/,
       // A person's yes or no to someone else's refinement of an item, one behaviour at a time (ADOPT-05): `behaviours`
-      // lists the ticked changes (behaviour IDs, and 'other' for its title and other sections), and without it, all of
-      // them. Adopting merges just those into the item, which waits for a save like any accepted edit (SYNC-07);
+      // lists the ticked changes (behaviour IDs, 'title', and 'section:Why' and the like, each decided on its own; 'other'
+      // still means the title and every section), and without it, all of them. Adopting merges just those into the item, which waits for a save like any accepted edit (SYNC-07);
       // declining takes them out of the proposal, with a reason its author sees at standup. The item stays in the
       // refinement until nothing is left in it, and the refinement until no item is (ADOPT-06).
       // Agents have no tool that reaches this (ADOPT-10).
@@ -662,7 +662,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const diff = compareItems(editableOf(before), entry.after, base);
         const all = changeKeys(diff);
         if (body?.behaviours != null && !Array.isArray(body.behaviours)) throw new ValidationError('behaviours: expected a list of behaviour IDs');
-        const picks = body?.behaviours == null ? all : [...new Set(body.behaviours.map(String))];
+        // 'other' (an older client's tick) is every title and section change at once.
+        const picks = body?.behaviours == null ? all : expandPicks(body.behaviours.map(String), all);
         if (!picks.length && all.length) throw new ValidationError('behaviours: tick at least one');
         const unknown = picks.filter((p) => !all.includes(p));
         if (unknown.length) throw new ValidationError(`behaviours: not changed in this refinement: ${unknown.join(', ')}`);

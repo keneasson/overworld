@@ -5,7 +5,7 @@ import { CHILD_KIND, KIND_LABEL, LINK_LABEL, STATUS_LABEL } from '@shared/schema
 import { HEALTH_COLOR, HEALTH_LABEL, pathOf } from '../model/tree.js';
 import { Icon } from './Icon.jsx';
 import { fogReason } from '../map/fog.js';
-import { OTHER_CHANGES, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, splitNote } from '@shared/issue-shape.js';
+import { OTHER_CHANGES, TITLE_CHANGE, changeKeys, compareItems, editableOf, issueOf, itemKeyOf, reshapeIssue, reviewOf, splitNote } from '@shared/issue-shape.js';
 import { isEditable, isMapped } from '../editor/items.js';
 import { Composer, Thread, useAskName } from '../editor/Annotate.jsx';
 import { questionsIn } from '@shared/questions.js';
@@ -257,36 +257,67 @@ const CONFLICT = (
   </span>
 );
 
-/** One change in a refinement: a changed one as one text with its edits marked in it, an added or removed one whole, and its conversation. */
-function Change({ label, change, before, after, ready, conflict = false, tick = null, talk = null }) {
+/**
+ * One change of a refinement where it is in the document (#13 ADOPT-18): a line saying what it is and what it did, then
+ * the part itself as one text with its edits marked in it (an added one marked whole, a removed one struck), its
+ * conversation, and its own Adopt and Decline (ADOPT-05), so each is decided on its own.
+ */
+function ChangeHere({ at, label, summary = null, change, before, after, conflict = false, ready = false, cs, item, threads, editing, talkable = true, offered = true, current = false, tick = null, decide, title = false }) {
+  const talk = useTalk({ cs, item, on: at, label, text: after, before: change === 'changed' ? before : '', threads, editing });
+  const [declining, setDeclining] = useState(false);
+  const [reason, setReason] = useState('');
+  const shown = talkable ? talk : null;
   return (
-    <li className={`change change-${change}`}>
+    <div className={`inline-change change-${change}${current ? ' current' : ''}${title ? ' title-change' : ''}`} data-change={at}>
       <div className="change-head">
         {tick}
         <span className="change-label">{label}</span>
-        <span className={`change-kind change-kind-${change}`}>{CHANGE_LABEL[change]}</span>
+        <span className="change-what">{summary ?? CHANGE_LABEL[change]}</span>
         {ready && (
           <span className="pill pill-ready" title="The conversation has converged: marked ready for adoption">
             Ready for adoption
           </span>
         )}
         {conflict && CONFLICT}
-        {talk?.head}
+        {shown?.head}
       </div>
-      {change === 'changed' && before && after ? (
-        (talk?.proposed ?? (
+      {change === 'removed' ? (
+        <del className="change-before">{before}</del>
+      ) : (
+        (shown?.proposed ??
+        (change === 'changed' ? (
           <span className="change-after">
             <WordDiff before={before} after={after} />
           </span>
-        ))
-      ) : (
-        <>
-          {before && <del className="change-before">{before}</del>}
-          {after && (talk?.proposed ?? <ins className="change-after">{after}</ins>)}
-        </>
+        ) : (
+          <ins className="change-after">{after}</ins>
+        )))
       )}
-      {talk?.body}
-    </li>
+      {shown?.body}
+      {offered &&
+        (declining ? (
+          <div className="refinement-decline">
+            <textarea aria-label="Why decline (optional)" placeholder="Why not? (optional: its author sees this)" value={reason} maxLength={2000} rows={2} onChange={(e) => setReason(e.target.value)} />
+            <div className="edit-actions">
+              <button type="button" onClick={() => setDeclining(false)} disabled={editing.busy}>
+                Keep it
+              </button>
+              <button type="button" className="armed" onClick={async () => (await decide('decline', reason)) && setDeclining(false)} disabled={editing.busy}>
+                Decline
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="edit-actions change-actions">
+            <button type="button" onClick={() => setDeclining(true)} disabled={editing.busy}>
+              Decline…
+            </button>
+            <button type="button" className="primary" onClick={() => decide('adopt')} disabled={editing.busy} title={`Adopt just this: the item takes it, the rest stays to decide, and it waits for a save to reach GitHub`}>
+              <Icon name="check" size={16} /> Adopt
+            </button>
+          </div>
+        ))}
+    </div>
   );
 }
 
@@ -430,156 +461,210 @@ function useTalk({ cs, item, on, label, text = '', before = '', threads, editing
   };
 }
 
-/** A behaviour row of a refinement, with its tick and its conversation. */
-function BehaviourChange({ b, cs, item, threads, editing, ready, tick }) {
-  const talk = useTalk({ cs, item, on: b.id, label: b.id, text: b.after, before: b.change === 'changed' ? b.before : '', threads, editing });
-  return <Change label={b.id || 'Behaviour'} change={b.change} before={b.before} after={b.after} ready={ready} conflict={Boolean(b.conflict)} tick={tick} talk={b.id ? talk : null} />;
-}
-
-/** One of a refinement's other changes as a line of what it did ("Why: 1 sentence reworded"), with its words under a disclosure (ADOPT-18). */
-function SectionChange({ label, c, summary }) {
-  return (
-    <li className={`section-change change-${c.change}`}>
-      <details>
-        <summary>
-          <span className="change-label">{label}</span>
-          {label === 'Title' ? ' ' : ': '}
-          {summary}
-          {c.conflict && <> {CONFLICT}</>}
-        </summary>
-        <span className="change-after">
-          <WordDiff before={c.before} after={c.after} fold />
-        </span>
-      </details>
-    </li>
-  );
-}
-
-/** A tick on one change of a refinement (ADOPT-05). */
+/** A tick on one change of a refinement, for deciding several at once (ADOPT-05). */
 function Tick({ on, label, onChange, disabled }) {
   return <input type="checkbox" className="change-tick" checked={on} aria-label={label} onChange={(e) => onChange(e.target.checked)} disabled={disabled} />;
 }
 
+const sectionLabel = (name) => (name === 'Head' ? 'Part of · Kind · Place' : name);
+
 /**
- * Someone else's refinement of this item (ADOPT-02): who proposed it and when, what it changes against the spec,
- * which behaviours are ready for adoption (ADOPT-04), and the person's yes or no, one behaviour at a time (ADOPT-05):
- * each changed behaviour has a tick, its other changes one more, and those marked ready start ticked. Adopt or Decline
- * acts on the ticked ones only, and the rest stay to decide (ADOPT-06). Open questions show as badges, and never hold it
- * back (ADOPT-08).
+ * Someone else's refinement of this item (ADOPT-02), read one change at a time (#13 ADOPT-05, ADOPT-18). A slim bar says
+ * who proposed it and how many changes are left, and steps through them; each change sits in its place in the document,
+ * the Why's at the Why and a behaviour's at its row, with its own Adopt and Decline. Deciding one moves on to the next.
+ * Ticks, "Select all" and the bulk Adopt stay in the bar for deciding several at once; those marked ready (ADOPT-04)
+ * start ticked. Open questions show as badges, and never hold it back (ADOPT-08). With `inline` off (the text is open in
+ * the editor), the changes are listed in the bar instead.
  */
-function Refinement({ cs, item, node, editing, comments }) {
-  const threads = useMemo(() => refinementThreads(comments, cs), [comments, cs]);
-  const otherTalk = useTalk({ cs, item, on: OTHER_CHANGES, label: 'Other changes', threads, editing });
-  const [declining, setDeclining] = useState(false);
-  const [reason, setReason] = useState('');
-  // What it changed from the item as it found it (ADOPT-17), not every way the item differs from it now.
-  const diff = useMemo(() => compareItems(editableOf(node), item.after, item.base ?? null), [node, item.after, item.base]);
+function Refinement({ cs, item, node, editing, comments, inline, onShow = null, onEdit = null }) {
+  // What it changed from the item as it found it (ADOPT-17), in its place in the item.
+  const review = useMemo(() => reviewOf(editableOf(node), item.after, item.base ?? null), [node, item.after, item.base]);
+  const { diff } = review;
   const keys = useMemo(() => changeKeys(diff), [diff]);
+  // The order they are read in: the title, then down the document.
+  const order = useMemo(() => [...(review.title ? [review.title] : []), ...review.parts.flatMap((p) => (p.rows ? p.rows.filter((r) => r.key).map((r) => r.key) : p.key ? [p.key] : []))], [review]);
+  const threads = useMemo(() => {
+    const m = refinementThreads(comments, cs);
+    // A thread on all its other changes at once, from before each was its own (ADOPT-05), stays with the first of them.
+    const first = order.find((k) => !diff.behaviours.some((b) => b.key === k));
+    const old = m.get(OTHER_CHANGES);
+    if (old && first) {
+      const here = m.get(first) ?? { threads: [], unanswered: 0 };
+      m.set(first, { threads: [...here.threads, ...old.threads], unanswered: here.unanswered + old.unanswered });
+    }
+    return m;
+  }, [comments, cs, order, diff]);
   const ready = new Set(item.readyForAdoption ?? []);
   const [ticks, setTicks] = useState(() => new Set(keys.filter((k) => ready.has(k))));
   const ticked = keys.filter((k) => ticks.has(k));
   const tick = (k, on) => setTicks((t) => (on ? new Set([...t, k]) : new Set([...t].filter((x) => x !== k))));
   const all = keys.length > 0 && ticked.length === keys.length;
   const nothing = !keys.length;
+  const [declining, setDeclining] = useState(false);
+  const [reason, setReason] = useState('');
   const key = item.key;
   // With nothing to tick (it proposes the item as it is), the whole item is decided.
   const picks = nothing ? undefined : ticked;
+  const count = nothing ? '' : ` ${ticked.length}`;
+  // A person's own change goes to an agent first (ADOPT-20), and isn't offered as a decision until one marks it ready (ADOPT-21).
+  const turn = turnOf(cs, item);
+  // The change being read, and a step to it: Next and Previous, and the next one once one is decided.
+  const [at, setAt] = useState(null);
+  const [step, setStep] = useState(0);
+  const wrap = useRef(null);
+  useEffect(() => {
+    if (!step || !at) return;
+    wrap.current?.querySelector(`[data-change="${CSS.escape(at)}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
+  const go = (k) => {
+    setAt(k);
+    setStep((s) => s + 1);
+  };
+  const move = (by) => {
+    const i = order.indexOf(at);
+    go(order[i < 0 ? (by > 0 ? 0 : order.length - 1) : (i + by + order.length) % order.length]);
+  };
+  const decide = (k) => async (action, why = '') => {
+    const i = order.indexOf(k);
+    const then = order[i + 1] ?? order[i - 1] ?? null;
+    const ok = action === 'adopt' ? await editing.adopt(cs, key, [k]) : await editing.decline(cs, key, why, [k]);
+    if (ok) {
+      tick(k, false);
+      if (then) go(then);
+    }
+    return ok;
+  };
   const done = () => {
     setTicks(new Set());
     setDeclining(false);
     setReason('');
   };
-  const count = nothing ? '' : ` ${ticked.length}`;
-  const other = Boolean(diff.title || diff.sections.length);
-  // A person's own change goes to an agent first (ADOPT-20), and isn't offered as a decision until one marks it ready (ADOPT-21).
-  const turn = turnOf(cs, item);
+  const left = order.length;
+  const here = (k, more) => {
+    const common = { at: k, cs, item, threads, editing, offered: !turn, current: k === at, decide: decide(k), ready: ready.has(k) };
+    const t = turn ? null : <Tick on={ticks.has(k)} label={`Tick ${more.label}`} onChange={(on) => tick(k, on)} disabled={editing.busy} />;
+    return <ChangeHere key={k} {...common} tick={t} {...more} />;
+  };
+  const titleChange = diff.title && here(TITLE_CHANGE, { label: 'Title', summary: 'changed', change: 'changed', ...diff.title, title: true });
+  const sectionChange = (p) => {
+    const c = diff.sections.find((s) => s.name === p.section);
+    return c && here(p.key, { label: sectionLabel(c.name), summary: changeSummary(c), change: c.change, before: c.before, after: c.after, conflict: Boolean(c.conflict) });
+  };
+  const behaviourChange = (k) => {
+    const b = diff.behaviours.find((x) => x.key === k);
+    return b && here(k, { label: b.id || 'Behaviour', change: b.change, before: b.before, after: b.after, conflict: Boolean(b.conflict), talkable: Boolean(b.id) });
+  };
+  const changeAt = (k) => (k === TITLE_CHANGE ? titleChange : diff.behaviours.some((b) => b.key === k) ? behaviourChange(k) : sectionChange(review.parts.find((p) => p.key === k)));
   return (
-    <section className="refinement" aria-label={`Refinement by ${cs.author}`}>
-      <div className="refinement-head">
-        <Icon name="edit" size={16} />
-        <span>
-          Refinement by <strong>{cs.author}</strong> · {when(cs.updatedAt)}
-        </span>
-      </div>
-      <p className="refinement-note">The spec is unchanged until it is adopted. This is what it proposes:</p>
-      {nothing ? (
-        <p className="empty-note">It proposes the item as it already is.</p>
-      ) : (
-        <>
-          <label className="refinement-all">
-            <input
-              type="checkbox"
-              checked={all}
-              ref={(el) => el && (el.indeterminate = ticked.length > 0 && !all)}
-              onChange={(e) => setTicks(new Set(e.target.checked ? keys : []))}
-              disabled={editing.busy}
-            />
-            Select all
-          </label>
-          <ul className="changes">
-            {diff.behaviours.map((b, i) => (
-              <BehaviourChange
-                key={`b${b.key || i}`}
-                b={b}
-                cs={cs}
-                item={item}
-                threads={threads}
-                editing={editing}
-                ready={ready.has(b.id)}
-                tick={<Tick on={ticks.has(b.key)} label={`Tick ${b.id || 'this behaviour'}`} onChange={(on) => tick(b.key, on)} disabled={editing.busy} />}
-              />
-            ))}
-            {other && (
-              <li className="change change-other">
-                <div className="change-head">
-                  <Tick on={ticks.has(OTHER_CHANGES)} label="Tick the other changes" onChange={(on) => tick(OTHER_CHANGES, on)} disabled={editing.busy} />
-                  <span className="change-label">Other changes</span>
-                  {otherTalk.head}
-                </div>
-                {otherTalk.body}
-                <ul className="change-summary">
-                  {diff.title && <SectionChange label="Title" c={{ change: 'changed', ...diff.title }} summary="changed" />}
-                  {diff.sections.map((c) => (
-                    <SectionChange key={`s${c.name}`} label={c.name === 'Head' ? 'Part of · Kind · Place' : c.name} c={c} summary={changeSummary(c)} />
-                  ))}
-                </ul>
-              </li>
-            )}
-          </ul>
-        </>
-      )}
-      {ready.size > 0 && <p className="refinement-ready">Ready for adoption: {[...ready].join(', ')}</p>}
-      {turn ? (
-        <WithAnAgent turn={turn} cs={cs} item={item} editing={editing} />
-      ) : declining ? (
-        <div className="refinement-decline">
-          <textarea aria-label="Why decline (optional)" placeholder="Why not? (optional: its author sees this)" value={reason} maxLength={2000} rows={2} onChange={(e) => setReason(e.target.value)} />
-          <div className="edit-actions">
-            <button type="button" onClick={() => setDeclining(false)} disabled={editing.busy}>
-              Keep it
+    <div className="refinement-review" ref={wrap}>
+      <section className="refinement" aria-label={`Refinement by ${cs.author}`}>
+        <div className="refinement-head">
+          <Icon name="edit" size={16} />
+          <span title="The spec is unchanged until a change is adopted">
+            Refinement by <strong>{cs.author}</strong> · {when(cs.updatedAt)}
+          </span>
+        </div>
+        <div className="refinement-nav">
+          <span className="refinement-count" role="status">
+            {nothing ? 'It proposes the item as it already is.' : `${left} change${left === 1 ? '' : 's'} to review`}
+          </span>
+          {left > 0 && (inline || !onShow) && (
+            <span className="refinement-steps">
+              <button type="button" className="link-btn" onClick={() => move(-1)} aria-label="Previous change" title="Previous change">
+                ‹ Previous
+              </button>
+              <button type="button" className="link-btn" onClick={() => move(1)} aria-label="Next change" title="Next change">
+                Next ›
+              </button>
+            </span>
+          )}
+          {!inline && onShow && (
+            <button type="button" className="link-btn" onClick={onShow}>
+              Review in the text
             </button>
-            <button type="button" className="armed" onClick={async () => (await editing.decline(cs, key, reason, picks)) && done()} disabled={editing.busy || (!nothing && !ticked.length)}>
-              Decline{count}
+          )}
+          {inline && onEdit && (
+            <button type="button" className="link-btn" onClick={onEdit} title="Edit the item's text yourself: the changes are then listed here">
+              Edit text
             </button>
+          )}
+        </div>
+        {ready.size > 0 && <p className="refinement-ready">Ready for adoption: {[...ready].join(', ')}</p>}
+        {turn ? (
+          <WithAnAgent turn={turn} cs={cs} item={item} editing={editing} />
+        ) : declining ? (
+          <div className="refinement-decline">
+            <textarea aria-label="Why decline (optional)" placeholder="Why not? (optional: its author sees this)" value={reason} maxLength={2000} rows={2} onChange={(e) => setReason(e.target.value)} />
+            <div className="edit-actions">
+              <button type="button" onClick={() => setDeclining(false)} disabled={editing.busy}>
+                Keep it
+              </button>
+              <button type="button" className="armed" onClick={async () => (await editing.decline(cs, key, reason, picks)) && done()} disabled={editing.busy || (!nothing && !ticked.length)}>
+                Decline{count}
+              </button>
+            </div>
           </div>
-        </div>
-      ) : (
-        <div className="edit-actions">
-          <button type="button" onClick={() => setDeclining(true)} disabled={editing.busy || (!nothing && !ticked.length)}>
-            Decline{count}…
-          </button>
-          <button
-            type="button"
-            className="primary"
-            onClick={async () => (await editing.adopt(cs, key, picks)) && done()}
-            disabled={editing.busy || (!nothing && !ticked.length)}
-            title="Adopt the ticked changes: the item takes them, and waits for a save to reach GitHub"
-          >
-            <Icon name="check" size={16} /> Adopt{count}
-          </button>
+        ) : (
+          <div className="refinement-bulk">
+            {!nothing && (
+              <label className="refinement-all">
+                <input
+                  type="checkbox"
+                  checked={all}
+                  ref={(el) => el && (el.indeterminate = ticked.length > 0 && !all)}
+                  onChange={(e) => setTicks(new Set(e.target.checked ? keys : []))}
+                  disabled={editing.busy}
+                />
+                Select all
+              </label>
+            )}
+            <span className="edit-actions">
+              <button type="button" className="small" onClick={() => setDeclining(true)} disabled={editing.busy || (!nothing && !ticked.length)}>
+                Decline{count}…
+              </button>
+              <button
+                type="button"
+                className="small"
+                onClick={async () => (await editing.adopt(cs, key, picks)) && done()}
+                disabled={editing.busy || (!nothing && !ticked.length)}
+                title="Adopt the ticked changes at once: the item takes them, and waits for a save to reach GitHub"
+              >
+                <Icon name="check" size={14} /> Adopt{count}
+              </button>
+            </span>
+          </div>
+        )}
+        {!inline && left > 0 && (
+          <ul className="changes">
+            {order.map((k) => (
+              <li key={k} className="change">
+                {changeAt(k)}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      {inline && (
+        <div className="doc review-doc">
+          {titleChange || <h2 className="node-title">{node.title}</h2>}
+          {review.parts.map((p) => {
+            if (p.rows)
+              return (
+                <Fragment key={p.section}>
+                  <h2 className="review-heading">Behaviours</h2>
+                  <ul className="review-rows">
+                    {p.rows.map((r, i) => (
+                      <li key={r.key ?? `r${i}`}>{r.key ? behaviourChange(r.key) : <Markdown text={r.text} />}</li>
+                    ))}
+                  </ul>
+                </Fragment>
+              );
+            if (p.key) return <Fragment key={p.section}>{sectionChange(p)}</Fragment>;
+            return <Markdown key={p.section} text={p.section === 'Head' ? p.text : `## ${p.section}\n\n${p.text}`} />;
+          })}
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -1146,6 +1231,10 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
   // Your own change to it, as an agent sees it (#13 ADOPT-21): with an agent until one marks it ready.
   const yourEdit = editing.changeset?.items?.find((it) => it.key === key && !it.new);
   const yourTurn = yourEdit ? turnOf(editing.changeset, yourEdit) : null;
+  // One refinement at a time is read in the text, its changes in their places (#13 ADOPT-18), until the person edits the text.
+  const [active, setActive] = useState(null);
+  const [editingText, setEditingText] = useState(null);
+  const inReview = editingText === node.id ? null : (proposals.find((p) => p.cs.id === active) ?? proposals[0])?.cs ?? null;
   const madeIn = theirs ? editing.others.find((cs) => cs.id === node.refinement && cs.items.some((it) => it.key === key && it.new)) : null;
   // The item's open questions as the map has them, each answered directly under itself in the text (#68 ANSWER-01).
   const questions = useMemo(() => (editable ? questionsIn(key, editableOf(node).markdown) : []), [editable, key, node.body]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1260,7 +1349,17 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       {review && <NextReview node={node} review={review} onNext={onNextReview} />}
       {madeIn && <NewItemReview key={madeIn.id} cs={madeIn} node={node} editing={editing} />}
       {proposals.map(({ cs, item }) => (
-        <Refinement key={cs.id} cs={cs} item={item} node={node} editing={editing} comments={comments.filter((c) => c.itemKey === key)} />
+        <Refinement
+          key={cs.id}
+          cs={cs}
+          item={item}
+          node={node}
+          editing={editing}
+          comments={comments.filter((c) => c.itemKey === key)}
+          inline={cs === inReview}
+          onShow={() => (setActive(cs.id), setEditingText(null))}
+          onEdit={editable ? () => setEditingText(node.id) : null}
+        />
       ))}
       {yourTurn && (
         <p className="turn-note your-turn" role="status">
@@ -1268,7 +1367,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
           <span className="empty-note"> Keep editing: each edit goes back to it.</span>
         </p>
       )}
-      <div className="doc" ref={docRef} onFocusCapture={onDocFocus}>
+      {!inReview && <div className="doc" ref={docRef} onFocusCapture={onDocFocus}>
         {editable ? (
           <Suspense fallback={readOnly}>
             <IssueForm
@@ -1296,7 +1395,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
         ) : (
           readOnly
         )}
-      </div>
+      </div>}
       <EditBar editing={editing} box={box} comments={comments} onPick={onPick} />
 
       <ProofSection node={node} atBehaviour={atBehaviour} proof={proof} />

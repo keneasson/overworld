@@ -3,7 +3,7 @@
 // build on this, so an agent gets the same picture of an item however the work reaches it.
 
 import { STATUS_LABEL } from '../shared/schema.js';
-import { OTHER_CHANGES, editableOf, itemKeyOf, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { OTHER_CHANGES, TITLE_CHANGE, editableOf, itemKeyOf, parseIssue, sectionText } from '../shared/issue-shape.js';
 import { isOpen, threadsOf } from '../shared/annotations.js';
 import { skeletonLines, skeletonsOf } from './skeletons.mjs';
 import { SOURCE_WORDS, isPin, isStale, photoName, spotWords } from '../shared/photos.js';
@@ -17,7 +17,7 @@ export const stateWords = (status) => (STATUS_LABEL[status] ?? status).toLowerCa
 export function anchorWords(a = {}, photo = null) {
   if (isPin(a)) return pinWords(a, photo);
   if (a.refinement) {
-    const what = a.behaviour === OTHER_CHANGES ? 'the other changes (title and sections)' : `behaviour ${a.behaviour}`;
+    const what = a.behaviour === OTHER_CHANGES ? 'the other changes (title and sections)' : a.behaviour === TITLE_CHANGE ? 'the title' : a.behaviour?.startsWith('section:') ? `the ${a.behaviour.slice(8)} section` : `behaviour ${a.behaviour}`;
     return a.quote ? [`on these words of ${what}, as your refinement ${a.refinement} proposes it:`, quote(a.quote)] : [`on ${what}, as your refinement ${a.refinement} proposes it`];
   }
   switch (a.on) {

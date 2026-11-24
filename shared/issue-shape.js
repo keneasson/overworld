@@ -377,31 +377,38 @@ const flat = (text) => text.split('\n').map((l) => l.replace(/\s+/g, ' ').trim()
 const said = (r) => writeBehaviour(r).replace(/^\s*[-*]\s+/, '').replace(/\s+/g, ' ').trim();
 const changeKeyOf = (r) => r.id || `text:${said(r)}`;
 
-/** Everything a refinement changes that isn't a behaviour (its title and other sections), ticked as one (#13 ADOPT-05). */
+/** Every change of a refinement that isn't a behaviour (its title and other sections) at once: what older clients tick (#13 ADOPT-05). */
 export const OTHER_CHANGES = 'other';
+/** A refinement's change to its title, and to one section ('Head' for the lines before the first), each decided on its own (#13 ADOPT-05). */
+export const TITLE_CHANGE = 'title';
+export const sectionKey = (name) => `section:${name}`;
 
-/** What can be ticked in a refinement of an item: each changed behaviour by its key, then its other changes as one. */
-export const changeKeys = (diff) => [...diff.behaviours.map((b) => b.key), ...(diff.title || diff.sections.length ? [OTHER_CHANGES] : [])];
+/** What can be decided in a refinement of an item, one at a time: each changed behaviour by its key, then its title, then each changed section. */
+export const changeKeys = (diff) => [...diff.behaviours.map((b) => b.key), ...(diff.title ? [TITLE_CHANGE] : []), ...diff.sections.map((s) => sectionKey(s.name))];
 
 /** The keys (as changeKeys gives them) of the changes whose part has changed since the refinement was proposed. */
-export const conflictKeys = (diff) => [...diff.behaviours.filter((b) => b.conflict).map((b) => b.key), ...(diff.title?.conflict || diff.sections.some((s) => s.conflict) ? [OTHER_CHANGES] : [])];
+export const conflictKeys = (diff) => [...diff.behaviours.filter((b) => b.conflict).map((b) => b.key), ...(diff.title?.conflict ? [TITLE_CHANGE] : []), ...diff.sections.filter((s) => s.conflict).map((s) => sectionKey(s.name))];
+
+/** Picks as changeKeys names them: OTHER_CHANGES, from an older client or a decision already recorded, stands for every title and section change in `all`. */
+export const expandPicks = (picks, all) => [...new Set(picks.flatMap((p) => (p === OTHER_CHANGES ? all.filter((k) => k === TITLE_CHANGE || k.startsWith('section:')) : [p])))];
 
 /**
  * `into` with the ticked changes of `from` (keys from changeKeys): each ticked behaviour as `from` has it (changed,
- * added where `from` puts it, or removed), and with OTHER_CHANGES its title and other sections too. Nothing else moves,
- * so adopting some of a refinement leaves the rest of the item as it was, and declining some takes those back out of it.
- * With `base`, OTHER_CHANGES takes only the title and sections `from` changed from `base`: what it didn't touch stays as
- * `into` has it, whoever changed it there (#13 ADOPT-17).
+ * added where `from` puts it, or removed), its title with TITLE_CHANGE, and each section with its sectionKey (OTHER_CHANGES:
+ * the title and every section). Nothing else moves, so adopting some of a refinement leaves the rest of the item as it
+ * was, and declining some takes those back out of it. A section comes across only where `from` changed it from `base`
+ * (without one, from `into`): what it didn't touch stays as `into` has it, whoever changed it there (#13 ADOPT-17).
  */
 export function mergeChanges(into, from, picks, base = null) {
   const pick = new Set(picks);
-  const other = pick.has(OTHER_CHANGES);
+  const every = pick.has(OTHER_CHANGES);
+  const takes = (name) => every || pick.has(sectionKey(name));
   const rows = parseBehaviours(sectionText(parseIssue(into.markdown), 'Behaviours'));
   const theirs = parseBehaviours(sectionText(parseIssue(from.markdown), 'Behaviours'));
   const byKey = new Map(theirs.map((r) => [changeKeyOf(r), r]));
   let moved = false;
   for (const key of pick) {
-    if (key === OTHER_CHANGES) continue;
+    if (key === OTHER_CHANGES || key === TITLE_CHANGE || key.startsWith('section:')) continue;
     const at = rows.findIndex((r) => changeKeyOf(r) === key), row = byKey.get(key);
     if (at >= 0 && row) rows[at] = row;
     else if (at >= 0) rows.splice(at, 1);
@@ -413,23 +420,59 @@ export function mergeChanges(into, from, picks, base = null) {
     } else continue;
     moved = true;
   }
-  if (!moved && !other) return { title: into.title, markdown: into.markdown };
+  const title = (every || pick.has(TITLE_CHANGE)) && flat((base ?? into).title) !== flat(from.title) ? from.title : into.title;
+  const sections = every || [...pick].some((k) => k.startsWith('section:'));
+  if (!moved && !sections) return { title, markdown: into.markdown };
   const Behaviours = rows.map((r) => r.raw).join('\n');
-  if (!other) return { title: into.title, markdown: writeIssue(parseIssue(into.markdown), { Behaviours }) };
-  if (!base) return { title: from.title, markdown: writeIssue(parseIssue(from.markdown), { Behaviours }) };
-  // Only what `from` changed from `base` comes across, as `from` wrote it.
-  const was = parseIssue(base.markdown), to = parseIssue(from.markdown), shape = parseIssue(into.markdown);
+  const shape = parseIssue(into.markdown);
+  if (!sections) return { title, markdown: writeIssue(shape, { Behaviours }) };
+  // Only the picked sections `from` changed from `base` come across, as `from` wrote them.
+  const was = parseIssue((base ?? into).markdown), to = parseIssue(from.markdown);
   const raw = (sh, name) => (name === 'Head' ? sh.head : sh.sections.find((s) => s.name === name)?.raw ?? '');
-  const names = new Set([...was.sections, ...to.sections].map((s) => s.name).filter((n) => n !== 'Behaviours'));
-  const edits = { Behaviours };
-  if (flat(contentOf(was.head)) !== flat(contentOf(to.head))) shape.head = to.head;
+  const names = [...new Set([...to.sections, ...was.sections].map((s) => s.name).filter((n) => n !== 'Behaviours'))];
+  const edits = moved ? { Behaviours } : {};
+  if (takes('Head') && flat(contentOf(was.head)) !== flat(contentOf(to.head))) shape.head = to.head;
   for (const name of names) {
-    if (flat(contentOf(raw(was, name))) === flat(contentOf(raw(to, name)))) continue;
+    if (!takes(name) || flat(contentOf(raw(was, name))) === flat(contentOf(raw(to, name)))) continue;
     const at = shape.sections.findIndex((s) => s.name === name);
     if (!to.sections.some((s) => s.name === name)) {
       if (at >= 0) shape.sections.splice(at, 1);
     } else if (at >= 0) shape.sections[at].raw = rewrap(shape.sections[at].raw, raw(to, name), at === shape.sections.length - 1);
     else edits[name] = raw(to, name);
   }
-  return { title: flat(base.title) === flat(from.title) ? into.title : from.title, markdown: writeIssue(shape, edits) };
+  return { title, markdown: writeIssue(shape, edits) };
+}
+
+// `list` with the entries of `was` that aren't in it and are `gone` put back, each after the last entry before it that is there (first if none).
+function keepGone(list, was, keyOf, gone) {
+  const out = [...list];
+  const here = new Set(list.map(keyOf));
+  was.forEach((x, i) => {
+    if (here.has(keyOf(x)) || !gone(x)) return;
+    const prev = was.slice(0, i).map(keyOf).reverse().map((k) => out.findIndex((y) => keyOf(y) === k)).find((j) => j >= 0) ?? -1;
+    out.splice(prev + 1, 0, x);
+  });
+  return out;
+}
+
+/**
+ * An item with a refinement's changes in their places, for reading it once with its edits marked in it (#13 ADOPT-18):
+ * the item as it would be with every change adopted, in reading order, removed parts kept where they were. Each part
+ * carries the key (as changeKeys gives it) of the change it is, or null where the refinement left it alone.
+ * @returns {{ diff: object, title: string | null, parts: ({ section: string, key: string | null, text: string } | { section: 'Behaviours', key: null, rows: { key: string | null, text: string }[] })[] }}
+ */
+export function reviewOf(adopted, proposed, base = null) {
+  const diff = compareItems(adopted, proposed, base);
+  const keys = changeKeys(diff);
+  const now = parseIssue(adopted.markdown), to = parseIssue(mergeChanges(adopted, proposed, keys, base).markdown);
+  const touched = new Set(diff.sections.map((s) => s.name)), moved = new Set(diff.behaviours.map((b) => b.key));
+  const part = (name, text) => ({ section: name, key: touched.has(name) ? sectionKey(name) : null, text });
+  const rowsOf = (shape) => parseBehaviours(sectionText(shape, 'Behaviours'));
+  const rows = keepGone(rowsOf(to), rowsOf(now), changeKeyOf, (r) => moved.has(changeKeyOf(r))).map((r) => ({ key: moved.has(changeKeyOf(r)) ? changeKeyOf(r) : null, text: r.raw.replace(/^\s*[-*]\s+/, '') }));
+  const names = keepGone(to.sections.map((s) => s.name), now.sections.map((s) => s.name), (n) => n, (n) => touched.has(n) || (n === 'Behaviours' && rows.length));
+  const parts = [
+    ...(contentOf(to.head) || touched.has('Head') ? [part('Head', contentOf(to.head))] : []),
+    ...names.map((n) => (n === 'Behaviours' ? { section: n, key: null, rows } : part(n, sectionText(to, n)))),
+  ];
+  return { diff, title: diff.title ? TITLE_CHANGE : null, parts };
 }
