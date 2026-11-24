@@ -2,7 +2,7 @@
 // Handing it over at once (NOTE-17) is agents.mjs's `addressed`; the API, the MCP tools and the standup all build the
 // prompt here. Adopting the refinement that acted on a comment changes nothing about the comment (NOTE-19).
 
-import { OTHER_CHANGES, compareItems, editableOf, itemKeyOf } from '../shared/issue-shape.js';
+import { OTHER_CHANGES, TITLE_CHANGE, compareItems, editableOf, itemKeyOf, sectionKey } from '../shared/issue-shape.js';
 import { isAgentAlias, isOpen, mentionsOf, threadsOf, whereOf } from '../shared/annotations.js';
 import { anchorWords, itemContext, quote } from './prompts.mjs';
 
@@ -57,8 +57,10 @@ export function notePrompt({ nodes, comments, note, refinement = null, photo = n
 function proposedWords(refinement, node, behaviour) {
   const item = refinement.items.find((it) => it.key === itemKeyOf(node));
   if (!item?.after) return ['', 'That change is no longer in the refinement: it has been adopted or declined.'];
-  const change = compareItems(editableOf(node), item.after, item.base).behaviours.find((b) => b.key === behaviour);
-  if (!change) return behaviour === OTHER_CHANGES ? [] : ['', `Your refinement no longer changes ${behaviour}.`];
+  const diff = compareItems(editableOf(node), item.after, item.base);
+  // A comment on its title or one section (ADOPT-05) is about that change, read the same way as a behaviour's.
+  const change = behaviour === TITLE_CHANGE ? diff.title && { change: 'changed', ...diff.title } : diff.behaviours.find((b) => b.key === behaviour) ?? diff.sections.find((s) => sectionKey(s.name) === behaviour);
+  if (!change) return behaviour === OTHER_CHANGES ? [] : ['', `Your refinement no longer changes ${behaviour === TITLE_CHANGE ? 'the title' : behaviour.replace(/^section:/, 'the section ')}.`];
   return ['', `Your refinement ${change.change === 'added' ? 'adds' : change.change === 'removed' ? 'removes' : 'changes'} it:`, ...(change.before ? ['The spec says:', quote(change.before)] : []), ...(change.after ? ['You propose:', quote(change.after)] : [])];
 }
 

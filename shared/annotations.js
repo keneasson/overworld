@@ -28,10 +28,13 @@ export function annotationOf(c) {
   return out;
 }
 
+// A refinement's change as said: a behaviour by its ID, 'title' and 'section:Why' as words (#13 ADOPT-05).
+const changeName = (k) => (!k ? 'a change' : k === 'other' ? 'the other changes' : k === 'title' ? 'the title' : k.startsWith('section:') ? `the ${k.slice(8)}` : k);
+
 /** Where an anchor sits, in words: "Why", "NOTE-01", "an image in Why", "the place on the map". */
 export function whereOf(a = {}) {
   const on = onOf(a);
-  if (a.refinement) return `${a.behaviour ?? 'a change'} in a refinement`;
+  if (a.refinement) return `${changeName(a.behaviour)} in a refinement`;
   if (on === 'place') return 'the place on the map';
   if (on === 'changeset') return 'the changeset';
   if (on === 'image' && a.photo) return `a screenshot in Photos`;

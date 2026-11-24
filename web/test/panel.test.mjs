@@ -136,7 +136,7 @@ test('EDIT-23 scrolling or pinching inside the panel never reaches the map', () 
   assert.deepEqual(reached, ['wheel']);
 });
 
-test('ADOPT-17 ADOPT-18 a refinement shows only what it changed: a behaviour as one text with its edits in place, and other changes as a line each', async () => {
+test('ADOPT-05 ADOPT-17 ADOPT-18 a refinement is read in the item itself: each change in its place, the whole section with its edits marked, each with its own Adopt, and a bar to step through them', async () => {
   const { Details } = await import('../src/components/Panel.jsx');
   const { wordDiff } = await import('@shared/word-diff.js');
   assert.deepEqual(wordDiff('then it shows as Fog, because', 'then it shows as #22 STRAY-01 says, because'), [
@@ -164,12 +164,24 @@ test('ADOPT-17 ADOPT-18 a refinement shows only what it changed: a behaviour as 
   const { prelude } = await prerender(h(Details, { node: t.byId.get('p'), tree: t, lens: LENSES[0], editing: editing({ others: [cs] }), onPick: noop, onFly: noop, onAdd: noop, onPatch: noop, onDelete: noop, onClose: noop, onCopyLink: noop }));
   let html = '';
   for await (const chunk of prelude) html += Buffer.from(chunk).toString();
-  const review = /<section class="refinement"[\s\S]*?<\/section>/.exec(html)[0];
-  assert.match(review, /then it shows as <del class="diff-del">Fog,<\/del><ins class="diff-ins">#22 STRAY-01 says,<\/ins> because/, 'one text, its edits in place');
-  assert.doesNotMatch(review, /class="change-before"/, 'never the old block above the new');
-  assert.match(review, /<summary><span class="change-label">Why<\/span>: <!-- -->1 sentence reworded/, 'a line for what changed in the Why');
-  assert.doesNotMatch(review, /It holds|Acceptance/, "an edit made since isn't the refinement's");
-  assert.match(review, /diff-fold/, 'a long section folds what it left alone');
+  const bar = /<section class="refinement"[\s\S]*?<\/section>/.exec(html)[0];
+  assert.match(bar, /2<!-- --> change<!-- -->s<!-- --> to review|2 changes to review/, 'how many are left');
+  assert.match(bar, /aria-label="Next change"/);
+  assert.match(bar, /aria-label="Previous change"/);
+  assert.match(bar, /Select all/, 'deciding several at once is still there, in the bar');
+  assert.doesNotMatch(bar, /Other changes|data-change=/, 'no box of changes at the top');
+  const doc = /<div class="doc review-doc">([\s\S]*)/.exec(html)[1];
+  assert.doesNotMatch(html, /class="issue-doc-title"/, 'read, not edited, while it is reviewed');
+  const atWhy = doc.indexOf('data-change="section:Why"'), behaviour = doc.indexOf('data-change="PR-01"'), heading = doc.indexOf('>Behaviours</h2>');
+  assert.ok(atWhy >= 0 && atWhy < heading && heading < behaviour, 'the Why change at the Why, the behaviour at its row');
+  assert.match(doc, /<span class="change-label">Why<\/span><span class="change-what">1 sentence reworded<\/span>/, 'a line saying what it did');
+  assert.match(doc, /Word19 <del class="diff-del">Word20<\/del><ins class="diff-ins">Twenty<\/ins> Word21/, 'the whole Why, its edit marked in it');
+  assert.match(doc, /Word0 Word1/);
+  assert.doesNotMatch(doc, /diff-fold/, 'nothing folded away');
+  assert.match(doc, /then it shows as <del class="diff-del">Fog,<\/del><ins class="diff-ins">#22 STRAY-01 says,<\/ins> because/, 'a behaviour as one text, its edits in place');
+  assert.doesNotMatch(doc, /class="change-before"/, 'never the old block above the new');
+  assert.equal(doc.match(/class="edit-actions change-actions"/g).length, 2, 'each change has its own Adopt and Decline');
+  assert.doesNotMatch(doc, /data-change="section:Acceptance"/, "an edit made since isn't the refinement's");
 });
 
 test('ADOPT-21 a person\'s own change shows as with an agent, not as a decision, with a small way out, until an agent marks it ready', async () => {

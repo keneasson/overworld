@@ -677,6 +677,100 @@ button {
   margin: 4px 0 6px;
   padding-left: 14px;
 }
+/* A refinement read one change at a time (#13 ADOPT-05, ADOPT-18): a slim bar kept in sight, each change in its place. */
+.refinement-review > .refinement {
+  position: sticky;
+  top: -8px;
+  z-index: 5;
+  margin: 4px 0 10px;
+  padding: 6px 10px;
+}
+.refinement-nav,
+.refinement-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 4px;
+}
+.refinement-count {
+  font-weight: 600;
+}
+.refinement-steps {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.refinement-bulk .refinement-all {
+  margin: 0;
+}
+.refinement-bulk .edit-actions {
+  margin: 0 0 0 auto;
+}
+.refinement-bulk button.small {
+  height: 24px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.refinement-review > .refinement .changes {
+  max-height: 45vh;
+  overflow: auto;
+}
+.inline-change {
+  scroll-margin-top: 96px;
+  margin: 10px -8px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--accent-soft);
+}
+.changes .inline-change {
+  margin: 0;
+  border-left: 0;
+  background: none;
+}
+.inline-change.current {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.inline-change .change-label {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.inline-change .change-what {
+  color: var(--muted);
+  font-size: 12px;
+}
+.inline-change .change-after {
+  margin-top: 2px;
+}
+.inline-change.change-added .change-after {
+  background: rgb(30 142 62 / 0.12);
+}
+.title-change .change-after {
+  font-size: 18px;
+  font-weight: 700;
+}
+.change-actions {
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.review-doc .review-heading {
+  margin: 1.1em 0 0.35em;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.review-rows {
+  margin: 0;
+  padding-left: 20px;
+}
+.review-rows .inline-change {
+  margin-left: -28px;
+}
 .pill-conflict {
   background: var(--danger);
 }

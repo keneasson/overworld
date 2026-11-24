@@ -5,8 +5,11 @@ import {
   RICH_SECTIONS,
   behaviourPrefix,
   blankBehaviour,
+  changeKeys,
   compareItems,
+  expandPicks,
   mergeChanges,
+  reviewOf,
   isWellFormed,
   placeholderId,
   renumbered,
@@ -176,4 +179,36 @@ test("ADOPT-17 a refinement's changes are what it changed from its base: what it
   const clash = compareItems(now, touched, base).sections.find((x) => x.name === 'Open questions');
   assert.equal(clash.conflict, true, 'a part it changed that has changed since is a conflict');
   assert.deepEqual(compareItems(now, proposed).sections.map((x) => x.name), ['Acceptance', 'Open questions'], 'with no base, against the item as it is');
+});
+
+test('ADOPT-05 ADOPT-18 each section a refinement changes is its own change, adopted or declined on its own, and read in its place in the item', () => {
+  const spec = { title: 'Claims', markdown: 'Part of #1\n\n## Why\n\nAgents collide.\n\n## Behaviours\n\n- CL-01 Given work, when claimed, then it is held.\n- CL-02 Given a claim, when it lapses, then it is free.\n\n## Acceptance\n\n- One agent holds it.\n\n## Out of scope\n\n- Locks.\n\n## Open questions\n\nNone\n' };
+  const proposed = {
+    title: 'Claims held',
+    markdown: spec.markdown.replace('Agents collide.', 'Agents collide, and work is lost.').replace('- CL-02 Given a claim, when it lapses, then it is free.\n', '').replace('- One agent holds it.', '- One agent holds it.\n- The map shows who.').replace('## Out of scope\n\n- Locks.\n\n', ''),
+  };
+  const diff = compareItems(spec, proposed, spec);
+  const keys = changeKeys(diff);
+  assert.deepEqual(keys, ['CL-02', 'title', 'section:Why', 'section:Acceptance', 'section:Out of scope'], 'its title and each section on its own');
+  assert.deepEqual(expandPicks(['other'], keys), ['title', 'section:Why', 'section:Acceptance', 'section:Out of scope'], 'an older tick of all the other changes is every one of them');
+
+  const why = mergeChanges(spec, proposed, ['section:Why'], spec);
+  assert.equal(why.title, 'Claims', 'the title waits');
+  assert.match(why.markdown, /work is lost/);
+  assert.doesNotMatch(why.markdown, /The map shows who/, 'the Acceptance change waits');
+  assert.match(why.markdown, /CL-02/);
+  assert.match(why.markdown, /## Out of scope\n\n- Locks\./);
+  const left = changeKeys(compareItems(why, proposed, mergeChanges(spec, proposed, ['section:Why'], spec)));
+  assert.deepEqual(left, ['CL-02', 'title', 'section:Acceptance', 'section:Out of scope'], 'the rest stays to decide');
+
+  const declined = mergeChanges(proposed, spec, ['section:Acceptance']);
+  assert.doesNotMatch(declined.markdown, /The map shows who/, 'declined: that section goes back to what it was');
+  assert.match(declined.markdown, /work is lost/, 'the rest of the proposal stays');
+
+  // Read once, in place: the title, the head, the Why with its change, each behaviour at its row (a removed one where it was), and so on.
+  const review = reviewOf(spec, proposed, spec);
+  assert.equal(review.title, 'title');
+  assert.deepEqual(review.parts.map((p) => [p.section, p.key]), [['Head', null], ['Why', 'section:Why'], ['Behaviours', null], ['Acceptance', 'section:Acceptance'], ['Out of scope', 'section:Out of scope'], ['Open questions', null]]);
+  assert.deepEqual(review.parts[2].rows.map((r) => r.key), [null, 'CL-02'], 'a removed behaviour stays where it was');
+  assert.match(review.parts[1].text, /work is lost/, 'the whole section, as it would read');
 });
