@@ -543,6 +543,56 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     ],
 
     [
+      'POST',
+      /^\/api\/projects\/([\w-]+)\/reports$/,
+      // A bug report (REPORT-04, REPORT-05): a draft bug in its own refinement, under the place the reporter confirmed, and a
+      // thread on it addressed to agents, who ask there until the bug is exact and then triage it. Its screenshots follow.
+      async ({ params: [pid], body }) => {
+        const { project, nodes } = await loadProject(pid);
+        const parent = nodes.find((n) => n.id === body?.parentId) ?? findItem(nodes, String(body?.parentId ?? '')) ?? nodes.find((n) => n.id === ROOT_ID);
+        if (!parent) throw new HttpError(404, 'No such place on the map');
+        const said = text(body?.text ?? '', 12000, 'text').trim();
+        if (!said) throw new ValidationError('text: say what happened');
+        if (!String(body?.author ?? '').trim()) throw new ValidationError('author: say who is reporting');
+        const writer = author(body.author);
+        const title = text(body?.title ?? '', 200, 'title').trim() || said.split('\n')[0].replace(/[#*_`>]/g, '').trim().slice(0, 120) || 'Bug report';
+        const ids = [...new Set((Array.isArray(body?.behaviours) ? body.behaviours : []).map(String).filter((id) => /^[A-Z][A-Z0-9]*(?:-[A-Z][A-Z0-9]*)*-\d+$/.test(id)))].slice(0, 20);
+        const near = [...new Set((Array.isArray(body?.items) ? body.items : []).map(String))].map((k) => findItem(nodes, k)).filter((n) => n && n.id !== parent.id).slice(0, 10);
+        const breaks = ids.length ? `\n\nIt seems to break ${ids.length === 1 ? ids[0] : `${ids.slice(0, -1).join(', ')} and ${ids.at(-1)}`}.` : '';
+        const base = newItemMarkdown({ kind: 'bug', partOf: partOf(stores.forProject(project), parent), place: placeOf(editableOf(parent).markdown) });
+        const markdown = base
+          .replace(/## Why\n\n<!--[\s\S]*?-->/, `## Why\n\n${said}${breaks}`)
+          .replace(/## Behaviours\n\n<!--[\s\S]*?-->/, '## Behaviours\n\n<!-- Triage writes the bug here, by the ID of the behaviour it breaks: Given … when … (the steps) then … (expected); now … (actual). -->');
+        const now = new Date(clock()).toISOString();
+        const cs = { id: newId(), scopeId: parent.id, scopeTitle: parent.title, status: 'open', author: writer, report: true, items: [], createdAt: now, updatedAt: now };
+        const id = newId();
+        const links = near.map((n) => ({ to: n.id, type: 'relates' }));
+        const node = { ...applyTo({ ...sanitizeNode({ kind: 'bug', title, status: 'idea', links }), id, parentId: parent.id, createdAt: now }, { title, markdown }, now), status: 'idea', refinement: cs.id };
+        cs.items.push({ key: itemKeyOf(node), nodeTitle: node.title, new: true, at: now });
+        await model.nodes.put(pid, [node]);
+        await model.changesets.put(pid, cs);
+        await touchProject(project, [...nodes, node]);
+        // The thread the conversation happens in: addressed to any agent, which gets it first, with the triage prompt (REPORT-05).
+        const comment = {
+          id: commentId(),
+          itemKey: itemKeyOf(node),
+          anchor: { on: 'place' },
+          text: '@Claude A new bug report to triage. Ask me here whatever you need to make it exact.',
+          to: [{ name: 'Claude', agent: true }],
+          report: true,
+          author: writer,
+          readBy: [writer],
+          createdAt: now,
+          delivery: { state: 'waiting', for: 'any agent', at: now },
+        };
+        await model.comments.put(pid, comment);
+        await model.inbox.put(pid, { id: comment.id, itemKey: comment.itemKey, at: now });
+        return { changeset: cs, node, comment: annotationOf(comment) };
+      },
+      { status: 201 },
+    ],
+
+    [
       'DELETE',
       /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/items\/(issue-\d+|node-[\w-]+)$/,
       // Take an item out of a refinement: its edits go, and a new item goes altogether, never reaching the store (NEW-06).
@@ -744,6 +794,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         };
         if (!root) comment.readBy = [comment.author];
         let thread = root && { ...root, readBy: [comment.author] };
+        // In a bug report's thread the conversation is with the agent triaging it: a person's reply goes back to it, no @ needed (REPORT-06).
+        if (root?.report && !fromAgent && !to.some((t) => t.agent)) to.push(root.triage ? { name: root.triage.name, agent: true, agentId: root.triage.agentId } : { name: 'Claude', agent: true });
         const agent = !fromAgent && to.find((t) => t.agent);
         if (agent) {
           const one = to.find((t) => t.agentId);
@@ -755,6 +807,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           thread = { ...thread, delivery: { ...root.delivery, state: 'replied', by: comment.author, at } };
           await model.inbox.delete(pid, root.id);
         }
+        if (fromAgent && root?.report) thread = { ...thread, triage: { name: comment.author, agentId: fromAgent } };
         // A reply is a reply, wherever its thread is anchored: a comment is never an open question, so it answers none (NOTE-22).
         await model.comments.put(pid, comment);
         if (thread !== root) await model.comments.put(pid, thread);

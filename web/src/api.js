@@ -96,5 +96,7 @@ export const api = {
   photo: (pid, itemKey, id) => request('GET', `/api/projects/${pid}/photos/${itemKey}/${id}`),
   addPhoto: (pid, body) => request('POST', `/api/projects/${pid}/photos`, body),
   deletePhoto: (pid, p) => request('DELETE', `/api/projects/${pid}/photos/${p.itemKey}/${p.id}`),
+  vectors: (pid, after) => request('GET', `/api/projects/${pid}/vectors${after ? `?after=${encodeURIComponent(after)}` : ''}`),
+  report: (pid, body) => request('POST', `/api/projects/${pid}/reports`, body),
   deleteComment: (pid, c) => request('DELETE', `/api/projects/${pid}/comments/${c.itemKey}/${c.id}`),
 };

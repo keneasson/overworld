@@ -53,7 +53,10 @@ plus *Behind the screen*, and top-level items have *Continent*.
 - **Review**: what is waiting on someone. Its chip counts the issues waiting, and its list names them, with their proposed
   changes and questions, the longest waiting first. On the map, the longer something has waited, the stronger the colour (#62).
 - **Progress**: terrain from sand (untouched) to deep green (done).
-- **Bugs**: heat by open bugs, with each bug as an incident dot.
+- **Bugs**: heat by open bugs, with each bug as an incident dot. *Report a bug* in its list: say what happened, add
+  screenshots, and the map suggests where it lands (by meaning, with the embedding model run in your browser, or by shared
+  words), plus what is in view when zoomed in. It goes in as a draft bug with a thread, where a connected agent asks what it
+  needs, then proposes it in the strict shape for a person to adopt.
 - **Poorly defined (Fog)**: hatches items missing a summary, details, acceptance criteria or an estimate.
 - **Lifecycle**: where the work stands, using the `status:` labels in [CONTRIBUTING.md](CONTRIBUTING.md):
   - draft, needs decision, ready, in progress, done and rejected;

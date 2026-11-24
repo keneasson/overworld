@@ -10,6 +10,7 @@ import { Breadcrumbs, Chips, CommentToggle, escapeDoes, Hint, LayerButton, Legen
 import { Composer, YouContext } from './editor/Annotate.jsx';
 import { Details, ReviewList } from './components/Panel.jsx';
 import { Matches } from './components/Matches.jsx';
+import { Report } from './components/Report.jsx';
 import { search } from './model/search.js';
 import { findList } from './model/find.js';
 import { useItemEditing } from './editor/useItemEditing.js';
@@ -116,6 +117,7 @@ export function App() {
   const [commenting, setCommenting] = useState(false); // the Comment control (#15 NOTE-10)
   const [placePick, setPlacePick] = useState(null); // a place on the map picked to comment on: { id, x, y }
   const [resultsOpen, setResultsOpen] = useState(false);
+  const [reporting, setReporting] = useState(false); // a bug report being written (#9 REPORT-01)
   const [reviewingId, setReviewingId] = useState(null); // the item opened from it, which offers the next one (REVIEW-03)
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
@@ -378,7 +380,7 @@ export function App() {
 
   // The Review lens's list is the Review list (REVIEW-05): the chip beside Fog and Bugs is the one way in (REVIEW-01).
   const searching = Boolean(query.trim());
-  const panelMode = selected ? 'details' : searching ? 'find' : resultsOpen && lensId === 'approval' ? 'review' : resultsOpen && offered.matches ? 'results' : null;
+  const panelMode = selected ? 'details' : reporting ? 'report' : searching ? 'find' : resultsOpen && lensId === 'approval' ? 'review' : resultsOpen && offered.matches ? 'results' : null;
   const insets = useMemo(() => {
     if (mobile) return { top: 130, bottom: panelMode ? Math.round(window.innerHeight * (sheetFull ? 0.92 : 0.46)) : 72 };
     return { left: panelMode ? panelW + 24 : 0, top: 60 };
@@ -461,6 +463,7 @@ export function App() {
     setQuery('');
     setChosen([]);
     setResultsOpen(false);
+    setReporting(false);
     setReviewingId(null);
     setSheetFull(false);
   }, []);
@@ -568,6 +571,13 @@ export function App() {
   // Find (#53): a search, or a lens with a list, gives a list of matches; the map marks them, the ones in view come first
   // (FIND-01), and chips from what those in view carry narrow both (FIND-02). The list follows the view (FIND-03).
   const listing = panelMode === 'find' || panelMode === 'results';
+  const inView = useCallback(
+    (n) => {
+      const at = visible && scene?.geo.get(n.id)?.label;
+      return Boolean(at) && at[0] >= visible[0] && at[0] <= visible[2] && at[1] >= visible[1] && at[1] <= visible[3];
+    },
+    [visible, scene],
+  );
   const matches = useMemo(() => {
     if (!tree || !listing) return [];
     if (panelMode === 'find') return search(tree, query, Infinity);
@@ -576,12 +586,8 @@ export function App() {
   }, [tree, listing, panelMode, query, lens]);
   const found = useMemo(() => {
     if (!listing) return null;
-    const inView = (n) => {
-      const at = visible && scene?.geo.get(n.id)?.label;
-      return Boolean(at) && at[0] >= visible[0] && at[0] <= visible[2] && at[1] >= visible[1] && at[1] <= visible[3];
-    };
     return findList(matches, chosen, inView);
-  }, [listing, matches, chosen, visible, scene]);
+  }, [listing, matches, chosen, inView]);
   // A lens already colours its matches, so the map rings them only once chips narrow them; a search's are always ringed.
   const marked = found && (panelMode === 'find' || chosen.length) ? found.marked : null;
   useEffect(() => setFindActive(0), [query, chosen]);
@@ -968,9 +974,37 @@ export function App() {
                   chosen={chosen}
                   live={live}
                   stat={lens.stat}
+                  action={
+                    lens.id === 'bugs' && (
+                      <div className="edit-actions report-open">
+                        <button type="button" className="primary" onClick={() => setReporting(true)}>
+                          <Icon name="plus" size={14} /> Report a bug
+                        </button>
+                      </div>
+                    )
+                  }
                   onChoose={setChosen}
                   onPick={(m) => pick(m.node.id)}
                   onClose={() => (setResultsOpen(false), setChosen([]))}
+                />
+              )}
+              {panelMode === 'report' && (
+                <Report
+                  projectId={data.project.id}
+                  tree={tree}
+                  focusId={focusId}
+                  inView={inView}
+                  name={editing.name}
+                  fail={fail}
+                  onClose={() => setReporting(false)}
+                  onSent={(node) => {
+                    setReporting(false);
+                    replaceNodes((ns) => [...ns, node]);
+                    setSelectedId(node.id);
+                    pendingFly.current = node.id;
+                    editing.reloadRefinements();
+                    toast('Reported. It is a draft bug: an agent will ask you in its thread what it needs to make it exact.');
+                  }}
                 />
               )}
               {panelMode === 'review' && <ReviewList review={review} onPick={pickReview} onClose={closePanel} />}

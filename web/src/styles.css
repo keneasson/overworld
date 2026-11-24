@@ -3254,3 +3254,72 @@ button.danger.armed {
 .photo-stale span {
   flex: 1 1 200px;
 }
+
+/* ---------- Report a bug (#9 REPORT-01 to REPORT-04) ---------- */
+.matches .report-open {
+  margin: 0 0 12px;
+}
+.report .report-title {
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+}
+.report .report-text .text-box-text,
+.report textarea {
+  min-height: 120px;
+}
+.report textarea {
+  width: 100%;
+}
+.report .photos {
+  margin: 12px 0;
+}
+.report .photo-thumb {
+  cursor: default;
+}
+.report-unshot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+.report-where h3 {
+  margin: 16px 0 2px;
+  font-size: 14px;
+}
+.report-list-title {
+  margin: 12px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.report-landing {
+  margin: 6px 0;
+  font-size: 13px;
+}
+.report-place .filter-chips {
+  margin: -2px 0 6px 10px;
+}
+.report-place.on > .row {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.report-actions {
+  margin: 16px 0 8px;
+}

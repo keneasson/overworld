@@ -57,7 +57,7 @@ function PlainBox({ value, onChange, onSubmit, label, placeholder, autoFocus }) 
 }
 
 /** A box to write in, formatted like the document; a plain one does the same job while the editor loads. */
-function Box({ value, onChange, onSubmit, label, placeholder, autoFocus, className }) {
+export function Box({ value, onChange, onSubmit, label, placeholder, autoFocus, className }) {
   const plain = <PlainBox value={value} onChange={onChange} onSubmit={onSubmit} label={label} placeholder={placeholder} autoFocus={autoFocus} />;
   return (
     <Suspense fallback={plain}>

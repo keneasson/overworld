@@ -46,7 +46,7 @@ export function notePrompt({ nodes, comments, note, refinement = null, photo = n
     '',
     ...itemContext(nodes, node),
     '',
-    ...(refinement ? refinementHow(note, key) : ['What to do:',
+    ...(note.report ? reportHow(note, node) : refinement ? refinementHow(note, key) : ['What to do:',
     'Reply in the thread. If it asks for a change, or points at something wrong, make the change; if it needs code, propose a child task for it in the strict shape.',
     '',
     `How: change the item, the spec or the map through a refinement, so everyone sees it at once. Open one with refine(place: "${key}"), then propose(refinement, item: "${key}", markdown: the whole new text in the strict shape, annotations: ["${note.id}"]); changes to other items go into the same refinement. Then reply(annotation: "${note.id}", item: "${key}", text: what you changed, refinement: its id) in the thread. A person adopts the refinement. If nothing needs changing, just reply. Don't dismiss the comment because you replied: the person who wrote it decides. If something can't be decided from here, say so in your reply rather than guessing.`]),
@@ -60,6 +60,20 @@ function proposedWords(refinement, node, behaviour) {
   const change = compareItems(editableOf(node), item.after, item.base).behaviours.find((b) => b.key === behaviour);
   if (!change) return behaviour === OTHER_CHANGES ? [] : ['', `Your refinement no longer changes ${behaviour}.`];
   return ['', `Your refinement ${change.change === 'added' ? 'adds' : change.change === 'removed' ? 'removes' : 'changes'} it:`, ...(change.before ? ['The spec says:', quote(change.before)] : []), ...(change.after ? ['You propose:', quote(change.after)] : [])];
+}
+
+/** How to triage a bug report (REPORT-05): ask in its thread until it is exact, then propose it, in place, in the report's refinement. */
+function reportHow(note, node) {
+  const key = itemKeyOf(node);
+  const cs = node.refinement;
+  return [
+    'What to do:',
+    `It is a bug report, sent from the Bugs lens: the item above is its draft, new in its own refinement${cs ? ` ("${cs}")` : ''}, placed where the reporter confirmed. Triage it before any other work. Nothing in Overworld asks the reporter anything: you do, in this thread.`,
+    `1. Make it exact. Read the reporter's words, its screenshots (photo(item: "${key}")) and the behaviours it names (context() on their items). If the steps to reproduce, what was expected or what happened instead is missing or vague, ask: reply(annotation: "${note.id}", item: "${key}", text: your questions, one short list). The reporter's answer comes back to you here, with this prompt. Ask again until you could reproduce it.`,
+    `2. Place it. Find the item that owns the behaviour it breaks (zoom(), context()). The draft sits under the place the reporter chose; if that is wrong, propose a new bug under the right item in the same refinement and say so in the thread, so a person declines the draft.`,
+    `3. Propose it: propose(refinement: "${cs ?? 'the draft\'s refinement'}", item: "${key}", title: a short statement of what is wrong, markdown: the strict shape with Kind: Bug, Part of its owner, Why saying who it hurts, Behaviours naming the broken behaviour by its ID as Given … when … then …, with what happens now, Acceptance a check that proves it fixed, annotations: ["${note.id}"]), and mark it ready_for_adoption. Then reply in the thread saying where it went and that a person adopts it; once adopted it is ready work for any builder through next_work().`,
+    "Don't adopt it, and don't dismiss the thread: the reporter decides when it is done. If it isn't a bug (it works as the spec says), say so in the thread, with the behaviour that says so.",
+  ];
 }
 
 /** How to answer a comment on your refinement: in its thread, and with a revision when it asks for one. */
