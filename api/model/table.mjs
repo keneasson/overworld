@@ -14,6 +14,8 @@
 //                                                    it ran out, or it was already this owner's
 //   create(item)                                     -> true if it was put, false if an item with its key exists
 //   count(key, { limit, expiresAt })                 -> the count after adding one, or null if it already reached `limit`
+//   reserve(key, { n, floor })                       -> the last of `n` numbers taken atomically from a counter, every one above
+//                                                    `floor` and above any number it gave before, so none is given twice
 //   claimAll(items, { owner, now })                  -> true if this owner now holds every item (each has `until`), all or none:
 //                                                    nobody held one, its hold ran out, or it was already this owner's
 //   release(key, { owner, until })                   -> true if it was deleted: it was this owner's (and held until `until`)
@@ -133,6 +135,30 @@ export async function dynamoTable(tableName, { region } = {}) {
         if (err.name === 'ConditionalCheckFailedException') return null;
         throw err;
       }
+    },
+    async reserve(key, { n, floor = 0 }) {
+      // ADD when the counter is already above the floor; otherwise start it there. Each is conditional, so two writers
+      // racing can never both take the same numbers: the loser's condition fails and it goes round again.
+      const names = { '#n': 'n', '#entity': 'entity' };
+      for (let tries = 0; tries < 10; tries++) {
+        try {
+          const res = await db.send(
+            new UpdateCommand({ TableName: tableName, Key: key, UpdateExpression: 'ADD #n :k SET #entity = :entity', ConditionExpression: '#n >= :floor', ExpressionAttributeNames: names, ExpressionAttributeValues: { ':k': n, ':floor': floor, ':entity': 'counter' }, ReturnValues: 'UPDATED_NEW' }),
+          );
+          return res.Attributes.n;
+        } catch (err) {
+          if (err.name !== 'ConditionalCheckFailedException') throw err;
+        }
+        try {
+          await db.send(
+            new UpdateCommand({ TableName: tableName, Key: key, UpdateExpression: 'SET #n = :start, #entity = :entity', ConditionExpression: 'attribute_not_exists(#n) OR #n < :floor', ExpressionAttributeNames: names, ExpressionAttributeValues: { ':start': floor + n, ':floor': floor, ':entity': 'counter' } }),
+          );
+          return floor + n;
+        } catch (err) {
+          if (err.name !== 'ConditionalCheckFailedException') throw err;
+        }
+      }
+      throw new Error('The counter is too busy: try again');
     },
     async claimAll(items, { owner, now }) {
       if (items.length > 100) throw new Error('A transaction holds at most 100 items');
@@ -268,6 +294,13 @@ export function fileTable(path) {
       all.set(at(key), { ...key, entity: 'limit', n, expiresAt });
       await save();
       return n;
+    },
+    async reserve(key, { n, floor = 0 }) {
+      const all = await load();
+      const last = Math.max(all.get(at(key))?.n ?? 0, floor) + n;
+      all.set(at(key), { ...key, entity: 'counter', n: last });
+      await save();
+      return last;
     },
     async claimAll(list, { owner, now }) {
       const all = await load();

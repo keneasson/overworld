@@ -7,7 +7,7 @@ import { createApi } from '../app.mjs';
 import { createModel } from '../model/index.mjs';
 import { parseRepo, importGitHub } from '../github.mjs';
 import { sanitizeNode } from '../../shared/schema.js';
-import { behaviourPrefix, editableOf, isWellFormed, itemKeyOf, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '../../shared/issue-shape.js';
+import { editableOf, isWellFormed, itemKeyOf, parseBehaviours, parseIssue, sectionText } from '../../shared/issue-shape.js';
 import { fakeShop } from './fake-github.mjs';
 import { isUnread, threadsOf } from '../../shared/annotations.js';
 
@@ -449,10 +449,10 @@ test('NEW-01 NEW-02 a new item opens in the template, Part of its area, and belo
   assert.ok(editableOf(inside).markdown.startsWith(`Part of #new-${made.id}\n`), 'Part of a new item, until it has a number');
 
   // Its behaviours get IDs the same way as any item's (EDIT-02).
-  const markdown = md.replace(/## Behaviours\n\n<!--[^\n]*-->/, '## Behaviours\n\n- REFUND-01 Given a refund, when asked, then it is paid.');
+  const markdown = md.replace(/## Behaviours\n\n<!--[^\n]*-->/, '## Behaviours\n\n- REFUND-01 Given a refund, when asked, then it is paid.\n- REFUND-?1 Given a second, when asked, then it is paid too.');
   const res = await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: itemKeyOf(made), title: 'Refunds', markdown });
   assert.equal(res.status, 200);
-  assert.equal(nextBehaviourId(behaviourPrefix(parseBehaviours(sectionText(parseIssue(markdown), 'Behaviours')), 'Refunds'), (await map()).map((n) => n.body)), 'REFUND-02');
+  assert.deepEqual(parseBehaviours(sectionText(parseIssue(editableOf(res.body.node).markdown), 'Behaviours')).map((r) => r.id), ['REFUND-01', 'REFUND-02']);
   const other = (await call('POST', `/api/projects/${pid}/changesets`, {})).body.changeset;
   assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${other.id}/items`, { key: itemKeyOf(made), title: 'Mine now', markdown })).status, 409, 'it changes only in its own refinement');
 });
@@ -630,6 +630,33 @@ test('ADOPT-08 open questions in a refinement show as badges, and never keep it 
   assert.equal((await call('GET', `/api/projects/${pid}/notes`)).body.open['issue-4'].count, 1, 'the question asked on it is badged');
   assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/items/issue-4/adopt`, { by: 'Ken' })).status, 200, 'adopted with questions in its text and on it');
   assert.match((await map()).find((n) => n.title.startsWith('#4 ')).body, /kept/);
+});
+
+test('ADOPT-11 the server numbers each new behaviour on its first save: two at once never share a number, and a dropped one is never given again', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  const adding = (said) => four.replace('then it is a token.', `then it is a token.\n- PAY-?1 Given ${said}, when saved, then it is kept.`);
+  const open = async (who) => (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: who })).body.changeset;
+  const [ann, bob] = [await open('Ann'), await open('Bob')];
+  // A behaviour numbered PAY-12 once, then dropped, is still seen in the refinement that held it.
+  const old = await open('Cy');
+  await call('PUT', `/api/projects/${pid}/changesets/${old.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('PAY-10', 'PAY-12') });
+  await call('POST', `/api/projects/${pid}/changesets/${old.id}/discard`);
+  const both = await Promise.all([ann, bob].map((cs, i) => call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: adding(['a card', 'a wallet'][i]) })));
+  const given = both.map((r) => r.body.numbered[0]);
+  assert.deepEqual(given.map((g) => g.placeholder), ['PAY-?1', 'PAY-?1']);
+  assert.deepEqual(given.map((g) => g.id).sort(), ['PAY-13', 'PAY-14'], 'the next numbers, above every one ever seen, and never the same');
+  for (const [i, r] of both.entries()) assert.match(r.body.changeset.items[0].after.markdown, new RegExp(`- ${given[i].id} Given`), 'the saved text carries the number');
+  // Saved again before the editor showed it (a queued autosave), it keeps its number.
+  const again = await call('PUT', `/api/projects/${pid}/changesets/${ann.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: adding('a card, again') });
+  assert.equal(again.body.numbered[0].id, given[0].id);
+  // Ann drops hers: its number is not given again.
+  await call('PUT', `/api/projects/${pid}/changesets/${ann.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four });
+  const next = await call('PUT', `/api/projects/${pid}/changesets/${ann.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: adding('a third') });
+  assert.equal(next.body.numbered[0].id, 'PAY-15');
+  // A draft abandoned before its first save uses no number, and a text with none to give gives none.
+  assert.equal((await call('PUT', `/api/projects/${pid}/changesets/${bob.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four })).body.numbered, undefined);
+  assert.ok(!(await map()).some((n) => /PAY-\?/.test(n.body)), 'no placeholder reaches the map');
 });
 
 test('REVIEW-02 each proposed change says when it was proposed, and the notes say which questions wait to be answered or written in', async () => {

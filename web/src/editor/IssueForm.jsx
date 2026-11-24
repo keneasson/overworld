@@ -4,11 +4,12 @@ import { EditorContent, useEditor } from '@tiptap/react';
 import { Markdown } from '@tiptap/markdown';
 import { Placeholder } from '@tiptap/extensions';
 import { titleShown, titleToSave } from './title.js';
-import { behaviourPrefix, nextBehaviourId, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
+import { behaviourPrefix, parseBehaviours, parseIssue, placeholderId, sectionText } from '@shared/issue-shape.js';
 import { initials, isDismissed, threadsOf, whereOf } from '@shared/annotations.js';
 import { EXTENSIONS, parseMarkdown } from './rich-text.js';
 import { fromDocument, toDocument } from './document.js';
-import { IssueShape, hintAt, openWithBodies, refreshNotes } from './shape-extension.js';
+import { IssueShape, hintAt, openWithBodies, refreshNotes, swapIds } from './shape-extension.js';
+import { onNumbered } from './useItemEditing.js';
 import { describe, rangeOf, rectsOf, selectedTarget, targetAt, widen } from './targets.js';
 import { AnswerBox, Composer, Thread, dismissedWords } from './Annotate.jsx';
 import { SelectionMenu } from './SelectionMenu.jsx';
@@ -36,7 +37,7 @@ function Outline({ rects, picked }) {
  * Each unanswered open question (`questions`, from questionsIn) has its Answer control directly under it in the text (#68
  * ANSWER-01): `onAnswer(question, text, prompt)` writes the answer, `onAnswerPrompt(question, text)` builds its prompt.
  */
-export function IssueForm({ value, issueNumber, areaTexts, comments, questions = [], commenting = false, placeholderTitle = null, onChange, onComment, onAnswer, onAnswerPrompt, onPromote, onDismiss, onRestore, hasRead, onRead, conflict }) {
+export function IssueForm({ value, itemKey = null, issueNumber, areaTexts, comments, questions = [], commenting = false, placeholderTitle = null, onChange, onComment, onAnswer, onAnswerPrompt, onPromote, onDismiss, onRestore, hasRead, onRead, conflict }) {
   // Fixed at open: everything is written back relative to the issue as it was then.
   const original = useMemo(() => value.markdown, []); // eslint-disable-line react-hooks/exhaustive-deps
   // The title that stands in for an empty one (EDIT-22): a new item's placeholder, or the title it opened with.
@@ -56,10 +57,15 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, questions =
   live.current = { title: savedTitle, areaTexts, onChange, hover, picked, commenting, links };
   const itemLabel = issueNumber ? `#${issueNumber}` : savedTitle || 'This item';
 
+  // A new behaviour starts with a placeholder, never a number: its first save numbers it (#13 ADOPT-11), so drafts written
+  // at the same time by others never clash, and one abandoned uses none. Each placeholder in this document is its own.
+  const drafted = useRef(0);
   const nextId = () => {
     const doc = editor.getMarkdown();
     const rows = parseBehaviours(sectionText(parseIssue(doc), 'Behaviours'));
-    return nextBehaviourId(behaviourPrefix(rows, live.current.title), [...live.current.areaTexts, doc]);
+    const id = placeholderId(behaviourPrefix(rows, live.current.title), doc, drafted.current);
+    drafted.current = Number(id.split('?')[1]);
+    return id;
   };
   const onThread = (id, button) => {
     const box = wrap.current.getBoundingClientRect();
@@ -98,6 +104,16 @@ export function IssueForm({ value, issueNumber, areaTexts, comments, questions =
     // which changes no text: without this, an item changed underneath (part of a refinement adopted) got its old text back as a draft.
     onUpdate: ({ editor: e, transaction }) => opened.current != null && transaction.docChanged && live.current.onChange({ title: live.current.title, markdown: fromDocument(original, opened.current, e.getMarkdown()) }),
   });
+
+  // The numbers its save gave new behaviours take their placeholders' places (#13 ADOPT-11).
+  useEffect(() => {
+    if (!editor || !itemKey) return undefined;
+    return onNumbered((key, given) => {
+      if (key !== itemKey || editor.isDestroyed) return;
+      const tr = swapIds(editor.state, given);
+      if (tr) editor.view.dispatch(tr);
+    });
+  }, [editor, itemKey]);
 
   // A new item opens with its title box empty and ready, its placeholder shown faintly (EDIT-22).
   useEffect(() => {

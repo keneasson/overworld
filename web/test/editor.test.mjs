@@ -7,7 +7,7 @@ import { liftListItem, sinkListItem } from '@tiptap/pm/schema-list';
 import { editableOf, firstPlace, isWellFormed, itemKeyOf, newItemMarkdown, parseIssue, placeOf, sectionText } from '@shared/issue-shape.js';
 import { EXTENSIONS, parseMarkdown, throughEditor } from '../src/editor/rich-text.js';
 import { fromDocument, toDocument } from '../src/editor/document.js';
-import { hintAt, openWithBodies, questionPlaces, sectionBodies } from '../src/editor/shape-extension.js';
+import { gaps, hintAt, openWithBodies, questionPlaces, sectionBodies, swapIds } from '../src/editor/shape-extension.js';
 import { questionsIn } from '@shared/questions.js';
 import { commentHtml } from '../src/editor/comment-text.js';
 import { linkAt } from '../src/editor/issue-links.js';
@@ -72,6 +72,17 @@ test('EDIT-16 an existing item: every empty section has a line to type on, and o
   doc.type('EDIT-01 Given a, when b, then c.');
   assert.equal(doc.headingEnd('Behaviours') != null, true, 'the heading keeps its name');
   assert.equal(sectionText(parseIssue(fromDocument(body, opened, markdownOf(doc.view.state))), 'Behaviours'), '- EDIT-01 Given a, when b, then c.');
+});
+
+test('ADOPT-11 a new behaviour shows its placeholder until its save gives it a number, then shows the number, wherever the caret is', () => {
+  const body = 'Kind: Task · Place: web\n\n## Why\n\nBecause.\n\n## Behaviours\n\n- EDIT-01 Given a, when b, then c.\n- EDIT-?1 Given d, when e, then f.\n\n## Acceptance\n\nEDIT-?1 stays words here.\n';
+  const doc = open(toDocument(body));
+  assert.equal(gaps(doc.view.state.doc).filter((g) => g.on === 'behaviour').length, 0, 'a placeholder is an ID, not a gap');
+  doc.view.dispatch(swapIds(doc.view.state, [{ placeholder: 'EDIT-?1', id: 'EDIT-07' }]));
+  const text = markdownOf(doc.view.state);
+  assert.match(text, /- EDIT-07 Given d, when e, then f\./);
+  assert.match(text, /EDIT-\?1 stays words here/, 'only a behaviour\'s ID changes');
+  assert.equal(swapIds(doc.view.state, [{ placeholder: 'EDIT-?1', id: 'EDIT-07' }]), null, 'nothing left to swap');
 });
 
 // Words saved as headings, the way #78 and #81 were written before EDIT-16.

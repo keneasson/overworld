@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { editableOf, itemKeyOf } from '@shared/issue-shape.js';
+import { editableOf, itemKeyOf, renumbered } from '@shared/issue-shape.js';
 import { isUnread } from '@shared/annotations.js';
 import { api, storage } from '../api.js';
 import { toSave } from '../model/sync.js';
@@ -18,6 +18,13 @@ const SAVE_AFTER_MS = 700;
 const SYNC_POLL_MS = 2000; // while a save is on its way to GitHub
 const SYNC_POLL_TRIES = 20;
 const same = (a, b) => a.title === b.title && a.markdown === b.markdown;
+
+// The numbers a save gave new behaviours (#13 ADOPT-11), told to the open document of that item so it shows them.
+const numberedListeners = new Set();
+export function onNumbered(listener) {
+  numberedListeners.add(listener);
+  return () => numberedListeners.delete(listener);
+}
 
 /**
  * Editing the project's items in the panel, one at a time (#41 EDIT-09, EDIT-13). Every edit goes into the
@@ -132,6 +139,13 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
         const cs = await ensureChangeset();
         const res = await api.putChangesetItem(projectId, cs.id, { key, ...after });
         setChangeset(res.changeset);
+        if (res.numbered?.length) {
+          // The server numbered its new behaviours (#13 ADOPT-11): the draft and the document show those numbers from now on.
+          const number = (v) => (v ? { ...v, markdown: renumbered(v.markdown, res.numbered) } : v);
+          if (pending.current.has(key)) pending.current.set(key, number(pending.current.get(key)));
+          setDrafts((d) => (d.has(key) ? new Map(d).set(key, number(d.get(key))) : d));
+          for (const listener of numberedListeners) listener(key, res.numbered);
+        }
         if (res.node) onAccepted([res.node]); // a new item changes on the map as it is written (NEW-03)
       } catch (err) {
         // Only a refinement that is gone is replaced: a new item belongs to its own, and leaving it would block it (EDIT-24).

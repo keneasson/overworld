@@ -27,9 +27,10 @@
 //   conflict  { ours, theirs } for a person to resolve;  syncError  why the store refused it
 
 import { randomUUID } from 'node:crypto';
-import { editableOf, itemKeyOf } from '../shared/issue-shape.js';
+import { editableOf, itemKeyOf, unnumbered } from '../shared/issue-shape.js';
 import { PermanentError } from './stores/errors.mjs';
-import { same } from './edits.mjs';
+import { applyTo, same } from './edits.mjs';
+import { numberNew } from './numbering.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 
 const LEASE_MS = 120_000; // longer than one Lambda run (30 s), so a lease outlives its worker only briefly
@@ -292,8 +293,9 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
         const node = await model.nodes.get(projectId, store.nodeIdOf(ev.ref));
         if (!node) continue; // not on this map yet: the nightly reconciliation places it
         if (ev.type === 'changed') {
-          const updated = settle(node, { ...store.onMap(inLine(node), ev.item), updatedAt: iso() }, store);
+          let updated = settle(node, { ...store.onMap(inLine(node), ev.item), updatedAt: iso() }, store);
           if (!changedOnMap(node, updated)) continue;
+          updated = await numbered(projectId, store, node, updated);
           await model.nodes.put(projectId, [updated]);
           await markConflicts(projectId, updated);
         } else if (ev.type === 'started') {
@@ -304,6 +306,20 @@ export function createSync({ model, stores, schedule = async () => {}, log = con
       }
     }
     return { handled: true, touched };
+  }
+
+  /**
+   * A behaviour that arrives from the store without an ID, or with a placeholder, gets its area's next number the same way
+   * as one saved here (#13 ADOPT-11). That is an edit in Overworld, so the item waits for a save to write it back (SYNC-07).
+   */
+  async function numbered(projectId, store, before, after) {
+    if (after.sync === 'conflict') return after;
+    const { title, markdown } = editableOf(after);
+    const previous = editableOf(before).markdown;
+    if (!unnumbered(markdown, { title, bare: true, previous }).length) return after;
+    const { nodes } = await model.projects.getWithNodes(projectId);
+    const done = await numberNew(model, projectId, { markdown, title, nodes, bare: true, previous });
+    return markEdited(after, applyTo(after, { title, markdown: done.markdown }, iso()), store);
   }
 
   /** An open changeset that edits this item, from a version the store has now moved on from, needs a person. */
