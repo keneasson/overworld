@@ -6,7 +6,8 @@
 
 import { APP_NAME } from '../shared/brand.js';
 import { ROOT_ID, ValidationError } from '../shared/schema.js';
-import { editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { compareItems, editableOf, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { turnOf } from '../shared/turns.js';
 import { Refused, buildOf, noteOf as addressedOf } from './agents.mjs';
 import { awaitsApplying, questionsOnMap } from './answers.mjs';
 import { isOpen, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
@@ -30,7 +31,7 @@ const HOW_TO_WORK = [
   'When you stop, planned or not, handoff(behaviours, note) says where the work stands. Handoff notes belong on the issue, never only in chat. But when your pull request opens, don\'t hand off: claim(behaviours, pull_request: its number), and the claim holds through review and merge and is released for you once the production deploy that carries it succeeds. Done is when people can use it.',
   'Once work is claimed, build it to a pull request without waiting for a person. Raise what you can\'t settle alone with ask(place, question), where the team answers it, and keep building what doesn\'t depend on the answer. Never ask in your own window, and never leave a claim idle.',
   'Change behaviours through refine(place) and propose(...). You can mark behaviours ready for adoption; only a person adopts.',
-  `People address you in comments with @Claude. Any tool's result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed. Nothing clears a comment by itself: it stays on the item until someone dismiss()es it into the conversation log. ${DISMISSING} Screenshots are as normal here as text: one you are given or capture goes in an item's Photos with screenshot(item), and pin() points at a spot on it; a comment pinned on one comes to you with the image and the spot.`,
+  `People address you in comments with @Claude. Any tool's result can carry addressed_to_you_now: act on it first, through a refinement, and reply() in its thread naming what you changed. Nothing clears a comment by itself: it stays on the item until someone dismiss()es it into the conversation log. ${DISMISSING} Screenshots are as normal here as text: one you are given or capture goes in an item's Photos with screenshot(item), and pin() points at a spot on it; a comment pinned on one comes to you with the image and the spot. A person\'s own edit in a refinement comes to you the same way, as an edit with a prompt: their turn in the conversation, not a decision. Take questions out of its text into a comment() thread on that behaviour in their refinement, answer what you can, and propose() a clean revision into the same refinement, ready for adoption once it is clear.`,
   'An open question is a line in its item\'s Open questions section, with its answer written directly under it as "Answer: …". A comment is never one, wherever it is anchored, and a reply to a comment is not an answer. An answered question comes to you with a prompt: write the decision into the spec through a refinement, taking the question and its answer out of Open questions, and pass its id in propose(answers). Open questions never block proposing, marking behaviours ready, or adoption.',
   'Pass a request_key with every change, so a retry never does it twice.',
 ];
@@ -188,7 +189,7 @@ export function createMcp({ model, agents, call, log = console }) {
     },
 
     context: {
-      description: 'Everything about one issue in one read: its parents and siblings, behaviours and who is building them, decisions, open questions, handoff notes, files and pull requests. Old discussion comes summarised.',
+      description: 'Everything about one issue in one read: its whole text as the spec holds it, its parents and siblings, behaviours and who is building them, decisions, open questions, every open refinement of it (people\'s too) with the text each proposes, handoff notes, files and pull requests. Old discussion comes summarised.',
       input: { issue: { ...place, description: 'The issue: issue-12, 12, or a node id.' } },
       required: ['issue'],
       async run({ pid }, args) {
@@ -197,7 +198,13 @@ export function createMcp({ model, agents, call, log = console }) {
         const key = keyOf(node);
         const byId = new Map(nodes.map((n) => [n.id, n]));
         const { live } = await agents.liveClaims(pid);
-        const [comments, notes, questions, report] = await Promise.all([model.comments.list(pid, key), model.handoffs.list(pid, key), questionsOnMap(model, pid, [node], key), model.coverage.get(pid)]);
+        const [comments, notes, questions, report, changesets] = await Promise.all([model.comments.list(pid, key), model.handoffs.list(pid, key), questionsOnMap(model, pid, [node], key), model.coverage.get(pid), model.changesets.list(pid)]);
+        // Everyone's open refinements of it, people's too, so an agent can answer a person's change where it is (#13 ADOPT-20).
+        const refinements = changesets.filter((cs) => cs.status === 'open').flatMap((cs) => cs.items.filter((it) => it.key === key && (it.after || it.new)).map((it) => {
+          const diff = it.new ? null : compareItems(editableOf(node), it.after, it.base ?? null);
+          const turn = turnOf(cs, it);
+          return { refinement: cs.id, by: cs.author, ...(it.new ? { new: true } : { proposed_markdown: it.after.markdown, changes: diff.behaviours.map((b) => `${b.change} ${b.id || b.key}`).concat(diff.title || diff.sections.length ? ['other changes'] : []) }), ...(it.readyForAdoption?.length ? { ready_for_adoption: it.readyForAdoption } : {}), ...(turn ? { waiting_on: turn === 'agent' ? 'an agent to look at it' : 'an agent to mark it ready' } : {}) };
+        }));
         const shape = parseIssue(editableOf(node).markdown);
         const why = sectionText(shape, 'Why');
         const parents = [];
@@ -209,6 +216,8 @@ export function createMcp({ model, agents, call, log = console }) {
         const dismissed = threads.length - open.length;
         return {
           issue: { key, kind: node.kind, title: node.title, state: stateOf(node), priority: node.priority || undefined, url: node.url || undefined, summary: node.summary || undefined },
+          // The whole text as the spec holds it now, to propose a revision from without losing what isn't on GitHub yet.
+          markdown: editableOf(node).markdown,
           parents,
           siblings: {
             open: siblings.filter((n) => !isFinished(n)).slice(0, 30).map((n) => ({ key: keyOf(n), title: n.title, state: stateOf(n) })),
@@ -229,6 +238,7 @@ export function createMcp({ model, agents, call, log = console }) {
             open: open.slice(-10).map((c) => ({ annotation: c.id, on: whereOf(c.anchor), ...(c.anchor?.quote ? { quoting: c.anchor.quote.slice(0, 300) } : {}), by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })),
             ...(dismissed ? { dismissed: `${dismissed} dismissed comment${dismissed === 1 ? '' : 's'}, in the conversation log` } : {}),
           },
+          ...(refinements.length ? { open_refinements: refinements } : {}),
           handoff_notes: notes.slice(-5).map(noteOf),
           ...(notes.length > 5 ? { older_handoffs: notes.length - 5 } : {}),
           files: filesOf(node, byId),
@@ -334,7 +344,7 @@ export function createMcp({ model, agents, call, log = console }) {
       },
       required: ['refinement'],
       changes: true,
-      async run({ pid }, args) {
+      async run({ pid, agent }, args) {
         const cid = encodeURIComponent(String(args.refinement));
         let node;
         if (args.item == null) {
@@ -348,7 +358,7 @@ export function createMcp({ model, agents, call, log = console }) {
         const pending = before?.items.find((it) => it.key === keyOf(node))?.after ?? current;
         const title = args.title ?? pending.title;
         const markdown = args.markdown ?? pending.markdown;
-        const res = await api('PUT', `/api/projects/${pid}/changesets/${cid}/items`, { key: keyOf(node), title, markdown, rebase: args.markdown != null });
+        const res = await api('PUT', `/api/projects/${pid}/changesets/${cid}/items`, { key: keyOf(node), title, markdown, rebase: args.markdown != null, agent: author(agent) });
         const { changeset } = res;
         const ready = list(args.ready_for_adoption);
         const item = changeset.items.find((it) => it.key === keyOf(node));
@@ -403,6 +413,26 @@ export function createMcp({ model, agents, call, log = console }) {
             ...(toAgent(c) ? { prompt: notePrompt({ nodes, comments, note: c, refinement: c.anchor?.refinement ? await model.changesets.get(pid, c.anchor.refinement) : null, photo: photos.get(c.anchor?.photo) }) } : {}),
           }))),
         };
+      },
+    },
+
+    comment: {
+      description: 'Start a comment thread, the way a person does: on an item\'s place, a section, or one behaviour. Give a refinement too and it is on that behaviour as the refinement proposes it, which is how you talk with a person about their change before anyone adopts it (#13 ADOPT-20). The thread\'s replies come back to you. For a question about the spec\'s direction, ask() instead.',
+      input: {
+        item: { ...place, description: 'The item it is on.' },
+        text: { type: 'string' },
+        behaviour: { type: 'string', description: 'The behaviour ID it is on, e.g. ADOPT-11.' },
+        refinement: { type: 'string', description: 'With behaviour: the refinement whose version of it the thread is on.' },
+        section: { type: 'string', description: 'Without behaviour: the section it is on, e.g. Why.' },
+        request_key: requestKey,
+      },
+      required: ['item', 'text'],
+      changes: true,
+      async run({ pid, agent }, args) {
+        const node = find((await mapOf(pid)).nodes, args.item);
+        const anchor = args.behaviour ? { on: 'behaviour', behaviour: String(args.behaviour), ...(args.refinement ? { refinement: String(args.refinement) } : {}) } : args.section ? { on: 'section', section: String(args.section) } : { on: 'place' };
+        const { comment } = await api('POST', `/api/projects/${pid}/comments`, { itemKey: keyOf(node), anchor, text: String(args.text ?? ''), author: author(agent), fromAgent: agent.id });
+        return { annotation: comment.id, item: keyOf(node), on: whereOf(comment.anchor) };
       },
     },
 

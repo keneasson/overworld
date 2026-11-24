@@ -15,6 +15,7 @@ import { answerPrompt, awaitsApplying, questionsOfNode, questionsOnMap, settleAn
 import { annotationOf, cleanAnchor, isDismissed, mentionsOf, notesByItem, whereOf } from '../shared/annotations.js';
 import { questionId, questionsIn, withAnswer, withQuestion } from '../shared/questions.js';
 import { addresseesOf } from './notes.mjs';
+import { byAgent, turnOf } from '../shared/turns.js';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
 import { behavioursOf, childrenOf, keyOf, missingOf, nextWork, splitOf } from './work.mjs';
@@ -512,7 +513,21 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
           cs.items[at] = rebased ? { ...kept, base, after } : { ...cs.items[at], after };
         } else cs.items.push({ key, nodeTitle: node.title, base, after, at: new Date().toISOString() }); // `at`: waiting since (#62 REVIEW-02)
         cs.updatedAt = new Date().toISOString();
+        // Whose turn it is (ADOPT-20): an agent writing into a person's refinement has looked at it; a person's own edit
+        // goes to an agent, through the agents' inbox, and waits for one to look again whatever it had marked ready.
+        const entry = cs.items.find((it) => it.key === key);
+        const agentSays = typeof body?.agent === 'string' && byAgent(body.agent) ? body.agent : null;
+        if (entry && agentSays) entry.looked = { by: agentSays, at: cs.updatedAt };
+        else if (entry && !byAgent(cs.author) && !cs.report) {
+          delete entry.looked;
+          delete entry.readyForAdoption;
+        }
         await model.changesets.put(pid, cs);
+        if (entry && !agentSays && turnOf(cs, entry) === 'agent') {
+          const id = `edit-${cs.id}-${key}`;
+          const held = (await model.inbox.list(pid)).find((r) => r.id === id);
+          await model.inbox.put(pid, { ...held, id, kind: 'edit', changeset: cs.id, itemKey: key, at: held?.at ?? cs.updatedAt });
+        }
         return { changeset: cs, ...(rebased ? { rebased: true } : {}) };
       },
     ],
@@ -796,6 +811,9 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         let thread = root && { ...root, readBy: [comment.author] };
         // In a bug report's thread the conversation is with the agent triaging it: a person's reply goes back to it, no @ needed (REPORT-06).
         if (root?.report && !fromAgent && !to.some((t) => t.agent)) to.push(root.triage ? { name: root.triage.name, agent: true, agentId: root.triage.agentId } : { name: 'Claude', agent: true });
+        // A thread an agent started is a conversation with that agent: a person's reply goes back to it, no @ needed (#13 ADOPT-20).
+        const starter = root && !root.report && !fromAgent && byAgent(root.author) ? root.author.match(/\((a[0-9a-f]{4})\)$/)[1] : null;
+        if (starter && !to.some((t) => t.agent)) to.push({ name: root.author, agent: true, agentId: starter });
         const agent = !fromAgent && to.find((t) => t.agent);
         if (agent) {
           const one = to.find((t) => t.agentId);

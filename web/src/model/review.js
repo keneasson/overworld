@@ -3,6 +3,7 @@
 // one list, so they never disagree (REVIEW-01 to REVIEW-05).
 
 import { compareItems, editableOf, itemKeyOf } from '@shared/issue-shape.js';
+import { turnOf } from '@shared/turns.js';
 
 const BLANK = { title: '', markdown: '' };
 const time = (iso) => {
@@ -32,6 +33,7 @@ export function waitingForReview({ changesets = [], notes = {}, tree }) {
     for (const it of cs.items ?? []) {
       const node = byKey.get(it.key);
       if (!node || (!it.new && !it.after)) continue;
+      if (turnOf(cs, it)) continue; // a person's change still with an agent isn't waiting for anyone's review (#13 ADOPT-21)
       const e = entryOf(node);
       const diff = it.new ? compareItems(BLANK, editableOf(node)) : compareItems(editableOf(node), it.after, it.base);
       for (const b of diff.behaviours) add(e[b.change], b.id);

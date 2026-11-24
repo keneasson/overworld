@@ -7,7 +7,8 @@ import { ValidationError, newId } from '../shared/schema.js';
 import { nextWork, behavioursOf, blockersOf, brokenOf, childrenOf, isFinished, isWork, keyOf, splitOf } from './work.mjs';
 import { awaitsApplying, promptOf, questionsOnMap } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
-import { notePrompt } from './notes.mjs';
+import { editPrompt, notePrompt } from './notes.mjs';
+import { turnOf } from '../shared/turns.js';
 import { buildPrompt } from './prompts.mjs';
 import { isDismissed } from '../shared/annotations.js';
 
@@ -458,6 +459,18 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const { nodes } = await model.projects.getWithNodes(projectId);
     const out = [];
     for (const r of fresh ? handing : mine) {
+      if (r.kind === 'edit') {
+        // A person's own edit in a refinement (#13 ADOPT-20): theirs until an agent has looked at it or it has gone.
+        const cs = await model.changesets.get(projectId, r.changeset);
+        const item = cs?.status === 'open' ? cs.items.find((it) => it.key === r.itemKey) : null;
+        if (!item || turnOf(cs, item) !== 'agent') {
+          await model.inbox.delete(projectId, r.id);
+          continue;
+        }
+        if (handing.includes(r)) await model.inbox.put(projectId, { ...r, deliveredTo: agent.id, deliveredAt: iso(now) });
+        out.push({ edit: { id: r.id, refinement: cs.id, itemKey: r.itemKey, author: cs.author }, prompt: editPrompt({ nodes, refinement: cs, item }) });
+        continue;
+      }
       const comments = await model.comments.list(projectId, r.itemKey);
       let note = comments.find((c) => c.id === r.id);
       if (!note || isDismissed(note)) {
@@ -595,7 +608,8 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       mode,
       ...(last ? { last_connected: last.at, away: span(now - Date.parse(last.at)) } : {}),
       addressed_to_you: {
-        ...(notes.length ? { annotations: notes.map(noteOf) } : {}),
+        ...(notes.some((n) => n.note) ? { annotations: notes.filter((n) => n.note).map(noteOf) } : {}),
+        ...(notes.some((n) => n.edit) ? { edits: notes.filter((n) => n.edit).map(noteOf) } : {}),
         ...(answered.length ? { answered: answered.map(({ c, prompt }) => ({ item: c.itemKey, title: title(c.itemKey), question: c.text, ...(prompt ? { question_id: c.id, answer: c.answer, ...(c.answered ? { answered_by: c.answered.by } : {}), prompt } : {}) })) } : {}),
         ...(decided.length ? { your_refinements_decided: decided.slice(-SHOWN) } : {}),
         ...(fresh.filter((c) => watched.has(c.itemKey)).length ? { new_comments: fresh.filter((c) => watched.has(c.itemKey)).slice(-SHOWN).map((c) => ({ item: c.itemKey, by: c.author, said: c.text.length > 300 ? `${c.text.slice(0, 300)}…` : c.text })) } : {}),
@@ -643,7 +657,10 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
 }
 
 /** An annotation addressed to an agent, as its tools show it: who said what, where, and the prompt to act on it. */
-export const noteOf = ({ note, prompt }) => ({ annotation: note.id, item: note.itemKey, from: note.author, said: note.text, ...(note.anchor?.photo ? { photo: note.anchor.photo } : {}), prompt });
+export const noteOf = ({ note, edit, prompt }) => (edit ? editOf({ edit, prompt }) : { annotation: note.id, item: note.itemKey, from: note.author, said: note.text, ...(note.anchor?.photo ? { photo: note.anchor.photo } : {}), prompt });
+
+/** A person's own edit handed to an agent (#13 ADOPT-20), as its tools show it: whose, where, and the prompt to answer it with. */
+const editOf = ({ edit, prompt }) => ({ edit: edit.id, refinement: edit.refinement, item: edit.itemKey, from: edit.author, prompt });
 
 /** A build request as agents' tools show it: what to build, who asked, since when, and the prompt to build it with (HANDOFF-10). */
 export const buildOf = (r) => ({
@@ -682,7 +699,10 @@ function firstStep({ mode, git, ranOut, notes = [], answered, holding, builds = 
   const local = git && (git.uncommitted?.length || git.unpushed?.length || git.ahead);
   if (local && ranOut.length && !holding.length) return `You have local work on ${git.branch ?? 'this branch'} and your claim on ${ranOut.map((c) => c.behaviour).join(', ')} ran out: claim it again, or hand it off, before you carry on.`;
   if (git?.behind) return `Pull first: ${git.behind} commit${git.behind === 1 ? '' : 's'} on GitHub you don't have yet.`;
-  if (notes.length) return `Act on what ${notes[0].note.author} addressed to you on ${notes[0].note.itemKey}: follow its prompt in addressed_to_you.annotations${notes.length > 1 ? `, then the other ${notes.length - 1}` : ''}.`;
+  const comments = notes.filter((n) => n.note);
+  const edits = notes.filter((n) => n.edit);
+  if (comments.length) return `Act on what ${comments[0].note.author} addressed to you on ${comments[0].note.itemKey}: follow its prompt in addressed_to_you.annotations${notes.length > 1 ? `, then the other ${notes.length - 1}` : ''}.`;
+  if (edits.length) return `Answer ${edits[0].edit.author}'s change to ${title(edits[0].edit.itemKey)} in their refinement: follow its prompt in addressed_to_you.edits${edits.length > 1 ? `, then the other ${edits.length - 1}` : ''}.`;
   if (apply.length) return `Apply the answer to your question on ${apply[0].title}: follow its prompt in addressed_to_you.answered${apply.length > 1 ? `, then the other ${apply.length - 1}` : ''}.`;
   if (local) return `Finish what's local on ${git.branch ?? 'this branch'}: ${git.uncommitted?.length ? 'commit, then ' : ''}push.`;
   if (answered.length) return `Read the answer${answered.length === 1 ? '' : 's'} on ${[...new Set(answered.map((a) => a.title))].join(', ')}.`;

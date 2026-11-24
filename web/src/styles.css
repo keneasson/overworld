@@ -509,6 +509,22 @@ button {
   margin: 6px 0;
   color: var(--muted);
 }
+/* A person's own change, still with an agent (#13 ADOPT-21): a status, not a decision, with a small way out. */
+.turn-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+.refinement-turn .edit-actions {
+  position: relative;
+  align-items: center;
+}
+.turn-menu {
+  display: flex;
+  gap: 6px;
+}
 .refinement-decline textarea {
   box-sizing: border-box;
   width: 100%;

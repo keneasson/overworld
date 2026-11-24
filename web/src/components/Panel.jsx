@@ -22,6 +22,8 @@ import { houseId } from '../map/houses.js';
 import { provenSummary } from '../map/lenses.js';
 import { Photos } from './Photos.jsx';
 import { BUILD_FOG, buildOffer } from '../model/build.js';
+import { turnOf } from '@shared/turns.js';
+import { authorOf } from '../model/changesets.js';
 
 // Only where there is a page to sanitise for (not when the panel is read in a test).
 DOMPurify.addHook?.('afterSanitizeAttributes', (node) => {
@@ -489,6 +491,8 @@ function Refinement({ cs, item, node, editing, comments }) {
   };
   const count = nothing ? '' : ` ${ticked.length}`;
   const other = Boolean(diff.title || diff.sections.length);
+  // A person's own change goes to an agent first (ADOPT-20), and isn't offered as a decision until one marks it ready (ADOPT-21).
+  const turn = turnOf(cs, item);
   return (
     <section className="refinement" aria-label={`Refinement by ${cs.author}`}>
       <div className="refinement-head">
@@ -545,7 +549,9 @@ function Refinement({ cs, item, node, editing, comments }) {
         </>
       )}
       {ready.size > 0 && <p className="refinement-ready">Ready for adoption: {[...ready].join(', ')}</p>}
-      {declining ? (
+      {turn ? (
+        <WithAnAgent turn={turn} cs={cs} item={item} editing={editing} />
+      ) : declining ? (
         <div className="refinement-decline">
           <textarea aria-label="Why decline (optional)" placeholder="Why not? (optional: its author sees this)" value={reason} maxLength={2000} rows={2} onChange={(e) => setReason(e.target.value)} />
           <div className="edit-actions">
@@ -574,6 +580,40 @@ function Refinement({ cs, item, node, editing, comments }) {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * A person's own change, still with an agent (#13 ADOPT-21): it says so in place of Adopt and Decline, which come once an
+ * agent marks it ready. A small menu keeps a way out, so nobody is stuck waiting: adopt it as it is, or withdraw it.
+ */
+function WithAnAgent({ turn, cs, item, editing }) {
+  const yours = cs.author === authorOf(editing.name);
+  const [open, setOpen] = useState(false);
+  const words = turn === 'agent' ? 'Sent to an agent · waiting' : 'An agent answered · not ready yet';
+  const why = turn === 'agent' ? 'An agent reads it first: questions in it become conversation, and it comes back ready to adopt.' : 'Its questions are in the threads above; it comes back once an agent marks it ready.';
+  return (
+    <div className="refinement-turn">
+      <p className="turn-note" role="status">
+        <Icon name="comment" size={16} /> <strong>{words}</strong>
+        <span className="empty-note"> {why}</span>
+      </p>
+      <div className="edit-actions">
+        <button type="button" className="icon-btn" aria-haspopup="menu" aria-expanded={open} aria-label="More" title="More" onClick={() => setOpen((o) => !o)}>
+          …
+        </button>
+        {open && (
+          <span role="menu" className="turn-menu">
+            <button type="button" role="menuitem" onClick={async () => (await editing.decline(cs, item.key, yours ? 'Withdrawn by its author' : '')) && setOpen(false)} disabled={editing.busy}>
+              {yours ? 'Withdraw' : 'Decline'}
+            </button>
+            <button type="button" role="menuitem" onClick={async () => (await editing.adopt(cs, item.key)) && setOpen(false)} disabled={editing.busy} title="Adopt it without waiting for an agent: the item takes it, and waits for a save to reach GitHub">
+              Adopt as is
+            </button>
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 

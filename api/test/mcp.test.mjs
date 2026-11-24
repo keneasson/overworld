@@ -1013,3 +1013,43 @@ test('REPORT-07 next_work offers ready bugs before ready features, whatever thei
   const { nodes: [bug] } = await rest('POST', `/api/projects/${pid}/nodes`, { node: { parentId: web.id, kind: 'bug', title: 'Counts are wrong', status: 'ready', priority: 'P3', body: body({ behaviours: ['COUNT-01 Given a child, when shown, then its counts are right; now they are off by one.'] }) } });
   assert.deepEqual((await a.use('next_work')).work.map((w) => w.item).slice(0, 2), [`node-${bug.id}`, 'issue-11'], 'the P3 bug before the P0 feature');
 });
+
+test('ADOPT-20 a person\'s own edit goes to an agent with a prompt, and the agent answers it in the same refinement: a thread on the behaviour, then a clean revision marked ready', async () => {
+  const { rest, pid, agent } = await setup();
+  const a = await agent('Builder');
+  const b = await agent('Reviewer');
+  const claims = (await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title === '#11 Claims');
+  const { changeset: cs } = await rest('POST', `/api/projects/${pid}/changesets`, { author: 'Ken' });
+  const thinking = claims.body.replace('then it is held.', 'then it is held. (Question - why not reserve a hash? Possible solution: a hash, bumped on save.)');
+  await rest('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-11', title: claims.title, markdown: thinking });
+
+  const [edit] = (await a.use('zoom')).addressed_to_you_now;
+  assert.deepEqual([edit.refinement, edit.item, edit.from], [cs.id, 'issue-11', 'Ken'], 'handed to the first agent to call, like a comment to @Claude');
+  for (const part of [/^Ken edited #11 Claims \(issue-11\) in their refinement/, /CL-01, changed/, /The spec says:\n> CL-01 Given work, when claimed, then it is held\./, /Possible solution/, /take each one out of the behaviour|Take each one out of the behaviour/, new RegExp(`comment\\(item: "issue-11", behaviour: the ID, refinement: "${cs.id}"`), new RegExp(`propose\\(refinement: "${cs.id}", item: "issue-11"`), /ready_for_adoption: \["CL-01"\]/])
+    assert.match(edit.prompt, part);
+  assert.ok(!(await b.use('zoom')).addressed_to_you_now, 'it is the first agent\'s');
+  const up = await a.use('standup');
+  assert.equal(up.addressed_to_you.edits[0].refinement, cs.id);
+  assert.match(up.first_step, /^Answer Ken's change to #11 Claims in their refinement/);
+  const [open] = (await a.use('context', { issue: 'issue-11' })).open_refinements;
+  assert.deepEqual([open.refinement, open.by, open.changes[0], open.waiting_on, open.proposed_markdown], [cs.id, 'Ken', 'changed CL-01', 'an agent to look at it', thinking], 'a person\'s refinement can be found from the item, and read whole');
+
+  // The question becomes conversation, on that behaviour in Ken's refinement; his reply comes back with no @.
+  const { annotation } = await a.use('comment', { item: 'issue-11', behaviour: 'CL-01', refinement: cs.id, text: 'A number is taken by the first write, so no two clients get one; a hash buys nothing on one database. Keep the next number?' });
+  const [thread] = (await rest('GET', `/api/projects/${pid}/comments/issue-11`)).comments;
+  assert.deepEqual([thread.id, thread.anchor.refinement, thread.anchor.behaviour], [annotation, cs.id, 'CL-01']);
+  await rest('POST', `/api/projects/${pid}/comments`, { itemKey: 'issue-11', replyTo: annotation, text: 'Yes, keep it.', author: 'Ken' });
+  const back = (await a.use('zoom')).addressed_to_you_now;
+  assert.equal(back?.[0].annotation, annotation, 'his reply reaches the agent that asked');
+
+  const done = await a.use('propose', { refinement: cs.id, item: 'issue-11', markdown: claims.body.replace('then it is held.', 'then it is held under the next number.'), ready_for_adoption: ['CL-01'] });
+  assert.deepEqual(done.ready_for_adoption, ['CL-01'], 'a clean revision, into his refinement');
+  const after = (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((c) => c.id === cs.id).items[0];
+  assert.ok(after.looked && after.readyForAdoption, 'an agent has looked, and marked it ready');
+  assert.ok(!(await a.use('standup')).addressed_to_you.edits, 'nothing left to hand over');
+
+  await rest('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-11', title: claims.title, markdown: thinking });
+  const again = (await rest('GET', `/api/projects/${pid}/changesets`)).changesets.find((c) => c.id === cs.id).items[0];
+  assert.ok(!again.readyForAdoption && !again.looked, 'his next edit is his turn again');
+  assert.equal((await a.use('standup')).addressed_to_you.edits?.[0].refinement, cs.id, 'and it comes back to an agent');
+});
