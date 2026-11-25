@@ -62,6 +62,8 @@ function useMedia(query) {
 // A newer deploy is noticed when the app comes back to the foreground, and every few minutes (SHIP-12): on a phone
 // the map takes every touch, so pull-to-refresh can't, and an app opened from the home screen has no reload button.
 const VERSION_CHECK_MS = 5 * 60_000;
+// How often an open page looks at its project's pulse (#13 ADOPT-23): a change elsewhere shows within about this long.
+const LIVE_MS = 1500;
 const NO_COVERAGE = { report: null, code: null };
 const NO_BUILDS = { requests: [], buildable: {}, missing: {}, notes: [] };
 function useNewVersion() {
@@ -668,6 +670,48 @@ export function App() {
     }, 4000);
     return () => clearInterval(t);
   }, [withAgent, selectedKey, projectId, reloadRefinements]);
+
+  // Live (#13 ADOPT-23): whatever changes on the server, by a person, an agent or the store, reaches this page within a
+  // couple of seconds. The project's pulse is one small read; when it moves, reload what the page shows. The slower polls
+  // above stay as a fallback.
+  const onPulse = useRef({});
+  onPulse.current = { reloadRefinements, reloadNotes, loadBuilds, selectedKey };
+  useEffect(() => {
+    if (!projectId) return undefined;
+    const pid = projectId;
+    let last, busy = false, stopped = false;
+    const beat = async () => {
+      if (busy || stopped || document.visibilityState !== 'visible') return;
+      busy = true;
+      try {
+        const { pulse } = await api.pulse(pid);
+        const v = pulse?.v ?? null;
+        const moved = last !== undefined && v !== last;
+        last = v;
+        if (!moved || latest.current.projectId !== pid) return;
+        const { reloadRefinements, reloadNotes, loadBuilds, selectedKey } = onPulse.current;
+        const project = api.getProject(pid).then((d) => latest.current.projectId === pid && setData((was) => (was && JSON.stringify(was.nodes) === JSON.stringify(d.nodes) ? was : d)));
+        const claims = api.claims(pid).then((d) => latest.current.projectId === pid && setClaims(d.claims ?? []));
+        const thread = selectedKey ? api.itemComments(pid, selectedKey).then((d) => latest.current.projectId === pid && setComments((cs) => [...cs.filter((c) => c.itemKey !== selectedKey), ...d.comments])) : null;
+        reloadRefinements();
+        reloadNotes();
+        loadBuilds(pid);
+        await Promise.allSettled([project, claims, thread]);
+      } catch {
+        // The next beat tries again; the slower polls cover a longer outage.
+      } finally {
+        busy = false;
+      }
+    };
+    beat();
+    const t = setInterval(beat, LIVE_MS);
+    document.addEventListener('visibilitychange', beat);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', beat);
+    };
+  }, [projectId]);
 
   // The panel's expand handle (EDIT-10): drag to any width, or click to switch between narrow and wide.
   const setWidth = (w) => {

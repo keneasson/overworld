@@ -695,6 +695,21 @@ test('ADOPT-17 a refinement is carried onto its item as it now is: a change made
   assert.match(now, /kept by the payment provider/);
 });
 
+test('ADOPT-23 whatever someone sends moves the project on at once, so every open page sees it without a refresh', async () => {
+  const { call, pid, node } = await shopProject();
+  const pulse = async () => (await call('GET', `/api/projects/${pid}/pulse`)).body.pulse?.v ?? null;
+  const first = await pulse();
+  await call('GET', `/api/projects/${pid}/changesets`);
+  assert.equal(await pulse(), first, 'reading moves nothing');
+  const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '');
+  await call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown: four.replace('Cards need tokens.', 'Cards need tokens, never numbers.') });
+  const proposed = await pulse();
+  assert.notEqual(proposed, first, 'a proposal moves it');
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`)).status, 200);
+  assert.notEqual(await pulse(), proposed, 'and so does adopting it');
+});
+
 test('ADOPT-08 open questions in a refinement show as badges, and never keep it from adoption', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;

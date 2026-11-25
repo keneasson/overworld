@@ -62,6 +62,7 @@ export const api = {
   importJson: (data) => request('POST', '/api/import/json', data),
   importGithub: (body) => request('POST', '/api/import/github', body),
   refreshGithub: (id, body) => request('POST', `/api/projects/${id}/refresh`, body),
+  pulse: (pid) => request('GET', `/api/projects/${pid}/pulse`),
   listChangesets: (pid) => request('GET', `/api/projects/${pid}/changesets`),
   createChangeset: (pid, body) => request('POST', `/api/projects/${pid}/changesets`, body),
   putChangesetItem: (pid, cid, item) => request('PUT', `/api/projects/${pid}/changesets/${cid}/items`, item),

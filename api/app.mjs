@@ -182,13 +182,12 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     return cs;
   }
 
-  /** An open changeset carried onto its items as they now are, where its edits and theirs touch different lines (ADOPT-17); saved if it moved. */
-  async function carryOnto(pid, cs, nodes) {
-    const carried = rebaseChangeset(cs, nodes);
-    if (!carried) return cs;
-    await model.changesets.put(pid, carried);
-    return carried;
-  }
+  /**
+   * An open changeset carried onto its items as they now are, where its edits and theirs touch different lines (ADOPT-17).
+   * Never saved here: an editor still typing on the text it had would otherwise send that text against the new base, and
+   * propose taking the change made since back out. Adopting or accepting saves what it carried, as it decides.
+   */
+  const carryOnto = (pid, cs, nodes) => rebaseChangeset(cs, nodes) ?? cs;
 
   /**
    * What changed an item under an edit in progress, for the editor to say so: the store (marked by sync's markConflicts), or
@@ -495,6 +494,8 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
 
     // ---- Changesets: edits to several items of an area, accepted or discarded together ----
 
+    // Where the project's pulse is (#13 ADOPT-23): an open page reads it every second or two and reloads when it moves.
+    ['GET', /^\/api\/projects\/([\w-]+)\/pulse$/, async ({ params: [pid] }) => ({ pulse: await model.pulse.get(pid) })],
     // Open refinements come carried onto their items as they now are, so a change made since is never hidden from them (#13 ADOPT-17).
     [
       'GET',
@@ -503,7 +504,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const all = await model.changesets.list(pid);
         if (!all.some((cs) => cs.status === 'open')) return { changesets: all };
         const { nodes } = await loadProject(pid);
-        return { changesets: await Promise.all(all.map((cs) => (cs.status === 'open' ? carryOnto(pid, cs, nodes) : cs))) };
+        return { changesets: all.map((cs) => (cs.status === 'open' ? carryOnto(pid, cs, nodes) : cs)) };
       },
     ],
 
@@ -697,7 +698,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       // Agents have no tool that reaches this (ADOPT-10).
       async ({ params: [pid, cid, key, action], body }) => {
         const { project, nodes } = await loadProject(pid);
-        const cs = await carryOnto(pid, await loadChangeset(pid, cid, { open: true }), nodes);
+        const cs = carryOnto(pid, await loadChangeset(pid, cid, { open: true }), nodes);
         const entry = cs.items.find((it) => it.key === key);
         if (!entry) throw new HttpError(404, 'That item is not in this refinement');
         if (entry.new) return decideNew(pid, cs, entry, action, body);
@@ -764,7 +765,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         }
         if (!cs.items.length) throw new ValidationError('nothing to accept: this changeset has no edits');
         const { project, nodes } = await loadProject(pid);
-        cs = await carryOnto(pid, cs, nodes);
+        cs = carryOnto(pid, cs, nodes);
         const untitled = nodes.filter((n) => n.refinement === cs.id && !editableOf(n).title.trim());
         if (untitled.length) throw new ValidationError('every new item needs a title');
         // Only a part it changed that has also changed since is a conflict; the rest of the item may have moved on (#13 ADOPT-17).

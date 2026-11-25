@@ -32,6 +32,7 @@
 //   Photo     PROJECT#<id>    IMAGE#<itemKey>#<photoId>  a screenshot in an item's Photos: what it is, not its bytes (#16)
 //   Photo part PROJECT#<id>   IMGPART#<photoId>#<version>#<n>  a piece of a screenshot's bytes, each well inside an item's size limit
 //   Counter   PROJECT#<id>    COUNTER#<prefix>   the last behaviour number given in an area, e.g. ADOPT (#13 ADOPT-11)
+//   Pulse     PROJECT#<id>    LIVE#PULSE         moves on with every change people see, so open pages reload (#13 ADOPT-23)
 //   Upload    UPLOAD#<sha256>  UPLOAD             a one-time link an agent sends a screenshot's bytes to, for 15 minutes (SHOT-04)
 //
 // A project and its nodes share a partition (an item collection): one query reads a
@@ -99,6 +100,7 @@ export const keys = {
   photoPart: (projectId, { id, version }, n) => ({ PK: projectPartition(projectId), SK: `IMGPART#${id}#${String(version).padStart(4, '0')}#${String(n).padStart(3, '0')}` }),
   photoPartsOf: (projectId, { id, version }) => ({ pk: projectPartition(projectId), skBeginsWith: `IMGPART#${id}#${String(version).padStart(4, '0')}#` }),
   upload: (hash) => ({ PK: `UPLOAD#${hash}`, SK: 'UPLOAD' }),
+  pulse: (projectId) => ({ PK: projectPartition(projectId), SK: 'LIVE#PULSE' }),
   counter: (projectId, prefix) => ({ PK: projectPartition(projectId), SK: `COUNTER#${prefix}` }),
   coverage: (projectId) => ({ PK: projectPartition(projectId), SK: 'COVERAGE' }),
   clientError: ({ at, id }) => ({ PK: 'ERRORS', SK: `ERROR#${at}#${id}` }),
