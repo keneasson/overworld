@@ -672,6 +672,29 @@ test('ADOPT-17 accepting takes only what the edit changed: an adoption made sinc
   assert.deepEqual(res.body.changedBy, { 'issue-4': { on: 'overworld', by: 'Ken', behaviours: ['PAY-10'] } }, 'changed in Overworld, by whom and how');
 });
 
+test('ADOPT-17 a refinement is carried onto its item as it now is: a change made since to other lines of a section it edits is in it, and no conflict', async () => {
+  const { call, pid, node, map } = await shopProject();
+  const open = async (who) => (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: who })).body.changeset;
+  const four = node(4).body.replace(/\n\n---\n📍[^\n]*$/, '').replace('Cards need tokens.', 'Cards need tokens.\n\nA token is kept by the provider.');
+  const put = (cs, markdown) => call('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-4', title: 'Card tokens', markdown });
+  const setup = await open('Ken');
+  await put(setup, four);
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${setup.id}/accept`)).status, 200);
+  const [mine, since] = [await open('Builder (a1)'), await open('Ken')];
+  await put(mine, four.replace('A token is kept by the provider.', 'A token is kept by the payment provider.'));
+  await put(since, four.replace('Cards need tokens.', 'Cards need tokens.\n\nNumbers never reach us.'));
+  assert.equal((await call('POST', `/api/projects/${pid}/changesets/${since.id}/accept`)).status, 200);
+
+  // A refresh shows the refinement with the change made since already in it.
+  const listed = (await call('GET', `/api/projects/${pid}/changesets`)).body.changesets.find((c) => c.id === mine.id);
+  assert.match(listed.items[0].after.markdown, /Numbers never reach us/);
+  const res = await call('POST', `/api/projects/${pid}/changesets/${mine.id}/items/issue-4/adopt`, { by: 'Ken' });
+  assert.equal(res.status, 200);
+  const now = (await map()).find((n) => n.title.startsWith('#4 ')).body;
+  assert.match(now, /Numbers never reach us/);
+  assert.match(now, /kept by the payment provider/);
+});
+
 test('ADOPT-08 open questions in a refinement show as badges, and never keep it from adoption', async () => {
   const { call, pid, node, map } = await shopProject();
   const cs = (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: node(1).id, author: 'Builder (a1)' })).body.changeset;

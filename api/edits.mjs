@@ -9,7 +9,7 @@
 // Accepting takes only what each item's edit changed from `base` (#13 ADOPT-17): a part it didn't touch stays as the map has
 // it now, whoever changed it. A part it touched that has also changed since is a conflict, and a person decides; nothing is overwritten.
 
-import { changeKeys, compareItems, conflictKeys, editableOf, issueOf, itemKeyOf, mergeChanges, splitNote } from '../shared/issue-shape.js';
+import { changeKeys, compareItems, conflictKeys, editableOf, issueOf, itemKeyOf, mergeChanges, rebaseEdit, splitNote } from '../shared/issue-shape.js';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { firstLine } from './engine/project.mjs';
 
@@ -49,4 +49,23 @@ export function conflictsOf(changeset, nodes) {
 export function mergedOnto(it, node) {
   const now = editableOf(node);
   return mergeChanges(now, it.after, changeKeys(partsAgainst(it, node)), it.base);
+}
+
+/**
+ * A changeset with each edit that clashes with the item as it now is carried onto it, where the two changed different lines
+ * (#13 ADOPT-17): the server's change is then in the refinement, and only edits to the same words stay a conflict.
+ * @returns {object | null} the changeset carried, or null if nothing needed carrying
+ */
+export function rebaseChangeset(changeset, nodes) {
+  let moved = false;
+  const items = changeset.items.map((it) => {
+    if (it.new || !it.base) return it;
+    const node = findItem(nodes, it.key);
+    if (!node || !conflictKeys(partsAgainst(it, node)).length) return it;
+    const carried = rebaseEdit(editableOf(node), it.after, it.base);
+    if (!carried) return it;
+    moved = true;
+    return { ...it, ...carried };
+  });
+  return moved ? { ...changeset, items } : null;
 }

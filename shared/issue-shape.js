@@ -476,3 +476,86 @@ export function reviewOf(adopted, proposed, base = null) {
   ];
   return { diff, title: diff.title ? TITLE_CHANGE : null, parts };
 }
+
+// ---- Carrying a refinement onto the item as it now is ---------------------------------------------
+
+// Lines a and b say the same, spacing aside.
+const sameLine = (a, b) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
+
+// Pairs [i, j] of lines a[i] and b[j] that stay the same from a to b (a longest common subsequence).
+function common(a, b) {
+  const n = a.length, m = b.length;
+  const len = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) len[i][j] = sameLine(a[i], b[j]) ? len[i + 1][j + 1] + 1 : Math.max(len[i + 1][j], len[i][j + 1]);
+  const out = [];
+  for (let i = 0, j = 0; i < n && j < m; ) {
+    if (sameLine(a[i], b[j])) out.push([i++, j++]);
+    else if (len[i + 1][j] >= len[i][j + 1]) i++;
+    else j++;
+  }
+  return out;
+}
+
+const sameLines = (a, b) => a.length === b.length && a.every((l, i) => sameLine(l, b[i]));
+const endsWith = (a, b) => a.length >= b.length && sameLines(a.slice(a.length - b.length), b);
+const startsWith = (a, b) => a.length >= b.length && sameLines(a.slice(0, b.length), b);
+
+/**
+ * Two edits of one text, line by line: what `ours` changed from `base` and what `theirs` changed from it, both kept, or null
+ * where both changed the same lines. Lines one side only added next to lines the other changed are kept beside them.
+ */
+export function mergeLines(base, ours, theirs) {
+  const o = base.split('\n'), a = ours.split('\n'), b = theirs.split('\n');
+  const ma = new Map(common(o, a)), mb = new Map(common(o, b));
+  // Lines of the base that both sides kept, in order: the text between them is merged a chunk at a time.
+  const stable = o.map((_, i) => i).filter((i) => ma.has(i) && mb.has(i));
+  const out = [];
+  let oi = 0, ai = 0, bi = 0;
+  for (const i of [...stable, o.length]) {
+    const end = i === o.length;
+    const oc = o.slice(oi, i), ac = a.slice(ai, end ? a.length : ma.get(i)), bc = b.slice(bi, end ? b.length : mb.get(i));
+    if (sameLines(ac, oc)) out.push(...bc);
+    else if (sameLines(bc, oc) || sameLines(ac, bc)) out.push(...ac);
+    // One side only added lines before or after the base's; the other changed them. Both adding in one place is a clash.
+    else if (!oc.length) return null;
+    else if (endsWith(ac, oc)) out.push(...ac.slice(0, ac.length - oc.length), ...bc);
+    else if (startsWith(ac, oc)) out.push(...bc, ...ac.slice(oc.length));
+    else if (endsWith(bc, oc)) out.push(...bc.slice(0, bc.length - oc.length), ...ac);
+    else if (startsWith(bc, oc)) out.push(...ac, ...bc.slice(oc.length));
+    else return null;
+    if (end) break;
+    out.push(o[i]);
+    oi = i + 1; ai = ma.get(i) + 1; bi = mb.get(i) + 1;
+  }
+  return out.join('\n');
+}
+
+/**
+ * A refinement's edit carried onto the item as it now is (#13 ADOPT-17): where the item changed since the edit began and
+ * the edit changed other lines of the same section, both are kept, so what it proposes is proposed against now and nothing
+ * the server has is hidden from it. Null where a part both changed can't be merged: that is a conflict, and a person decides.
+ * @returns {{ base: { title: string, markdown: string }, after: { title: string, markdown: string } } | null}
+ */
+export function rebaseEdit(now, after, base) {
+  const diff = compareItems(now, after, base);
+  if (diff.title?.conflict || diff.behaviours.some((b) => b.conflict)) return null;
+  const clashing = diff.sections.filter((s) => s.conflict).map((s) => s.name);
+  const shapes = [now, after, base].map((x) => parseIssue(x.markdown));
+  const text = (shape, name) => (name === 'Head' ? contentOf(shape.head) : sectionText(shape, name));
+  const merged = {};
+  for (const name of clashing) {
+    const m = mergeLines(text(shapes[2], name), text(shapes[0], name), text(shapes[1], name));
+    if (m == null) return null;
+    merged[name] = m;
+  }
+  // The base with the clashing sections as they are now, and the edit with them merged: then nothing clashes.
+  const put = (shape, edits) => {
+    const { Head, ...rest } = edits;
+    const s = { ...shape, sections: shape.sections.map((x) => ({ ...x })) };
+    if (Head != null) s.head = Head ? `${Head}\n\n` : '';
+    return writeIssue(s, rest);
+  };
+  const base2 = { title: base.title, markdown: put(shapes[2], Object.fromEntries(clashing.map((n) => [n, text(shapes[0], n)]))) };
+  const after2 = { title: after.title, markdown: put(shapes[1], merged) };
+  return { base: now, after: mergeChanges(now, after2, changeKeys(compareItems(now, after2, base2)), base2) };
+}
