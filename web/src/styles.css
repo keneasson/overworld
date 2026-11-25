@@ -3036,6 +3036,21 @@ button.danger.armed {
   gap: 6px;
   margin: 4px 0 8px;
 }
+/* On a phone the list sits in a half-height sheet: the chips scroll sideways in one row, so the matches start right under
+   the heading rather than below a wall of chips. */
+.mobile .filter-chips {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin-right: -16px;
+  padding-right: 16px;
+}
+.mobile .filter-chips::-webkit-scrollbar {
+  display: none;
+}
+.mobile .filter-chips .chip {
+  flex: none;
+}
 .filter-chips .chip {
   font-size: 12px;
   height: 28px;
