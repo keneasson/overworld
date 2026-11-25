@@ -58,6 +58,11 @@ export function githubApp({ appId, installationId, slug, privateKey, fetchImpl =
       throw new TransientError('GitHub refused the token; a new one is minted next time');
     }
     if (res.status >= 500) throw new TransientError(`GitHub ${res.status} on ${path}`);
+    // A repository the app isn't installed on answers 403: say so, and what fixes it, not only the status.
+    const repo = /^\/repos\/([^/]+\/[^/]+)/.exec(path)?.[1];
+    if (repo && res.status === 403) {
+      throw new PermanentError(`GitHub 403: the ${slug ?? 'Overworld'} app can't write to ${repo}. Add ${repo} to the app's repository access on GitHub (Settings, Applications, Configure), then save again.`);
+    }
     throw new PermanentError(`GitHub ${res.status} on ${method} ${path}`);
   }
 
