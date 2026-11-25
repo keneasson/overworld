@@ -16,14 +16,18 @@ import { findings } from './access-patterns/coherence.mjs';
 import { vectors } from './access-patterns/vectors.mjs';
 import { signIn } from './access-patterns/sign-in.mjs';
 import { ids } from './access-patterns/ids.mjs';
+import { pulse, pulsing } from './access-patterns/pulse.mjs';
 import { actions, agents, builds, claims, facts, handoffs, limits, requests } from './access-patterns/agents.mjs';
 
 export async function createModel(env = process.env) {
   return modelFor(await createTable(env));
 }
 
-export function modelFor(table) {
+export function modelFor(raw) {
+  // Every write people would see moves its project's pulse, so open pages reload it (#13 ADOPT-23).
+  const table = pulsing(raw);
   return {
+    pulse: pulse(table),
     projects: projects(table), nodes: nodes(table), flags: flags(table), errors: errors(table), changesets: changesets(table), comments: comments(table), inbox: inbox(table), questions: questions(table),
     jobs: jobs(table), leases: leases(table), budgets: budgets(table), audits: audits(table), links: links(table),
     agents: agents(table), builds: builds(table), claims: claims(table), handoffs: handoffs(table), facts: facts(table), actions: actions(table), requests: requests(table), limits: limits(table),

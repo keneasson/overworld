@@ -513,7 +513,16 @@ export function mergeLines(base, ours, theirs) {
   let oi = 0, ai = 0, bi = 0;
   for (const i of [...stable, o.length]) {
     const end = i === o.length;
-    const oc = o.slice(oi, i), ac = a.slice(ai, end ? a.length : ma.get(i)), bc = b.slice(bi, end ? b.length : mb.get(i));
+    let oc = o.slice(oi, i), ac = a.slice(ai, end ? a.length : ma.get(i)), bc = b.slice(bi, end ? b.length : mb.get(i));
+    // Lines both sides added alike, at the start or the end of the chunk, are kept once.
+    let k = 0;
+    while (k < ac.length && k < bc.length && sameLine(ac[k], bc[k]) && !(k < oc.length && sameLine(oc[k], ac[k]))) k++;
+    out.push(...ac.slice(0, k));
+    [ac, bc] = [ac.slice(k), bc.slice(k)];
+    let t = 0;
+    while (t < ac.length && t < bc.length && sameLine(ac[ac.length - 1 - t], bc[bc.length - 1 - t]) && !(t < oc.length && sameLine(oc[oc.length - 1 - t], ac[ac.length - 1 - t]))) t++;
+    const tail = ac.slice(ac.length - t);
+    [ac, bc] = [ac.slice(0, ac.length - t), bc.slice(0, bc.length - t)];
     if (sameLines(ac, oc)) out.push(...bc);
     else if (sameLines(bc, oc) || sameLines(ac, bc)) out.push(...ac);
     // One side only added lines before or after the base's; the other changed them. Both adding in one place is a clash.
@@ -523,6 +532,7 @@ export function mergeLines(base, ours, theirs) {
     else if (endsWith(bc, oc)) out.push(...bc.slice(0, bc.length - oc.length), ...ac);
     else if (startsWith(bc, oc)) out.push(...ac, ...bc.slice(oc.length));
     else return null;
+    out.push(...tail);
     if (end) break;
     out.push(o[i]);
     oi = i + 1; ai = ma.get(i) + 1; bi = mb.get(i) + 1;

@@ -42,6 +42,7 @@ model.
 | Photo (a screenshot, #16) | `PROJECT#<id>` | `IMAGE#<itemKey>#<photoId>` | | |
 | Photo part (its bytes) | `PROJECT#<id>` | `IMGPART#<photoId>#<version>#<n>` | | |
 | Behaviour counter (#13 ADOPT-11) | `PROJECT#<id>` | `COUNTER#<prefix>` | | |
+| Pulse (#13 ADOPT-23) | `PROJECT#<id>` | `LIVE#PULSE` | | |
 | Upload link | `UPLOAD#<sha256 of the link>` | `UPLOAD` | | |
 | Sign-in record (#52) | `SIGNIN#<kind>` | the rest of its name, e.g. `<session hash>` | | |
 
