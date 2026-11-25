@@ -310,7 +310,10 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
       const poll = async () => {
         const nodes = await reloadNodes();
         const still = nodes?.some((n) => saved.includes(itemKeyOf(n)) && n.sync === 'saving');
-        if (still && ++tries < SYNC_POLL_TRIES) polls.current = setTimeout(poll, SYNC_POLL_MS);
+        if (still && ++tries < SYNC_POLL_TRIES) return void (polls.current = setTimeout(poll, SYNC_POLL_MS));
+        // GitHub refused some: say why, rather than leave the bar as it was as if nothing happened.
+        const refused = (nodes ?? []).filter((n) => saved.includes(itemKeyOf(n)) && n.sync === 'failed');
+        if (refused.length) fail(new Error(`${refused.length} not saved. ${refused[0].syncError ?? 'GitHub refused it.'}`));
       };
       if (saved.length) await poll();
     } catch (err) {
