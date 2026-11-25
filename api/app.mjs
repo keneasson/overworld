@@ -7,7 +7,7 @@ import { KINDS, ROOT_ID, ValidationError, newId, sanitizeNode } from '../shared/
 import { TITLE_CHANGE, changeKeys, compareItems, conflictKeys, expandPicks, issueOf, mergeChanges, newItemMarkdown, parseBehaviours, parseIssue, placeOf, sectionText, writeIssue } from '../shared/issue-shape.js';
 import { demoProject } from './seed.mjs';
 import { importGitHub } from './github.mjs';
-import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, mergedOnto, partsAgainst, same } from './edits.mjs';
+import { applyTo, conflictsOf, editableOf, findItem, itemKeyOf, mergedOnto, partsAgainst, rebaseChangeset, same } from './edits.mjs';
 import { keepPending, markEdited, saveNow } from './sync.mjs';
 import { memoOf, numberNew } from './numbering.mjs';
 import { createStores } from './stores/index.mjs';
@@ -180,6 +180,14 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     if (!cs) throw new HttpError(404, 'Changeset not found');
     if (open && cs.status !== 'open') throw new HttpError(409, `This changeset was already ${cs.status}`);
     return cs;
+  }
+
+  /** An open changeset carried onto its items as they now are, where its edits and theirs touch different lines (ADOPT-17); saved if it moved. */
+  async function carryOnto(pid, cs, nodes) {
+    const carried = rebaseChangeset(cs, nodes);
+    if (!carried) return cs;
+    await model.changesets.put(pid, carried);
+    return carried;
   }
 
   /**
@@ -487,7 +495,17 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
 
     // ---- Changesets: edits to several items of an area, accepted or discarded together ----
 
-    ['GET', /^\/api\/projects\/([\w-]+)\/changesets$/, async ({ params: [pid] }) => ({ changesets: await model.changesets.list(pid) })],
+    // Open refinements come carried onto their items as they now are, so a change made since is never hidden from them (#13 ADOPT-17).
+    [
+      'GET',
+      /^\/api\/projects\/([\w-]+)\/changesets$/,
+      async ({ params: [pid] }) => {
+        const all = await model.changesets.list(pid);
+        if (!all.some((cs) => cs.status === 'open')) return { changesets: all };
+        const { nodes } = await loadProject(pid);
+        return { changesets: await Promise.all(all.map((cs) => (cs.status === 'open' ? carryOnto(pid, cs, nodes) : cs))) };
+      },
+    ],
 
     [
       'POST',
@@ -678,13 +696,13 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       // refinement until nothing is left in it, and the refinement until no item is (ADOPT-06).
       // Agents have no tool that reaches this (ADOPT-10).
       async ({ params: [pid, cid, key, action], body }) => {
-        const cs = await loadChangeset(pid, cid, { open: true });
+        const { project, nodes } = await loadProject(pid);
+        const cs = await carryOnto(pid, await loadChangeset(pid, cid, { open: true }), nodes);
         const entry = cs.items.find((it) => it.key === key);
         if (!entry) throw new HttpError(404, 'That item is not in this refinement');
         if (entry.new) return decideNew(pid, cs, entry, action, body);
         const now = new Date(clock()).toISOString(); // the agents' clock: its standup reports what was decided since
         const by = author(body?.by);
-        const { project, nodes } = await loadProject(pid);
         const before = findItem(nodes, key);
         if (!before) throw new HttpError(404, 'No such item on the map');
         // What it changes is what it changed from its base (ADOPT-17): a part it didn't touch is never adopted over the item.
@@ -733,7 +751,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
       'POST',
       /^\/api\/projects\/([\w-]+)\/changesets\/([\w-]+)\/(accept|discard)$/,
       async ({ params: [pid, cid, action] }) => {
-        const cs = await loadChangeset(pid, cid, { open: true });
+        let cs = await loadChangeset(pid, cid, { open: true });
         const now = new Date().toISOString();
         if (action === 'discard') {
           // The refinement's new items go with it (NEW-06).
@@ -746,6 +764,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         }
         if (!cs.items.length) throw new ValidationError('nothing to accept: this changeset has no edits');
         const { project, nodes } = await loadProject(pid);
+        cs = await carryOnto(pid, cs, nodes);
         const untitled = nodes.filter((n) => n.refinement === cs.id && !editableOf(n).title.trim());
         if (untitled.length) throw new ValidationError('every new item needs a title');
         // Only a part it changed that has also changed since is a conflict; the rest of the item may have moved on (#13 ADOPT-17).
