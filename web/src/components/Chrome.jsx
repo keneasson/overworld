@@ -11,7 +11,7 @@ import { Icon } from './Icon.jsx';
  * The search box. What it finds is listed in the panel, beside the map that marks it (#53 FIND-01): arrows move through the
  * list and Enter picks, so the box is the keyboard's way into the list. `/` focuses it from anywhere.
  */
-export function SearchBar({ q, projectTitle, onQuery, onMove, onEnter, onMenu }) {
+export function SearchBar({ q, projectTitle, touch = false, onQuery, onMove, onEnter, onMenu }) {
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -35,11 +35,14 @@ export function SearchBar({ q, projectTitle, onQuery, onMove, onEnter, onMenu })
         value={q}
         placeholder={projectTitle ? `Search ${projectTitle}` : 'Search'}
         aria-label="Search this project"
+        enterKeyHint="search"
         onChange={(e) => onQuery(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'ArrowDown') onMove(1);
           else if (e.key === 'ArrowUp') onMove(-1);
-          else if (e.key === 'Enter') onEnter() && inputRef.current?.blur();
+          // On a phone the keyboard covers the list, so Enter puts the keyboard away to show it, and a tap picks; with a keyboard
+          // and arrows, Enter picks.
+          else if (e.key === 'Enter') (touch || onEnter()) && inputRef.current?.blur();
           else if (e.key === 'Escape') {
             onQuery('');
             inputRef.current?.blur();
