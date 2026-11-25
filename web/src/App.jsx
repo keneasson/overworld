@@ -886,6 +886,7 @@ export function App() {
         <SearchBar
           q={query}
           projectTitle={tree?.root.title}
+          touch={mobile}
           onQuery={(q) => {
             setQuery(q);
             if (q.trim()) setSelectedId(null);
