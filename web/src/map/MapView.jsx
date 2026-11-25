@@ -41,7 +41,25 @@ export const MapView = forwardRef(function MapView(
     const ctx = canvas.getContext('2d');
     const ins = p.insets ?? {};
     const center = [(ins.left ?? 0) + (s.w - (ins.left ?? 0)) / 2, (ins.top ?? 0) + (s.h - (ins.top ?? 0) - (ins.bottom ?? 0)) / 2];
-    s.info = drawMap(ctx, p.scene, view(), { lens: p.lens, selectedId: p.selectedId, marked: p.marked, hoverId: s.hoverId ?? (p.commenting ? p.outlineId : null), showLinks: p.showLinks, live: p.live, center, insets: ins, time: fogClock(performance.now() / 1000, still()), reducedMotion: still() });
+    // While a finger or the wheel is moving the map, draw at one pixel per point and stretch it to the screen: a phone's
+    // dense screen has up to six times the pixels, and redrawing all of them on every move makes dragging lag. The sharp
+    // map is drawn the moment the gesture ends.
+    const rough = s.moving && s.dpr > 1.25;
+    let target = ctx;
+    if (rough) {
+      s.rough ??= document.createElement('canvas');
+      if (s.rough.width !== Math.round(s.w) || s.rough.height !== Math.round(s.h)) {
+        s.rough.width = Math.round(s.w);
+        s.rough.height = Math.round(s.h);
+      }
+      target = s.rough.getContext('2d');
+    }
+    s.info = drawMap(target, p.scene, rough ? { ...view(), dpr: 1 } : view(), { lens: p.lens, selectedId: p.selectedId, marked: p.marked, hoverId: s.hoverId ?? (p.commenting ? p.outlineId : null), showLinks: p.showLinks, live: p.live, center, insets: ins, time: fogClock(performance.now() / 1000, still()), reducedMotion: still() });
+    if (rough) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(s.rough, 0, 0, canvas.width, canvas.height);
+    }
     // Fog drifts and lightning strikes: while any is on screen, redraw a few times a second (FOG-03, FOG-04). Nothing
     // moves for people who ask for less motion.
     if (s.info?.drifting && !still() && !s.drift) s.drift = setTimeout(() => ((s.drift = 0), schedule()), 50);
@@ -125,10 +143,17 @@ export const MapView = forwardRef(function MapView(
     const z = d3zoom()
       .clickDistance(6)
       .tapDistance(12)
+      .on('start', () => {
+        s.moving = true;
+      })
       .on('zoom', (e) => {
         s.transform = e.transform;
         schedule();
         props.current.onView?.();
+      })
+      .on('end', () => {
+        s.moving = false;
+        schedule();
       });
     zoomRef.current = z;
     const sel = select(canvas).call(z);
