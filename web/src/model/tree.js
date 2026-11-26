@@ -81,6 +81,7 @@ export function buildTree(rawNodes, today = new Date().toISOString().slice(0, 10
   })(root, 0);
 
   for (let i = list.length - 1; i >= 0; i--) rollup(list[i], today, report);
+  for (let i = list.length - 1; i >= 0; i--) measure(list[i]);
 
   const incoming = new Map();
   for (const n of list) {
@@ -101,6 +102,17 @@ export function buildTree(rawNodes, today = new Date().toISOString().slice(0, 10
 
   const owners = [...new Set(list.map((n) => n.assignee).filter(Boolean))].sort();
   return { root, byId, list, incoming, maxByDepth, owners, today, report };
+}
+
+/**
+ * How much a behaviour holds, for the map's kind of place (shared/place-kind.js): `size` is itself plus everything under it,
+ * and `height` how many levels sit under it (0 for a leaf), both from the leaves up in one pass. `depth` stays how far it
+ * sits below the root. Until each behaviour is its own node, the behaviours an issue lists count as its children (leaves).
+ */
+function measure(n) {
+  const rows = n.behaviourRows?.length ?? 0;
+  n.size = 1 + rows + n.children.reduce((sum, c) => sum + c.size, 0);
+  n.height = Math.max(rows ? 1 : 0, ...n.children.map((c) => c.height + 1));
 }
 
 function rollup(n, today, report) {
