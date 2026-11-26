@@ -115,8 +115,29 @@ function measure(n) {
   n.height = Math.max(rows ? 1 : 0, ...n.children.map((c) => c.height + 1));
 }
 
+/**
+ * The behaviour a child issue stands for, if it is one behaviour's own node: its Behaviours section holds exactly one row,
+ * with an ID its parent lists too. That behaviour is then drawn and counted once, as the child; the parent's row stays in
+ * its text as the summary (#1 "Everything is a behaviour", the first step of the one shape).
+ */
+export function behaviourOfChild(child, parentIds) {
+  const rows = child.listedRows ?? [];
+  return rows.length === 1 && rows[0].id && parentIds.has(rows[0].id) ? rows[0].id : null;
+}
+
 function rollup(n, today, report) {
-  const spec = specOf(n, report);
+  let spec = specOf(n, report);
+  // Rows of this item that a child stands for: drawn and counted there, once.
+  const ids = new Set(spec.map((r) => r.id).filter(Boolean));
+  const owned = new Set();
+  for (const c of n.children) {
+    const id = behaviourOfChild(c, ids);
+    if (!id) continue;
+    c.behaviourOf = id;
+    owned.add(id);
+  }
+  n.listedRows = spec;
+  if (owned.size) spec = spec.filter((r) => !owned.has(r.id));
   // The behaviours with an ID, in ID order, are the houses on its block.
   n.behaviourRows = spec.filter((r) => r.id).sort(inIdOrder);
   const adopted = ADOPTED.has(n.status) ? n.behaviourRows.filter((b) => !b.fog) : [];

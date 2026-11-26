@@ -4,7 +4,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { ValidationError, newId } from '../shared/schema.js';
-import { nextWork, behavioursOf, blockersOf, brokenOf, isFinished, isWork, keyOf } from './work.mjs';
+import { nextWork, behavioursOf, blockersOf, brokenOf, isFinished, isWork, keyOf, ownedByChildren } from './work.mjs';
 import { awaitsApplying, promptOf, questionsOnMap } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { editPrompt, notePrompt } from './notes.mjs';
@@ -182,9 +182,10 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
   /** Each named behaviour's item, if it is work an agent may claim, or a refusal saying why not. */
   function placeBehaviours(nodes, ids, tested = [], mine = new Set(), report = null) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
+    const owned = ownedByChildren(nodes); // a behaviour with a child issue of its own is claimed there
     const out = [];
     for (const id of ids) {
-      const node = nodes.find((n) => behavioursOf(n).some((b) => b.id === id));
+      const node = nodes.find((n) => behavioursOf(n).some((b) => b.id === id) && !owned.get(n.id)?.has(id));
       if (!node) throw new Refused(`${id} isn't a behaviour on the map`);
       // A done item's behaviour whose proof now fails is work again (#21 PROVEN-07).
       if (mine.has(id) || brokenOf(node, report).some((b) => b.id === id)) {

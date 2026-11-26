@@ -34,6 +34,26 @@ export function behavioursOf(node) {
     .map((r) => ({ id: r.id, text: r.raw.replace(/^\s*[-*]\s+/, '').replace(new RegExp(`^[*\`]*${r.id}[*\`:]*\\s*`), '').replace(/\s+/g, ' ').trim(), fog: notWorkedOut(r), raw: r.raw }));
 }
 
+/**
+ * The behaviours each parent lists that a child issue stands for: a child whose Behaviours section holds exactly one row,
+ * with an ID its parent lists too, is that behaviour's own node. It is offered and claimed there, once; the parent's row stays
+ * in its text as the summary (#1 "Everything is a behaviour").
+ * @returns {Map<string, Set<string>>} by parent id
+ */
+export function ownedByChildren(nodes) {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const out = new Map();
+  for (const n of nodes) {
+    const parent = n.parentId && byId.get(n.parentId);
+    if (!parent || NOT_ITEMS.has(n.kind)) continue;
+    const rows = behavioursOf(n);
+    if (rows.length !== 1 || !behavioursOf(parent).some((b) => b.id === rows[0].id)) continue;
+    if (!out.has(parent.id)) out.set(parent.id, new Set());
+    out.get(parent.id).add(rows[0].id);
+  }
+  return out;
+}
+
 export const isFinished = (node) => FINISHED.has(node.status);
 
 /** Is this item work an agent may pick up: adopted behaviours, nothing left undecided? A new item isn't in the spec until its refinement is adopted (NEW-03). */
@@ -110,6 +130,7 @@ export const brokenOf = (node, report) => (node.status === 'done' && report ? be
 export function nextWork(nodes, live, { tested = [], report = null } = {}) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const have = new Set(tested);
+  const owned = ownedByChildren(nodes);
   const work = [];
   const blocked = [];
   const toVerify = []; // every behaviour has a test: ready to verify, not done (STATE-12)
@@ -117,7 +138,7 @@ export function nextWork(nodes, live, { tested = [], report = null } = {}) {
     const broken = brokenOf(node, report).filter((b) => !live.has(b.id));
     if (broken.length) work.push({ item: keyOf(node), title: node.title, priority: node.priority || '', broken: true, behaviours: broken.map(({ id, text }) => ({ id, text })), order: node.order ?? 0 });
     if (!isWork(node)) continue;
-    const own = behavioursOf(node).filter((b) => !b.fog);
+    const own = behavioursOf(node).filter((b) => !b.fog && !owned.get(node.id)?.has(b.id));
     if (own.length && own.every((b) => have.has(b.id))) {
       toVerify.push({ item: keyOf(node), title: node.title, behaviours: own.map((b) => b.id) });
       continue;
