@@ -189,35 +189,6 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
     }
   }
 
-  // Split an item that needs it (#32 STATE-14): what it still has to build moves into a new child task, and the item keeps
-  // what's built. Both are in this changeset, to accept or discard like any edit.
-  const splitOf = (node) =>
-    api
-      .splitOf(projectId, itemKeyOf(node))
-      .then((r) => r.split)
-      .catch(() => null);
-  async function split(node) {
-    setBusy(true);
-    try {
-      await flush();
-      const cs = await ensureChangeset();
-      const key = itemKeyOf(node);
-      const res = await api.splitItem(projectId, key, { changeset: cs.id, by: name });
-      setChangeset(res.changeset);
-      const after = res.changeset.items.find((it) => it.key === key)?.after;
-      if (after) setDrafts((d) => new Map(d).set(key, after));
-      onAccepted([res.node]);
-      setGeneration((g) => g + 1); // the open document shows the item without what moved
-      toast(`Split: ${res.moved.join(', ')} moved to "${res.node.title}". Accept it to keep it.`);
-      return res.node;
-    } catch (err) {
-      fail(err);
-      return null;
-    } finally {
-      setBusy(false);
-    }
-  }
-
   // Take a new item out of the refinement: it is gone, and never reaches GitHub (NEW-06).
   async function drop(node) {
     setBusy(true);
@@ -440,5 +411,5 @@ export function useItemEditing({ projectId, tree, setComments, onAccepted, onAns
     storage.set(NAME, v || null);
   };
 
-  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, split, splitOf, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, movePin, projectId, fail, toast, answer, answerPrompt, hasRead, markRead, flush };
+  return { changeset, others, reloadRefinements, adopt, decline, drafts, generation, conflicts, busy, saving, edited, unsaved, onItsWay, name, setName, change, addItem, drop, accept, discard, saveToGithub, comment, promote, dismiss, restore, movePin, projectId, fail, toast, answer, answerPrompt, hasRead, markRead, flush };
 }

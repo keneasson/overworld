@@ -9,9 +9,9 @@
 //                 work (#32 STATE-02, STATE-08). With nothing viewable as proof it is unproven, not done (PROVEN-06), and
 //                 when its proof fails it is broken, and work again until it passes (PROVEN-07). Proof comes from the
 //                 latest coverage report (#20) and what the behaviour's line links to (shared/proof.js).
-// Work is hierarchical: only leaf issues are offered (STATE-09). An issue with child issues is a parent, whose state
-// rolls up from them. An issue that is partly built, judged by which of its behaviours have a test named by their ID on
-// the default branch (#19), needs a split and isn't offered either (STATE-10).
+// Work is hierarchical: only leaves are offered (STATE-09). Every behaviour is a leaf, so a parent's own behaviours are
+// work beside its children, and nothing ever needs a split first (#1 "Everything is a behaviour", replacing STATE-10).
+// A behaviour with a test named by its ID on the default branch (#19) looks built: it is to verify, not offered.
 // A new item in an open refinement (NEW-03) needs improvement, and is never work, until a person adopts it.
 // When #32 lands, only this file changes.
 
@@ -52,22 +52,6 @@ export function childrenOf(nodes) {
   return kids;
 }
 
-/**
- * Why an unfinished item needs splitting before it can be built (STATE-10), or null.
- * @param {object[]} kids its child issues
- * @param {Set<string>} tested behaviour ids that have a test named by them on the default branch
- */
-export function splitOf(node, kids, tested) {
-  if (isFinished(node)) return null;
-  const own = behavioursOf(node).filter((b) => !b.fog);
-  const built = own.filter((b) => tested.has(b.id)).map((b) => b.id);
-  const unbuilt = own.filter((b) => !tested.has(b.id)).map((b) => b.id);
-  const hint = { looks_built: built, still_to_build: unbuilt };
-  if (kids.length && unbuilt.length) return { reason: 'It has child issues and behaviours of its own still to build: move those into a child.', ...hint };
-  if (built.length && unbuilt.length) return { reason: 'Partly built: split what is left into a child issue, and close this one when the built part is done.', ...hint };
-  return null;
-}
-
 /** Unfinished items this one depends on: [{ key, title, state }]. */
 export function blockersOf(node, byId) {
   return (node.links ?? [])
@@ -94,9 +78,7 @@ export function missingOf(node, { kids = [], tested = new Set(), byId = new Map(
   if (!all.length && !kids.length) out.push('It has no behaviours yet: write them.');
   const foggy = all.filter((b) => b.fog).map((b) => b.id);
   if (foggy.length && foggy.length === all.length) out.push(`${foggy.join(', ')} ${foggy.length === 1 ? "isn't" : "aren't"} worked out yet.`);
-  const split = splitOf(node, kids, tested);
-  if (split) out.push(`It needs a split. ${split.reason}`);
-  else if (kids.length && node.kind !== 'epic') out.push('Its child issues are the work: build those.');
+  if (kids.length && !all.length && node.kind !== 'epic') out.push('Its child issues are the work: build those.');
   for (const b of blockersOf(node, byId)) out.push(`It waits on ${b.title} (${b.state.replace('_', ' ')}).`);
   const own = all.filter((b) => !b.fog);
   if (!out.length && own.length && own.every((b) => tested.has(b.id))) out.push('Every behaviour has a test: it is to verify, not to build.');
@@ -118,37 +100,29 @@ export function buildingOf(node, claim, behaviour = null, report = null) {
 export const brokenOf = (node, report) => (node.status === 'done' && report ? behavioursOf(node).filter((b) => !b.fog && doneOf(true, proofOf(b.id, { report, raw: b.raw })) === 'broken') : []);
 
 /**
- * Work that is new and unclaimed, grouped by item: bugs first (REPORT-07), then by priority, then by number. Only leaf issues (STATE-09);
- * one that needs a split is listed apart, not offered (STATE-10).
+ * Work that is new and unclaimed, grouped by item: bugs first (REPORT-07), then by priority, then by number. Only leaves (STATE-09):
+ * an item's own behaviours that have no test yet, whether or not it has children.
  * @param {Map<string, object>} live live claims by behaviour id
  * A done item whose proof now fails is offered again, its broken behaviours only, ahead of the rest (PROVEN-07).
  * @param {{ tested?: Iterable<string>, report?: object | null }} [o] behaviour ids with a test named by them on the default branch, and the latest coverage report
- * @returns {{ work: { item, title, priority, behaviours }[], blocked: { item, title, by }[], needsSplit: { item, title, reason, looks_built, still_to_build }[], toVerify: { item, title, behaviours }[] }}
+ * @returns {{ work: { item, title, priority, behaviours }[], blocked: { item, title, by }[], toVerify: { item, title, behaviours }[] }}
  */
 export function nextWork(nodes, live, { tested = [], report = null } = {}) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const kids = childrenOf(nodes);
   const have = new Set(tested);
   const work = [];
   const blocked = [];
-  const needsSplit = [];
   const toVerify = []; // every behaviour has a test: ready to verify, not done (STATE-12)
   for (const node of nodes) {
     const broken = brokenOf(node, report).filter((b) => !live.has(b.id));
     if (broken.length) work.push({ item: keyOf(node), title: node.title, priority: node.priority || '', broken: true, behaviours: broken.map(({ id, text }) => ({ id, text })), order: node.order ?? 0 });
     if (!isWork(node)) continue;
-    const split = splitOf(node, kids.get(node.id) ?? [], have);
-    if (split) {
-      needsSplit.push({ item: keyOf(node), title: node.title, ...split });
-      continue;
-    }
-    if (kids.has(node.id)) continue; // a parent: its children are the work
     const own = behavioursOf(node).filter((b) => !b.fog);
     if (own.length && own.every((b) => have.has(b.id))) {
       toVerify.push({ item: keyOf(node), title: node.title, behaviours: own.map((b) => b.id) });
       continue;
     }
-    const open = behavioursOf(node).filter((b) => !b.fog && !live.has(b.id));
+    const open = own.filter((b) => !have.has(b.id) && !live.has(b.id));
     if (!open.length) continue;
     const by = blockersOf(node, byId);
     const entry = { item: keyOf(node), title: node.title, priority: node.priority || '', behaviours: open.map(({ id, text }) => ({ id, text })) };
@@ -157,5 +131,5 @@ export function nextWork(nodes, live, { tested = [], report = null } = {}) {
   }
   // Something broken comes first: behaviours whose proof failed, then bugs, before any new feature (REPORT-07).
   work.sort((a, b) => Number(Boolean(b.broken)) - Number(Boolean(a.broken)) || Number(Boolean(b.bug)) - Number(Boolean(a.bug)) || (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9) || a.order - b.order || a.item.localeCompare(b.item));
-  return { work: work.map(({ order, bug, ...w }) => w), blocked, needsSplit, toVerify };
+  return { work: work.map(({ order, bug, ...w }) => w), blocked, toVerify };
 }

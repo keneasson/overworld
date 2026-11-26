@@ -12,7 +12,7 @@ import { Refused, buildOf, noteOf as addressedOf } from './agents.mjs';
 import { awaitsApplying, questionsOnMap } from './answers.mjs';
 import { isOpen, threadsOf, toAgent, whereOf } from '../shared/annotations.js';
 import { notePrompt } from './notes.mjs';
-import { behavioursOf, blockersOf, buildingOf, childrenOf, isAdopted, isFinished, keyOf, nextWork, splitOf, stateOf } from './work.mjs';
+import { behavioursOf, blockersOf, buildingOf, childrenOf, isAdopted, isFinished, keyOf, nextWork, stateOf } from './work.mjs';
 import { skeletonsOf } from './skeletons.mjs';
 import { isStale, photoName, spotWords } from '../shared/photos.js';
 
@@ -178,13 +178,13 @@ export function createMcp({ model, agents, call, log = console }) {
       async run({ pid }, args) {
         const { project, nodes } = await mapOf(pid);
         const [{ live }, report] = await Promise.all([agents.liveClaims(pid), model.coverage.get(pid)]);
-        const { work, blocked, needsSplit, toVerify } = nextWork(nodes, live, { tested: project?.tested, report });
+        const { work, blocked, toVerify } = nextWork(nodes, live, { tested: project?.tested, report });
         // What people asked to be built comes first (#14 HANDOFF-10): claiming it takes the request.
         const builds = (await agents.buildRequests(pid, { nodes, live })).map(buildOf);
         const limit = Math.min(50, Math.max(1, Number(args.limit) || 5));
         // An answer its asker hasn't come back for is anyone's to apply (ANSWER-03).
         const answers = (await agents.answersToApply(pid, { nodes })).filter((a) => a.forAnyone).slice(0, limit).map(answerOf);
-        return { ...(answers.length ? { answers_to_apply: answers } : {}), ...(builds.length ? { build_requests: builds.slice(0, limit) } : {}), work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}), ...(needsSplit.length ? { need_a_split: needsSplit.map((x) => x.item) } : {}), ...(toVerify.length ? { to_verify: toVerify.map((x) => x.item) } : {}) };
+        return { ...(answers.length ? { answers_to_apply: answers } : {}), ...(builds.length ? { build_requests: builds.slice(0, limit) } : {}), work: work.slice(0, limit), ...(work.length > limit ? { more: work.length - limit } : {}), ...(blocked.length ? { blocked: blocked.length } : {}), ...(toVerify.length ? { to_verify: toVerify.map((x) => x.item) } : {}) };
       },
     },
 
@@ -244,7 +244,6 @@ export function createMcp({ model, agents, call, log = console }) {
           files: filesOf(node, byId),
           pull_requests: (node.pulls ?? []).map((n) => `#${n}`),
           blocked_by: blockersOf(node, byId),
-          ...((split) => (split ? { needs_split: split } : {}))(splitOf(node, childrenOf(nodes).get(node.id) ?? [], new Set(project?.tested ?? []))),
           links: (node.links ?? []).filter((l) => l.type !== 'depends' && byId.has(l.to)).map((l) => ({ type: l.type, key: keyOf(byId.get(l.to)), title: byId.get(l.to).title })),
         };
       },
@@ -308,22 +307,6 @@ export function createMcp({ model, agents, call, log = console }) {
         const mine = (await model.changesets.list(pid)).find((cs) => cs.status === 'open' && cs.scopeId === node.id && cs.author === author(agent));
         const cs = mine ?? (await api('POST', `/api/projects/${pid}/changesets`, { scopeId: node.id, author: author(agent) })).changeset;
         return { refinement: cs.id, scope: { key: keyOf(node), title: node.title }, items: cs.items.map((it) => it.key) };
-      },
-    },
-
-    split: {
-      description: "Split an item that needs it before it can be built (it is partly built, or has child issues and behaviours of its own still to build): the behaviours it still has to build move, word for word with their IDs, into a new child task, and the item keeps what's built and says where the rest went. Both go into your refinement for a person to adopt. Then build the child.",
-      input: {
-        refinement: { type: 'string', description: 'From refine().' },
-        item: { ...place, description: 'The item that needs a split.' },
-        request_key: requestKey,
-      },
-      required: ['refinement', 'item'],
-      changes: true,
-      async run({ pid, agent }, args) {
-        const node = find((await mapOf(pid)).nodes, args.item);
-        const res = await api('POST', `/api/projects/${pid}/items/${keyOf(node)}/split`, { changeset: String(args.refinement), by: author(agent) });
-        return { refinement: res.changeset.id, item: keyOf(node), child: keyOf(res.node), title: res.node.title, moved: res.moved };
       },
     },
 

@@ -4,7 +4,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { ValidationError, newId } from '../shared/schema.js';
-import { nextWork, behavioursOf, blockersOf, brokenOf, childrenOf, isFinished, isWork, keyOf, splitOf } from './work.mjs';
+import { nextWork, behavioursOf, blockersOf, brokenOf, isFinished, isWork, keyOf } from './work.mjs';
 import { awaitsApplying, promptOf, questionsOnMap } from './answers.mjs';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { editPrompt, notePrompt } from './notes.mjs';
@@ -182,8 +182,6 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
   /** Each named behaviour's item, if it is work an agent may claim, or a refusal saying why not. */
   function placeBehaviours(nodes, ids, tested = [], mine = new Set(), report = null) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
-    const kids = childrenOf(nodes);
-    const have = new Set(tested);
     const out = [];
     for (const id of ids) {
       const node = nodes.find((n) => behavioursOf(n).some((b) => b.id === id));
@@ -195,8 +193,6 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       }
       if (!isWork(node)) throw new Refused(`${id} belongs to ${node.title}, which is ${node.status.replace('_', ' ')}, not ready`);
       if (behavioursOf(node).find((b) => b.id === id).fog) throw new Refused(`${id} isn't worked out yet, so it can't be built`);
-      const split = splitOf(node, kids.get(node.id) ?? [], have);
-      if (split) throw new Refused(`${node.title} needs a split before it is built (STATE-10). ${split.reason}`, { needs_split: split });
       const by = blockersOf(node, byId);
       if (by.length) throw new Refused(`${node.title} waits on ${by.map((b) => `${b.title} (${b.state.replace('_', ' ')})`).join(', ')}`, { blocked_by: by });
       out.push({ id, node });
@@ -593,7 +589,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const awayHours = last ? (now - Date.parse(last.at)) / 3_600_000 : 0;
     const mode = !last ? 'onboarding' : awayHours > REGROUP_AFTER_HOURS || changes >= REGROUP_AFTER_CHANGES ? 'regroup' : 'up_to_date';
 
-    const { work, needsSplit, toVerify } = nextWork(data.nodes, live, { tested: data.project?.tested, report: await model.coverage.get(projectId) });
+    const { work, toVerify } = nextWork(data.nodes, live, { tested: data.project?.tested, report: await model.coverage.get(projectId) });
     // What people asked to be built and nobody has taken (HANDOFF-10): an open session can take it before a runner does.
     const builds = (await buildRequests(projectId, { nodes: data.nodes, live })).map(buildOf);
     const git = gitOf(local);
@@ -617,7 +613,6 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
       you_hold: holding,
       ...(builds.length ? { build_requests: builds.slice(0, 3), ...(builds.length > 3 ? { more_build_requests: builds.length - 3 } : {}) } : {}),
       ready_next: work.slice(0, 3).map((w) => ({ item: w.item, title: w.title, priority: w.priority || undefined, behaviours: w.behaviours.map((b) => b.id) })),
-      ...(needsSplit.length ? { needs_split: needsSplit.slice(0, SHOWN).map(({ item, title, reason, looks_built }) => ({ item, title, reason, looks_built })), ...(needsSplit.length > SHOWN ? { more_need_split: needsSplit.length - SHOWN } : {}) } : {}),
       ...(toVerify.length ? { to_verify: toVerify.slice(0, SHOWN) } : {}),
       ...(git ? { local_and_github: git } : {}),
       work_in_progress: {
@@ -647,7 +642,7 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
         remembered: (await model.facts.list(projectId)).map((f) => ({ fact: f.text, by: f.by?.name, at: f.at.slice(0, 10) })),
       };
     }
-    report.first_step = firstStep({ mode, git, ranOut, notes, answered: answered.map(({ c, prompt }) => ({ title: title(c.itemKey), prompt })), holding, builds, work, needsSplit, toVerify, refinements, title });
+    report.first_step = firstStep({ mode, git, ranOut, notes, answered: answered.map(({ c, prompt }) => ({ title: title(c.itemKey), prompt })), holding, builds, work, toVerify, refinements, title });
 
     await model.agents.put(projectId, { ...self, lastStandup: { at: iso(now), items: held, openQuestions: asked.filter((c) => !settled(c)).map((c) => c.id) } });
     return report;
@@ -694,7 +689,7 @@ function gitOf(local) {
 }
 
 /** One suggestion: unfinished local work first, then catching up, then answers to apply or read, then held work, then the next work. */
-function firstStep({ mode, git, ranOut, notes = [], answered, holding, builds = [], work, needsSplit = [], toVerify = [], refinements, title }) {
+function firstStep({ mode, git, ranOut, notes = [], answered, holding, builds = [], work, toVerify = [], refinements, title }) {
   const apply = answered.filter((a) => a.prompt);
   const local = git && (git.uncommitted?.length || git.unpushed?.length || git.ahead);
   if (local && ranOut.length && !holding.length) return `You have local work on ${git.branch ?? 'this branch'} and your claim on ${ranOut.map((c) => c.behaviour).join(', ')} ran out: claim it again, or hand it off, before you carry on.`;
@@ -711,7 +706,6 @@ function firstStep({ mode, git, ranOut, notes = [], answered, holding, builds = 
   if (builds.length) return `${builds[0].requested_by} asked for ${builds[0].title} to be built: claim(behaviours: [${builds[0].behaviours.map((id) => `"${id}"`).join(', ')}]), then follow its prompt in build_requests.`;
   if (work.length) return `Claim the next work: ${work[0].title} (${work[0].behaviours.map((b) => b.id).join(', ')}).`;
   if (toVerify.length) return `Nothing is ready to build. ${toVerify[0].title} has a test for every behaviour: verify it does what it says, and record what you saw on the issue; a person's yes closes it (STATE-12).`;
-  if (needsSplit.length) return `Nothing is ready that can be built in one go. ${needsSplit[0].title} needs a split first: refine() it into child issues.`;
   return mode === 'onboarding' ? 'Nothing is ready to build yet: zoom() around the map, and ask() where things are unclear.' : 'Nothing is ready and unclaimed: ask() or refine() where the map is unclear.';
 }
 
