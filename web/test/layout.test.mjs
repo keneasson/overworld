@@ -4,6 +4,7 @@ import { polygonArea, polygonCentroid, polygonContains } from 'd3';
 import { demoProject } from '../../api/seed.mjs';
 import { buildTree } from '../src/model/tree.js';
 import { computeLayout } from '../src/map/layout.js';
+import { PLACE_KINDS, placeKindOf } from '../src/map/size.js';
 import { guessPlace, guessSurface, resolveSite } from '../src/map/places.js';
 import { bounds } from '../src/map/geometry.js';
 
@@ -32,67 +33,56 @@ test('guesses where things sit from their names', () => {
   assert.equal(guessSurface({ title: 'Catalog & Search' }), 'none');
 });
 
-test('the site projection is shaped like the product', () => {
+const overlaps = (a, b) => a.some((p) => polygonContains(b, p)) || b.some((p) => polygonContains(a, p));
+
+test('PLACE-03 every place is inside its parent, with open ground between its items, never splitting it edge to edge', () => {
   const tree = demo();
-  const out = computeLayout(tree, 'demo', { projection: 'site' });
-  const [nav, catalog, cart, accounts, footer] = ['Navigation & Wayfinding', 'Catalog & Search', 'Cart & Checkout', 'Accounts & Identity', 'Footer & help'].map(
-    (t) => centroid(out, find(tree, t)),
-  );
-  assert.ok(nav[1] < catalog[1], 'navigation is above the catalog');
-  assert.ok(footer[1] > nav[1] && footer[1] > catalog[1] - 20, 'the footer is at the bottom');
-  assert.ok(cart[0] > catalog[0], 'the cart is right of the catalog');
-  assert.ok(accounts[0] > nav[0] && accounts[1] < cart[1], 'accounts sit top right');
-
-  const mobile = box(out, find(tree, 'Mobile app'));
-  const api = box(out, find(tree, 'Storefront API'));
-  assert.ok(mobile.h > mobile.w * 1.4, 'the mobile app is a tall phone');
-  assert.ok(api.w > api.h * 2.5, 'the API is a thin strip');
-  const y = (t) => centroid(out, find(tree, t))[1];
-  assert.ok(y('Navigation & Wayfinding') < y('Storefront API') && y('Storefront API') < y('Order service'), 'clients, then API, then services');
-  assert.ok(y('Orders REST handlers') < y('Orders database schema'), 'in a service, endpoints sit above storage');
-
-  const land = out.land.map((r) => Math.abs(polygonArea(r)));
-  assert.equal(land.length, 7, 'on screen, mobile, API, order service, back office and two third parties');
-  assert.ok(out.notes.some((n) => n.text === 'Behind the screen'));
-});
-
-test('every region is inside its parent and sized by its work', () => {
-  const tree = demo();
-  const out = computeLayout(tree, 'demo', { projection: 'site' });
+  const out = computeLayout(tree, 'demo');
   for (const n of tree.list) {
     const g = out.geo.get(n.id);
     assert.ok(g && g.area > 0, `${n.title} has land`);
-    if (n.parent?.parent) assert.ok(polygonContains(out.geo.get(n.parent.id).poly, polygonCentroid(g.poly)), `${n.title} is inside ${n.parent.title}`);
+    if (n.parent) assert.ok(polygonContains(out.geo.get(n.parent.id).poly, polygonCentroid(g.poly)), `${n.title} is inside ${n.parent.title}`);
     if (n.children.length > 1) {
-      const w = n.children.map((k) => Math.pow(Math.max(k.stats.raw, 0.1), 0.8));
-      const a = n.children.map((k) => out.geo.get(k.id).area);
-      const sw = w.reduce((s, v) => s + v, 0), sa = a.reduce((s, v) => s + v, 0);
-      for (let i = 0; i < w.length; i++) assert.ok(Math.abs(w[i] / sw - a[i] / sa) < 0.04, `${n.children[i].title} area matches its share`);
+      for (let i = 0; i < n.children.length; i++)
+        for (let j = i + 1; j < n.children.length; j++) {
+          const [a, b] = [n.children[i], n.children[j]];
+          assert.ok(!overlaps(out.geo.get(a.id).poly, out.geo.get(b.id).poly), `${a.title} and ${b.title} stand apart`);
+        }
+      const filled = n.children.reduce((sum, c) => sum + out.geo.get(c.id).area, 0);
+      assert.ok(filled < g.area * 0.85, `${n.title} has open ground between its items`);
     }
   }
 });
 
-test('the same project always gets the same map', () => {
+test('PLACE-01 a place\'s kind comes from what it holds, not from how deep it is', () => {
+  assert.equal(placeKindOf(1, 0), 'house');
+  assert.equal(placeKindOf(30, 1), 'neighbourhood', 'one level deep is a neighbourhood at most, however many houses');
+  assert.equal(placeKindOf(30, 3), 'district');
+  assert.equal(placeKindOf(500, 4), 'province');
+  // At the same depth, an item that holds far more is a bigger kind of place.
+  const tree = demo();
+  const out = computeLayout(tree, 'demo');
+  const rank = (n) => PLACE_KINDS.findIndex((p) => p.kind === out.geo.get(n.id).kind);
+  const pairs = tree.list.filter((n) => n.depth === 1).sort((a, b) => out.geo.get(a.id).area - out.geo.get(b.id).area);
+  assert.ok(rank(pairs.at(-1)) > rank(pairs[0]), `${pairs.at(-1).title} is a bigger kind of place than ${pairs[0].title}`);
+});
+
+test('PLACE-15 the same project always gets the same map, and adding an item leaves its neighbours where they stood', () => {
   const { nodes } = demoProject();
   const fingerprint = (out) => [...out.geo.values()].map((g) => `${g.poly.length}:${g.poly[0].map((v) => v.toFixed(6))}:${g.area.toFixed(4)}`).join('|');
-  const a = computeLayout(buildTree(nodes), 'demo', { projection: 'site' });
-  const b = computeLayout(buildTree(nodes), 'demo', { projection: 'site' });
-  assert.ok(fingerprint(a) === fingerprint(b));
-});
-
-test('projects without placements still get a screen and a back office', () => {
-  const nodes = demoProject().nodes.map(({ place, surface, ...n }) => n);
+  assert.ok(fingerprint(computeLayout(buildTree(nodes), 'demo')) === fingerprint(computeLayout(buildTree(nodes), 'demo')));
+  // A new item in an area takes open ground beside the others: they keep their places relative to each other.
   const tree = buildTree(nodes);
-  const site = resolveSite(tree);
-  assert.equal(site.continents.get(find(tree, 'Design System').id).surface, 'backoffice');
-  assert.equal(site.continents.get(find(tree, 'Navigation & Wayfinding').id).surface, 'web');
-  assert.equal(site.places.get(find(tree, 'Navigation & Wayfinding').id), 'top');
-  const out = computeLayout(tree, 'demo', { projection: 'site', site });
-  assert.ok(centroid(out, find(tree, 'Platform & Performance'))[1] > centroid(out, find(tree, 'Catalog & Search'))[1]);
-});
-
-test('the organic projection is one island', () => {
-  const out = computeLayout(demo(), 'demo', { projection: 'organic' });
-  assert.equal(out.land.length, 1);
-  assert.ok(out.world.w > 800 && out.world.h > 800);
+  const area = tree.list.filter((n) => n.depth === 1).sort((a, b) => b.children.length - a.children.length)[0];
+  const added = buildTree([...nodes, { id: 'brand-new', parentId: area.id, title: 'A brand new idea', kind: 'feature', status: 'idea', createdAt: '2099-01-01' }]);
+  const [before, after] = [computeLayout(tree, 'demo'), computeLayout(added, 'demo')];
+  const first = area.children[0].id;
+  const rel = (out, id) => {
+    const [a, b] = [out.geo.get(id).label, out.geo.get(first).label];
+    return [a[0] - b[0], a[1] - b[1]];
+  };
+  for (const c of area.children.slice(1)) {
+    const [p, q] = [rel(before, c.id), rel(after, c.id)];
+    assert.ok(Math.hypot(p[0] - q[0], p[1] - q[1]) < 1e-6, `${c.title} stays where it stood beside ${area.children[0].title}`);
+  }
 });

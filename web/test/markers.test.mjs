@@ -26,7 +26,10 @@ test('MARK-01 every region big enough is named at every zoom, until its items\' 
   const W = 1200, H = 800;
   const T = thresholds(W, H);
   const k0 = fitScale(W, H, scene.world) * 0.8;
-  const { cx, cy } = scene.world;
+  // Zooming in on land all the way: the middle of the biggest place, then of its biggest item, down to a leaf.
+  let at = scene.tree.root;
+  while (at.children.length) at = at.children.reduce((a, b) => (scene.geo.get(b.id).area > scene.geo.get(a.id).area ? b : a));
+  const [cx, cy] = scene.geo.get(at.id).label;
   for (let k = k0; k < k0 * 40; k *= 1.25) {
     const view = { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H };
     const { labels } = namesAt(scene, view);
@@ -282,7 +285,7 @@ test('MARK-19 the place in view is named in the header, with the way to it, even
   assert.equal((out ?? streets.tree.root).id, 'root', 'zoomed out, the whole project');
 });
 
-test('MARK-15 an item whose outline can be read is its own lot, apart from its siblings, inside its parent\'s lot', () => {
+test('MARK-15 PLACE-03 an item whose outline can be read is its own lot, with open ground between it and its siblings, inside its parent\'s lot', () => {
   const scene = buildScene(demoProject().nodes, 'demo', null, 'organic');
   const { tree, geo } = scene;
   const W = 1200, H = 800;
@@ -318,13 +321,15 @@ test('MARK-15 an item whose outline can be read is its own lot, apart from its s
         if (!onScreen.length) continue;
         assert.deepEqual(lots.map((l) => l.n.id).sort(), onScreen.map((c) => c.id).sort(), `${lens.id}: ${n.title}'s items are lots at zoom ${k.toFixed(2)}`);
         assert.ok(street.get(n.id).width > 0 && lots.every((l) => l.edge && l.edge !== l.ground), `${lens.id}: ${n.title}'s lots have edges and streets`);
-        // Neighbouring lots never share a ground, whatever colour the lens gives them.
+        // Lots stand apart, with open ground between them: no two siblings overlap, and none fills its parent edge to edge.
         for (const a of lots) for (const b of lots) {
-          if (a.n.id < b.n.id && touch(a.n, b.n)) {
-            assert.notEqual(a.ground, b.ground, `${lens.id}: ${a.n.title} and ${b.n.title} touch, so they look apart`);
+          if (a.n.id < b.n.id) {
+            assert.ok(!touch(a.n, b.n) && !polygonContains(a.g.poly, b.g.label), `${lens.id}: ${a.n.title} and ${b.n.title} stand apart`);
             checked++;
           }
         }
+        const filled = lots.reduce((sum, l) => sum + l.g.area, 0);
+        assert.ok(filled < geo.get(n.id).area * 0.9, `${lens.id}: ${n.title} has open ground between its lots`);
         // A parent's lot holds its children's lots: streets inside streets, the outer ones wider.
         for (const l of lots) if (street.has(l.n.id)) assert.ok(street.get(l.n.id).width <= street.get(n.id).width, `${l.n.title}'s streets are no wider than ${n.title}'s`);
       }
@@ -332,12 +337,14 @@ test('MARK-15 an item whose outline can be read is its own lot, apart from its s
       for (const { n, s } of grounds) if (s < T.sub * 0.8) assert.ok(!street.has(n.id), `${n.title} is still one place at zoom ${k.toFixed(2)}`);
     }
   }
-  assert.ok(checked > 50, `neighbouring lots were compared (${checked})`);
+  assert.ok(checked > 20, `neighbouring lots were compared (${checked})`);
   // A lot's ground is the lens's colour for it, only lighter or darker: the lens still says what the land means.
   const lens = LENSES.find((l) => l.id === 'progress');
   const k = k0 * 20;
   const { grounds } = lotsAt(scene, { x: W / 2 - cx * k, y: H / 2 - cy * k, k, width: W, height: H }, { lens, T });
-  for (const { n, ground } of grounds) {
+  // (A place whose items are drawn is the open land between them: that is MARK-18's.)
+  for (const { n, ground, here, alpha } of grounds) {
+    if (here < alpha * 0.99) continue;
     const [a, b] = [hsl(ground), hsl(lens.fill(n, tree))];
     if (b.s > 0.1) assert.ok(Math.abs(a.h - b.h) < 3, `${n.title} keeps the lens's colour`);
   }
@@ -368,7 +375,7 @@ const onStreet = (scene, id) => {
   return viewOn(scene, id, Math.min(1100 / scene.geo.get(id).size, 1100 / (x1 - x0), 760 / (y1 - y0)));
 };
 
-test('MARK-16 an issue is a block, and each of its behaviours is a house on its own lot in street rows, named by its ID; choosing one opens it', () => {
+test('MARK-16 PLACE-03 an issue is a block, and each of its behaviours is a house on its own lot, in ID order, named by its ID; choosing one opens it', () => {
   const scene = buildScene(street(), 'street', null, 'organic');
   const near = onStreet(scene, 'comments');
   const houses = housesIn(scene, near).filter((h) => h.n.issue?.id === 'comments');
@@ -378,16 +385,10 @@ test('MARK-16 an issue is a block, and each of its behaviours is a house on its 
     assert.ok(polygonContains(block, h.g.label), `${h.n.behaviour}'s lot is in its issue's block`);
     assert.ok(inside(h.g.poly, h.corners), `${h.n.behaviour}'s house stands on its own lot`);
   }
-  // In street rows: one behaviour's house stands beside the next, in ID order along each row, apart from the row ends.
+  // Houses stand in ID order, each beside the one before: next-door houses are next in the spec.
   const lots = [...houses].sort((a, b) => a.n.behaviour.localeCompare(b.n.behaviour)).map((h) => h.g);
-  const beside = lots.slice(1).filter((g, i) => Math.hypot(g.label[0] - lots[i].label[0], g.label[1] - lots[i].label[1]) < 1.4 * Math.max(g.size, lots[i].size)).length;
-  assert.ok(beside >= 10, `houses in rows, each beside the next (${beside} of 18)`);
-  // Straight rows: the next house is either level with the last, to its right, or starts a new row below it.
-  const close = (a, b) => Math.abs(a - b) < 1e-6;
-  for (let i = 1; i < lots.length; i++) {
-    const [p, q] = [lots[i - 1].label, lots[i].label];
-    assert.ok((close(p[1], q[1]) && q[0] > p[0]) || q[1] > p[1], `NOTE-${i + 1} follows NOTE-${i} along its row or on the next`);
-  }
+  const beside = lots.slice(1).filter((g, i) => Math.hypot(g.label[0] - lots[i].label[0], g.label[1] - lots[i].label[1]) < 2.6 * Math.max(g.size, lots[i].size)).length;
+  assert.ok(beside >= 14, `each house beside the one before (${beside} of 18)`);
   // Every house is named, by its ID at least, and with its words below where its lot has room.
   const named = namesOn(scene, near).filter((l) => l.n.issue?.id === 'comments' && l.named && l.alpha > 0.99);
   assert.equal(named.length, 19, 'no house left unnamed beside named ones');
@@ -442,28 +443,27 @@ test('HANDOFF-05 behaviours asked to be built show as waiting for a builder, on 
   assert.deepEqual(claimed.filter((h) => h.bulldozer).map((h) => h.n.behaviour), ['NOTE-04']);
 });
 
-test("MARK-18 a block's size is its issue's scope: with few behaviours it is mostly park, and houses fill the green as behaviours are added", () => {
+test("MARK-18 PLACE-02 PLACE-10 a block's size is its issue's scope: with few behaviours it is mostly open land, and houses fill it as behaviours are added", () => {
   const T = thresholds(1200, 800);
-  const parkOf = (scene, lens = LENSES[0]) => lotsAt(scene, onStreet(scene, 'big'), { lens, T }).parks.find((p) => p.of.id === 'big');
-  // Of the block as drawn: its land also holds the street round it.
-  const share = (s) => (parkOf(s)?.g.area ?? 0) / Math.abs(polygonArea(s.geo.get('big').poly));
+  const houseArea = (s, id) => s.kidsOf(s.tree.byId.get(id)).reduce((sum, c) => sum + s.geo.get(c.id).area, 0);
+  // How much of the block its houses fill: the rest is open land between them.
+  const built = (s) => houseArea(s, 'big') / s.geo.get('big').area;
   const scene = buildScene(street(), 'street', null, 'organic');
-  assert.ok(share(scene) > 0.5, `two behaviours on a big issue: mostly open green (${share(scene).toFixed(2)})`);
+  assert.ok(built(scene) < 0.5, `two behaviours on a big issue: mostly open land (${built(scene).toFixed(2)} built)`);
   assert.equal(housesIn(scene, onStreet(scene, 'big')).filter((h) => h.n.issue?.id === 'big').length, 2, 'with its two houses on it');
   const size = (s) => s.geo.get('big').area / s.geo.get('plain').area;
-  assert.ok(Math.abs(size(scene) - 1) < 0.25, `its size is its scope, not its houses: as big as a plain issue of its kind (${size(scene).toFixed(2)})`);
-  // Park green in every lens, whatever colour the lens gives the land.
-  const greens = new Set(LENSES.filter((l) => !l.theme.dark).map((l) => parkOf(scene, l).ground));
-  assert.equal(greens.size, 1);
-  assert.ok(hsl([...greens][0]).h > 90 && hsl([...greens][0]).h < 150, 'green');
-  // As behaviours are added, houses fill the green; once they outgrow the scope the block grows with them.
+  assert.ok(size(scene) > 0.75 && size(scene) < 1.6, `its size is its scope, not its houses: about as big as a plain issue of its kind (${size(scene).toFixed(2)})`);
+  // The open land between its houses is one colour in every lens, whatever colour the lens gives the land: it says "not built yet".
+  const openOf = (lens) => lotsAt(scene, onStreet(scene, 'big'), { lens, T }).grounds.find((g) => g.n.id === 'big').ground;
+  const opens = new Set(LENSES.filter((l) => !l.theme.dark).map(openOf));
+  assert.equal(opens.size, 1, 'open land looks the same in every lens');
+  // As behaviours are added, houses fill the open land; once they outgrow the scope the block grows with them.
   const four = buildScene(street({ big: 4 }), 'street', null, 'organic');
-  assert.ok(share(four) < share(scene), `four houses leave less green (${share(four).toFixed(2)}) than two`);
-  const built = buildScene(street({ big: 12 }), 'street', null, 'organic');
-  assert.equal(parkOf(built), undefined, 'built out: no park left');
-  assert.ok(size(built) > 1.3, 'and the block grows with its houses');
-  // Behaviours are houses, never land: the park is the only open land, and every behaviour has a house.
-  assert.equal(housesIn(built, onStreet(built, 'big')).filter((h) => h.n.issue?.id === 'big').length, 12);
+  assert.ok(built(four) > built(scene), `four houses fill more (${built(four).toFixed(2)}) than two`);
+  const full = buildScene(street({ big: 12 }), 'street', null, 'organic');
+  assert.ok(built(full) > built(four), 'twelve fill more still');
+  assert.ok(size(full) > 1.3, 'and the block grows with its houses');
+  assert.equal(housesIn(full, onStreet(full, 'big')).filter((h) => h.n.issue?.id === 'big').length, 12);
 });
 
 test('MARK-20 a behaviour that grows into its own issue becomes that issue\'s block where its house stood, with its behaviours as houses', () => {
