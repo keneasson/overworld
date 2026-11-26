@@ -125,7 +125,10 @@ function recorder() {
   const tiles = new Set();
   const patterns = new Set();
   class Path2D {
-    moveTo() {}
+    rings = 0;
+    moveTo() {
+      this.rings++;
+    }
     lineTo() {}
     closePath() {}
     arc() {}
@@ -188,4 +191,27 @@ test('FOG-02 the clouds are over the land and its borders, under every symbol, l
   assert.ok(border >= 0 && border < fog[0], 'over the borders');
   const text = ops.findIndex((o) => o.op === 'fillText');
   assert.ok(text > fog.at(-1), 'under every name, symbol and badge');
+});
+
+test('FOG-01 PLACE-02 a place in the Fog keeps its cloud over the open land between its items once they are drawn, never over them', () => {
+  const scene = street();
+  const lens = LENS_BY_ID.definition;
+  const { ctx, ops } = recorder();
+  const area = scene.tree.byId.get('area');
+  assert.ok(fogOver(area) > 0, 'the area is partly in the Fog');
+  const g = scene.geo.get('area');
+  const k = 1400 / g.size;
+  const [cx, cy] = g.label;
+  drawMap(ctx, scene, { x: 600 - cx * k, y: 400 - cy * k, k, width: 1200, height: 800, dpr: 1 }, { lens, T: thresholds(1200, 800), time: 3 });
+  // Cloud is drawn with a pattern (its tiles are made once, by whichever test draws first).
+  const cloud = (o) => o.op === 'fill' && typeof o.fill === 'object' && o.fill?.setTransform;
+  // Its open land is one outline with a hole for each of its items: the cloud lies round them, not on them.
+  const holes = scene.kidsOf(area).length + 1;
+  assert.ok(ops.some((o) => cloud(o) && o.args[0]?.rings === holes), 'cloud over its open land, its items cut out');
+  // A place nobody has left anything undefined in has open land, but no cloud on it.
+  const { ctx: c2, ops: o2 } = recorder();
+  const clear = scene.geo.get('clear');
+  const k2 = 1400 / clear.size;
+  drawMap(c2, scene, { x: 600 - clear.label[0] * k2, y: 400 - clear.label[1] * k2, k: k2, width: 1200, height: 800, dpr: 1 }, { lens, T: thresholds(1200, 800), time: 3 });
+  assert.ok(!o2.some((o) => cloud(o) && o.args[0]?.rings === scene.kidsOf(scene.tree.byId.get('clear')).length + 1), 'no cloud over a worked-out block');
 });
