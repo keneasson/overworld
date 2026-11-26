@@ -484,3 +484,19 @@ test('MARK-20 a behaviour that grows into its own issue becomes that issue\'s bl
   assert.deepEqual(grown.map((h) => h.n.behaviour).sort(), ['NOTE-07', 'NOTE-20', 'NOTE-21'], 'its behaviours are its houses, NOTE-07 among them');
   assert.ok(!housesIn(after, onStreet(after, 'comments')).some((h) => h.n.issue?.id === 'comments' && h.n.behaviour === 'NOTE-07'), 'and the old house is gone');
 });
+
+test('MARK-16 a behaviour with a child issue of its own is one house, drawn and counted once, in the child', () => {
+  const body = (rows) => `${DETAIL}\n\n## Behaviours\n\n${rows.map((r) => `- ${r}`).join('\n')}`;
+  const tree = buildTree([
+    root,
+    { id: 'p', parentId: 'root', title: '#5 Doors', kind: 'feature', status: 'ready', body: body(['DOOR-01 Given a door, when closed, then it latches.', 'DOOR-02 Given a door, when locked, then it holds.']) },
+    { id: 'c', parentId: 'p', title: '#6 DOOR-01 it latches', kind: 'task', status: 'ready', body: body(['DOOR-01 Given a door, when closed, then it latches.']) },
+    { id: 'd', parentId: 'p', title: '#7 Something else', kind: 'task', status: 'ready', body: body(['DOOR-01 Given a door, when closed, then it latches.', 'DOOR-03 Given more, when two, then not one behaviour.']) },
+  ]);
+  const p = tree.byId.get('p'), c = tree.byId.get('c'), d = tree.byId.get('d');
+  assert.deepEqual(p.behaviourRows.map((b) => b.id), ['DOOR-02'], "the parent's DOOR-01 is drawn as its child, not again as its own house");
+  assert.equal(c.behaviourOf, 'DOOR-01');
+  assert.deepEqual(c.behaviourRows.map((b) => b.id), ['DOOR-01']);
+  assert.equal(d.behaviourOf, undefined, 'a child holding more than one behaviour is not one behaviour');
+  assert.equal(p.stats.behaviourCount, 1, 'counted once');
+});

@@ -668,6 +668,22 @@ test('STATE-09 only leaves are offered as work: a parent with children is never 
   assert.ok((await a.use('claim', { behaviours: ['PA-01'] })).claimed ?? true);
 });
 
+test('STATE-09 a behaviour with a child issue of its own is work once, in the child, and claimed there', async () => {
+  const { rest, agent } = await setup();
+  const pid = (await rest('POST', '/api/import/json', {
+    nodes: [
+      { id: 'root', title: 'App', kind: 'project' },
+      issue(20, 'Doors', { body: body({ behaviours: ['DOOR-01 Given a door, when closed, then it latches.', 'DOOR-02 Given a door, when locked, then it holds.'] }) }),
+      issue(21, 'DOOR-01 it latches', { parentId: 'i20', body: body({ behaviours: ['DOOR-01 Given a door, when closed, then it latches.'] }) }),
+    ],
+  })).project.id;
+  const a = await agent('Builder', pid);
+  const { work } = await a.use('next_work');
+  assert.deepEqual(work.map((w) => [w.item, w.behaviours.map((b) => b.id)]).sort(), [['issue-20', ['DOOR-02']], ['issue-21', ['DOOR-01']]]);
+  await a.use('claim', { behaviours: ['DOOR-01'] });
+  assert.equal((await a.use('context', { issue: 'issue-21' })).behaviours[0].state, 'being coded', 'claimed in the child');
+});
+
 test('STATE-12 an issue tested throughout is to verify, not done, and is not offered to build; what is untested still is', async () => {
   const { rest, agent, shop } = await setup();
   const ready = { labels: [{ name: 'status:ready' }] };
