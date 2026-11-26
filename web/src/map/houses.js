@@ -1,5 +1,5 @@
 // Houses on their lots (#46 MARK-16, MARK-17, MARK-20). An issue is a block, and each behaviour it lists is a house on
-// its own lot in that block (MARK-15), in rows along streets (streetRows in geometry.js), named by its ID: an issue with 19
+// its own lot in that block (MARK-15), in rows along streets, named by its ID: an issue with 19
 // behaviours is a street of 19 houses. A child issue is a block within its parent's, holding its own behaviours' houses,
 // so a behaviour that grows into its own issue becomes a block where its house stood. Every house is a small grey
 // building footprint facing the same way. A house whose behaviour is being coded (a live claim, MCP-04) has a bulldozer

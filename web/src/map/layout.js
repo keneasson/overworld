@@ -1,44 +1,215 @@
-// Two projections of the same project, like two ways of flattening a globe.
+// The map: every item is a place, and its places hold what it holds (#104).
 //
-// Site (default): the map is shaped like the product. Top-level surfaces are
-// continents with outlines you can recognise: a wide web screen, a tall phone,
-// a thin API strip, back-end services, third-party islands. They are stacked the
-// way data flows: clients, then APIs, then services. Inside every region children
-// sit roughly where they live (header on top, filters on the left…) while their
-// area still follows the amount of work, like a cartogram.
+// A place's size comes from what it holds (size.js): a house is one behaviour, and a place is itself plus everything in
+// it. Its items stand inside it as places of their own, with open ground between them, never splitting it edge to edge
+// like a treemap (PLACE-03). The more a place promises beyond what is written in it, the more open land it holds: wide
+// country round its edges, the room it grows into (PLACE-02, PLACE-10). The project itself is one land, its coast the sea's.
 //
-// Organic: a nested Voronoi treemap. The project is one island of free-form
-// territories.
+// It is deterministic and steady (PLACE-15): no random seed, no memory of an earlier layout, and items stand in a fixed
+// order (behaviours by ID, issues by number), each placed beside those before it, so a new item takes open ground at the
+// edge and the rest stay where they stood; a place that grows spreads where it stands (PLACE-09).
 //
-// Both return geometry for every node ({ poly, bbox, area, size, label, labelR }),
-// the land outlines, the world bounds and any sea captions.
+// Returns geometry for every place ({ poly, bbox, area, size, label, labelR, kind }), houses included, the land outlines
+// and the world bounds.
 
-import { voronoiMapSimulation } from 'd3-voronoi-map';
-import { weightedVoronoi } from 'd3-weighted-voronoi';
-import { polygonArea, polygonCentroid, polygonContains } from 'd3';
+import { packEnclose, packSiblings, polygonArea, polygonContains, polygonHull } from 'd3';
 import polylabel from 'polylabel';
-import { bounds, circle, densify, ensureOrientation, hashString, inscribedRect, makeWarp, mulberry32, rectPoly, roundedRect, scalePolygon, splitByWeights, streetRows } from './geometry.js';
-import { anchorsFor, resolveSite } from './places.js';
-import { HOUSE_WEIGHT } from '../model/tree.js';
+import { bounds, ensureOrientation, hashString } from './geometry.js';
 import { behaviourHouses, lotsOf } from './houses.js';
+import { placeSizes } from './size.js';
 
-export const PROJECTIONS = [
-  { id: 'site', name: 'Site layout', blurb: 'Shaped like the product: screens, apps and services, with each part where you would look for it.' },
-  { id: 'organic', name: 'Organic', blurb: 'One island of free-form territories, sized by work.' },
-];
+export const PROJECTIONS = [{ id: 'site', name: 'Places', blurb: 'Every item is a place sized by what it holds, with open land where there is more to define.' }];
 
-const DAMPING = 0.8;
-/** The geometry key of an issue's open land (MARK-18). */
+/** The geometry key of an issue's open land. Open land is now the ground between a place's items; nothing is stored under it. */
 export const parkId = (n) => `${n.id}:park`;
-const weightOf = (n) => Math.pow(Math.max(n.stats.raw, 0.1), DAMPING);
-// A house is a lot of one behaviour's size (HOUSE_WEIGHT in tree.js).
-const lotWeight = (c) => (c.issue ? Math.pow(HOUSE_WEIGHT, DAMPING) : weightOf(c));
 
-export function computeLayout(tree, projectId, { projection = 'site', site, houses = behaviourHouses(tree) } = {}) {
-  const out = projection === 'organic' ? organicLayout(tree, projectId, houses) : siteLayout(tree, projectId, site ?? resolveSite(tree), houses);
-  const [x0, y0, x1, y1] = out.land.map(bounds).reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])]);
-  out.world = { x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0 };
+// A house's radius in world units; every other size follows from it.
+const UNIT = 10;
+// The ground between neighbours, as a share of the smaller one's radius, and at least this much of a house.
+const GAP = 0.12, STREET = 0.15 * UNIT;
+// How many points an outline has, and how much it wanders.
+const STEPS = 72, WANDER = 0.12;
+
+export function computeLayout(tree, projectId, { houses = behaviourHouses(tree) } = {}) {
+  const sizes = placeSizes(tree, houses);
+  const order = orderOf(houses);
+  const geo = new Map();
+  const root = tree.root;
+  // The project is one land like any other place: its largest parts are its countries, with open country between them.
+  place(geo, root, measure(root, sizes, houses, order), 0, 0, sizes);
+  const g = geo.get(root.id);
+  g.rings = [g.poly];
+  const land = [g.poly];
+  const [x0, y0, x1, y1] = g.bbox;
+  return { geo, land, notes: [], projection: 'site', world: { x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0 } };
+}
+
+// ---------- order: where each item stands among its neighbours ----------
+
+const BEHAVIOUR_ID = /^([A-Z][A-Z0-9]*)-(\d+)\b/;
+const ISSUE = /^#(\d+)\b/;
+/**
+ * Items in the order they are placed: behaviours by ID, then issues by number, then everything else by when it was made.
+ * Each item is placed beside those before it, so new ones (higher IDs and numbers) take ground at the edge.
+ */
+function orderOf() {
+  const keyOf = (c) => {
+    // A child issue stands where the first behaviour it holds stood, so a behaviour that grows into an issue keeps its spot (PLACE-09).
+    const b = (c.behaviour ?? c.behaviourRows?.[0]?.id ?? '').match(BEHAVIOUR_ID) ?? String(c.title ?? '').match(BEHAVIOUR_ID);
+    if (b) return [0, b[1], Number(b[2])];
+    const i = String(c.title ?? '').match(ISSUE);
+    if (i) return [1, '', Number(i[1])];
+    return [2, `${c.createdAt ?? ''}|${c.title ?? ''}`, c.id];
+  };
+  const cmp = (a, b) => a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) || (a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0);
+  return (lots) => lots.map((c) => ({ c, k: keyOf(c) })).sort((a, b) => cmp(a.k, b.k)).map((x) => x.c);
+}
+
+// ---------- measure: each place's radius and where its items stand in it, from the leaves up ----------
+
+/**
+ * A place's shape before it is put anywhere: its radius `r`, and its items' shapes at offsets from its centre. A house
+ * fills a lot of its own size; a place's items are packed beside each other in order, and the place is as wide as they
+ * need plus the open land it promises beyond them.
+ */
+function measure(n, sizes, houses, order) {
+  const s = sizes.get(n.id);
+  const lots = order(lotsOf(n, houses).lots);
+  // A house's lot is a little smaller than a unit of scope, so a block's houses and the street between them fill it once
+  // as many behaviours are written as it promises.
+  const own = UNIT * Math.sqrt(Math.max(s.expected, 1)) * (n.issue ? 0.72 : 0.8);
+  if (!lots.length) return { n, r: own * (n.issue ? 1.05 : 0.92 * (1 + WANDER * 2.35)), room: own, kids: [] };
+  const shapes = lots.map((c) => measure(c, sizes, houses, order));
+  const spots = lotsOf(n, houses).block ? street(shapes) : packed(shapes);
+  const kids = shapes.map((m, i) => ({ ...m, x: spots.at[i][0], y: spots.at[i][1] }));
+  const name = spots.name ? { at: spots.name, r: spots.nameR, band: spots.band } : null;
+  // A place is never smaller than its scope, however few of its items are written yet: what it promises beyond them is open
+  // land round them (PLACE-10). A place of places is roomier than a block, with ground between its parts (PLACE-03).
+  const room = own;
+  // Its edge stands a little way out from its items, wider round a bigger place.
+  const margin = Math.max(STREET * 0.6, spots.r * 0.04);
+  // Room for its edge to wander out as far as it goes (WAVES) without flattening against its circle.
+  const r = Math.max(room * 0.92 * (1 + WANDER * 2.35), spots.r + margin);
+  return { n, r, room, kids, name, margin };
+}
+
+/** Items of any size packed beside each other in order, each placed against those before it. */
+function packed(shapes) {
+  const circles = shapes.map((m) => ({ r: m.r + Math.max(STREET, m.r * GAP) }));
+  packSiblings(circles);
+  const e = packEnclose(circles);
+  return { at: circles.map((c) => [c.x - e.x, c.y - e.y]), r: e.r };
+}
+
+/**
+ * A block's lots along a street that winds through it, row by row, each row running back the way the last one came, so
+ * every lot stands beside the next in order (PLACE-13). A child issue among the houses is a wider lot in the same row, so a
+ * behaviour that grows into an issue stays where its house stood (PLACE-09).
+ */
+function street(shapes) {
+  const ds = shapes.map((m) => 2 * (m.r + Math.max(STREET * 0.6, m.r * GAP * 0.6)));
+  // As wide as its count of lots needs, in houses, so a lot that grows doesn't move the rows before it.
+  const width = Math.max(...ds, Math.min(...ds) * Math.ceil(Math.sqrt(ds.length * 1.25)));
+  const rows = [];
+  let row = null;
+  ds.forEach((d, i) => {
+    if (!row || (row.w + d > width && row.items.length)) rows.push((row = { w: 0, h: 0, items: [] }));
+    row.items.push(i);
+    row.w += d;
+    row.h = Math.max(row.h, d);
+  });
+  const at = new Array(shapes.length);
+  // A strip along the top where the block's name stands, like a street name, clear of its houses.
+  const band = Math.min(...ds) * 0.9;
+  const height = band + rows.reduce((sum, r) => sum + r.h, 0);
+  let y = -height / 2 + band;
+  // Each row starts where the last one ended, at its side of the block, and runs back across it.
+  const span = Math.max(width, ...rows.map((r) => r.w));
+  rows.forEach((r, j) => {
+    const back = j % 2 === 1;
+    let x = back ? span / 2 : -span / 2;
+    for (const i of r.items) {
+      at[i] = [x + (back ? -ds[i] : ds[i]) / 2, y + r.h / 2];
+      x += back ? -ds[i] : ds[i];
+    }
+    y += r.h;
+  });
+  const name = [0, -height / 2 + band / 2];
+  const radius = Math.max(span / 2, ...at.map(([x, yy], i) => Math.hypot(x, yy) + ds[i] / 2));
+  return { at, r: radius, name, nameR: span / 2, band };
+}
+
+// ---------- place: the outlines, from the top down ----------
+
+function place(geo, n, shape, cx, cy, sizes) {
+  // Its items first: its edge follows their outlines, not the circles they were packed in.
+  shape.kids.forEach((k) => place(geo, k.n, k, cx + k.x, cy + k.y, sizes));
+  const edges = shape.kids.map((k) => geo.get(k.n.id).poly);
+  // Its name's strip is part of its land too.
+  if (shape.name) {
+    const [nx, ny] = [cx + shape.name.at[0], cy + shape.name.at[1]], [w, h] = [shape.name.r, shape.name.band / 2];
+    edges.push([[nx - w * 0.7, ny - h], [nx + w * 0.7, ny - h], [nx + w * 0.7, ny + h], [nx - w * 0.7, ny + h]]);
+  }
+  const s = sizes.get(n.id);
+  const poly = ensureOrientation(blob(cx, cy, shape.r, shape.room, edges, n.id, Boolean(n.issue), shape.margin ?? 0));
+  const g = describe(poly);
+  g.kind = s.kind;
+  g.open = s.open;
+  // A block is named along its top, clear of its houses.
+  if (shape.name) [g.label, g.labelR] = [[cx + shape.name.at[0], cy + shape.name.at[1]], shape.name.r];
+  // Every house on a block is built the same size, facing the same way, so its rows read as a street (MARK-16).
+  if (n.issue) g.footprint = [g.labelR * 0.62, g.labelR * 0.62 * 0.6];
+  geo.set(n.id, g);
+}
+
+/**
+ * An organic outline inside the circle (cx, cy, r) round its items' outlines (`kids`): it follows them like a town's edge
+ * follows its streets, and reaches at least `room` from its centre, the scope it promises, so the less of it is written the
+ * more open land it holds round its items (PLACE-10). A place with no items is a rounded patch. The wander comes from the id alone, so the same place
+ * always has the same shape.
+ */
+function blob(cx, cy, r, room, kids, id, small = false, margin = 0) {
+  const rng = hashString(String(id));
+  const waves = [2, 3, 5, 7].map((f, i) => ({ f, a: WANDER * [1, 0.7, 0.4, 0.25][i], p: (((rng >>> (i * 7)) & 127) / 127) * Math.PI * 2 }));
+  // How far its items reach along each ray from its centre: to the edge of the hull round their outlines.
+  const hull = kids.length ? polygonHull(kids.flat()) : null;
+  const inside = hull && polygonContains(hull, [cx, cy]);
+  const reach = new Array(STEPS);
+  for (let j = 0; j < STEPS; j++) {
+    const t = (j / STEPS) * Math.PI * 2;
+    const ux = Math.cos(t), uy = Math.sin(t);
+    let h = 0;
+    if (inside) h = rayOut(hull, cx, cy, ux, uy);
+    else for (const edge of kids) for (const [x, y] of edge) h = Math.max(h, (x - cx) * ux + (y - cy) * uy);
+    reach[j] = h;
+  }
+  const out = [];
+  for (let j = 0; j < STEPS; j++) {
+    const t = (j / STEPS) * Math.PI * 2;
+    // Smoothed, so the edge between items is a curve, not a corner.
+    const h = kids.length ? Math.max(reach[(j + STEPS - 1) % STEPS], reach[j], reach[(j + 1) % STEPS]) + margin : 0;
+    const wander = 1 + waves.reduce((sum, w) => sum + w.a * Math.sin(w.f * t + w.p), 0);
+    // Its edge bulges out from its items here and there, never in over them; a house's lot wanders less, its house filling most of it.
+    const hug = h * (1 + Math.max(0, wander - 1) * 0.5);
+    const rho = Math.min(r, Math.max(hug, small ? room * 0.97 * (1 + (wander - 1) * 0.4) : room * 0.92 * wander));
+    out.push([cx + rho * Math.cos(t), cy + rho * Math.sin(t)]);
+  }
   return out;
+}
+
+/** How far a ray from (cx, cy) inside `poly` runs before it leaves it. */
+function rayOut(poly, cx, cy, ux, uy) {
+  let best = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+    const ex = bx - ax, ey = by - ay;
+    const den = ux * ey - uy * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = ((ax - cx) * ey - (ay - cy) * ex) / den;
+    const u = ((ax - cx) * uy - (ay - cy) * ux) / den;
+    if (t > best && u >= -1e-9 && u <= 1 + 1e-9) best = t;
+  }
+  return best;
 }
 
 function describe(poly) {
@@ -46,371 +217,4 @@ function describe(poly) {
   const size = Math.sqrt(area);
   const p = polylabel([poly], Math.max(size / 60, 0.01));
   return { poly, area, size, bbox: bounds(poly), label: [p[0], p[1]], labelR: p.distance };
-}
-
-/**
- * Lay out a subtree inside poly; split(n, kids, weights, poly) divides a parent among its lots: its child issues and its
- * behaviours' houses (lotsOf in houses.js). A block's lots stand in rows along streets (MARK-16).
- */
-function placeTree(geo, n, poly, split, houses) {
-  const g = describe(poly);
-  geo.set(n.id, g);
-  const { lots, block } = lotsOf(n, houses);
-  if (!lots.length) return;
-  // Scope the houses don't fill yet is open land among them: a park, its own lot at the end of the rows (MARK-18).
-  const park = n.stats.open > 0 ? { id: parkId(n), children: [] } : null;
-  if (lots.length === 1 && !park && !lots[0].issue) {
-    placeTree(geo, lots[0], scalePolygon(poly, g.label, 0.78), split, houses);
-    return;
-  }
-  const all = park ? [...lots, park] : lots;
-  const weights = [...lots.map(lotWeight), ...(park ? [Math.pow(n.stats.open, DAMPING)] : [])];
-  const polys = (block ? streetRows(poly, weights) : split(n, all, weights, poly)) ?? splitByWeights(poly, weights);
-  lots.forEach((c, i) => {
-    if (c.issue) geo.set(c.id, describe(ensureOrientation(polys[i])));
-    else placeTree(geo, c, ensureOrientation(polys[i]), split, houses);
-  });
-  if (park) geo.set(park.id, describe(ensureOrientation(polys[lots.length])));
-}
-
-const NOT_BLOCKS = new Set(['project', 'area']);
-
-// ---------- Blocks: an issue's houses in rows (#46 MARK-15, MARK-16, MARK-18) ----------
-
-// The street round a block, and between a block and the blocks inside it, as a share of its short side.
-const KERB = 0.035;
-// The strip along the top of a block where its name stands, like a street name, clear of its houses.
-const NAME_BAND = 0.16;
-
-/**
- * Lay out every issue that is a block (lotsOf in houses.js) as a clean rectangle inside the land it was given, after the
- * warp has bent the borders around it: its houses in straight rows in ID order, its child issues as smaller blocks in the
- * same rows, and what is left over as park. Borders wander between places; a street of houses is straight.
- */
-function squareBlocks(geo, n, houses) {
-  const { lots, block } = lotsOf(n, houses);
-  // An issue is a block: one of houses, or a plain issue's empty lot. A place, or an issue made of issues, keeps its land.
-  if (block || (!lots.length && n.depth > 0 && !NOT_BLOCKS.has(n.kind) && !n.tags?.includes('code'))) {
-    const land = geo.get(n.id);
-    const r = inscribedRect(land.poly);
-    if (r) {
-      const m = KERB * Math.min(r[2] - r[0], r[3] - r[1]);
-      placeBlock(geo, n, [r[0] + m, r[1] + m, r[2] - m, r[3] - m], houses, land.area);
-      return;
-    }
-  }
-  for (const c of lots) if (!c.issue) squareBlocks(geo, c, houses);
-}
-
-/** A block inside its land: `area` is that land's, the street round the block included, so its size is still its work's. */
-function placeBlock(geo, n, rect, houses, area) {
-  const [x0, y0, x1, y1] = rect;
-  const w = x1 - x0, h = y1 - y0;
-  // `top` is where its name hangs from: inside the block, never over the row above it.
-  const g = { ...describe(rectPoly(rect)), area, size: Math.sqrt(area), top: y0 };
-  geo.set(n.id, g);
-  geo.delete(parkId(n));
-  const { lots } = lotsOf(n, houses);
-  if (!lots.length) return;
-  // Its name stands in a strip along the top, so no house sits under it.
-  const band = Math.min(h * NAME_BAND, w * 0.3);
-  g.label = [(x0 + x1) / 2, y0 + band / 2];
-  g.labelR = w / 2;
-  const rows = [x0, y0 + band, x1, y1];
-  const weights = lots.map(lotWeight);
-  // A leaf's scope its houses don't fill yet is park (MARK-18), and so is the rest of the last row: a block is full.
-  const unit = Math.pow(HOUSE_WEIGHT, DAMPING);
-  const total = weights.reduce((s, v) => s + v, 0) + Math.pow(n.stats.open, DAMPING) * (n.stats.open > 0);
-  const [rw, rh] = [rows[2] - rows[0], rows[3] - rows[1]];
-  const count = Math.max(1, Math.round(Math.sqrt((1.3 * (total / unit) * Math.min(rw, rh)) / Math.max(rw, rh))));
-  const cells = total / unit, fill = (count * Math.ceil(cells / count) - cells) * unit;
-  const park = total - weights.reduce((s, v) => s + v, 0) + (fill > unit * 0.3 ? fill : 0);
-  const all = park > 0 ? [...weights, park] : weights;
-  // As many rows as its weight in houses needs, so a behaviour that grows into an issue doesn't reflow the street (MARK-20).
-  const polys = streetRows(rectPoly(rows), all, count);
-  let foot = Infinity;
-  lots.forEach((c, i) => {
-    const [a0, b0, a1, b1] = bounds(polys[i]);
-    if (c.issue) {
-      geo.set(c.id, describe(ensureOrientation(polys[i])));
-      foot = Math.min(foot, a1 - a0, (b1 - b0) / 0.6);
-    } else {
-      const m = KERB * Math.min(a1 - a0, b1 - b0);
-      placeBlock(geo, c, [a0 + m, b0 + m, a1 - m, b1 - m], houses, Math.abs(polygonArea(polys[i])));
-    }
-  });
-  if (park > 0) geo.set(parkId(n), describe(ensureOrientation(polys[lots.length])));
-  // Every house on a block is the same size, so its rows read as a street whatever its lots are.
-  for (const c of lots) if (c.issue) geo.get(c.id).footprint = [foot * 0.34, foot * 0.34 * 0.6];
-}
-
-/** Bend every outline with one smooth warp so straight cuts read as borders and coasts. */
-function warpAll(geo, land, notes, warp) {
-  for (const g of geo.values()) {
-    g.poly = densify(g.poly, 3).map(warp);
-    g.label = warp(g.label);
-    if (g.rings) g.rings = g.rings.map((r) => densify(r, 3).map(warp));
-    // The project spans every continent, so its box must too (or the renderer skips it).
-    g.bbox = bounds(g.rings ? g.rings.flat() : g.poly);
-  }
-  for (const note of notes) {
-    note.at = warp(note.at);
-    note.below = warp(note.below);
-  }
-  return land.map((r) => densify(r, 3).map(warp));
-}
-
-// ---------- Site projection ----------
-
-const SITE_AREA = 640_000;
-const SHAPES = {
-  web: { aspect: 1.6, round: 0.05, tier: 0 },
-  mobile: { aspect: 0.52, round: 0.17, tier: 0 },
-  email: { aspect: 0.72, round: 0.03, tier: 0 },
-  api: { aspect: 4.2, round: 0.5, tier: 1 },
-  service: { aspect: 1.3, round: 0.14, tier: 2 },
-  backoffice: { aspect: 2, round: 0.1, tier: 2 },
-  external: { aspect: 1.15, round: 0.42, tier: 2 },
-  uncharted: { aspect: 1.3, round: 0.45, tier: 3 },
-};
-const SHARED_CAPTION = { web: 'On screen', backoffice: 'Behind the screen' };
-
-function siteLayout(tree, projectId, site, houses) {
-  const geo = new Map();
-  const root = tree.root;
-
-  // Group top-level items into continents.
-  const continents = [];
-  const shared = {};
-  for (const k of root.children) {
-    const c = site.continents.get(k.id) ?? { surface: 'web', own: false };
-    if (c.own) continents.push({ surface: c.surface, kids: [k], own: k });
-    else {
-      if (!shared[c.surface]) continents.push((shared[c.surface] = { surface: c.surface, kids: [], own: null }));
-      shared[c.surface].kids.push(k);
-    }
-  }
-  if (!continents.length) continents.push({ surface: 'web', kids: [], own: null });
-  // Third parties sit at the far end of the back-end row.
-  continents.sort((a, b) => SHAPES[a.surface].tier - SHAPES[b.surface].tier || (a.surface === 'external') - (b.surface === 'external'));
-
-  // Size each continent by its share of the work, shaped by what it is.
-  const total = continents.reduce((s, c) => s + c.kids.reduce((t, k) => t + weightOf(k), 0), 0) || 1;
-  for (const c of continents) {
-    const share = c.kids.length ? c.kids.reduce((t, k) => t + weightOf(k), 0) / total : 1;
-    // Even an empty continent is visible; an island with nothing on it stays a dot.
-    const area = SITE_AREA * Math.max(share, c.surface === 'external' ? 0.006 : 0.02);
-    const { aspect } = SHAPES[c.surface];
-    c.w = Math.sqrt(area * aspect);
-    c.h = c.w / aspect;
-  }
-
-  // Rows by tier (clients, APIs, services), wrapping very long rows, centred.
-  const unit = Math.sqrt(SITE_AREA);
-  const gap = unit * 0.08;
-  const rows = [];
-  for (const c of continents) {
-    const tier = SHAPES[c.surface].tier;
-    let row = rows.at(-1);
-    const width = row ? row.items.reduce((s, it) => s + it.w + gap, 0) + c.w : 0;
-    if (!row || row.tier !== tier || width > unit * 2) rows.push((row = { tier, items: [] }));
-    row.items.push(c);
-  }
-  let y = 0;
-  for (const row of rows) {
-    const rowW = row.items.reduce((s, c) => s + c.w, 0) + gap * (row.items.length - 1);
-    const rowH = Math.max(...row.items.map((c) => c.h));
-    let x = -rowW / 2;
-    for (const c of row.items) {
-      c.x = x;
-      // Clients rest on the row's bottom edge, facing the API below them.
-      c.y = row.tier === 0 ? y + rowH - c.h : y + (rowH - c.h) / 2;
-      x += c.w + gap;
-    }
-    y += rowH + gap * 1.5;
-  }
-  const dy = 500 - (y - gap * 1.5) / 2;
-
-  const split = (n, kids, weights, poly) => anchoredCells(anchorsFor(kids.map((k) => site.places.get(k.id)), poly, n.id), weights, poly);
-  const land = [];
-  const notes = [];
-  for (const c of continents) {
-    const { round } = SHAPES[c.surface];
-    const poly = roundedRect(c.x + 500, c.y + dy, c.w, c.h, round * Math.min(c.w, c.h));
-    c.poly = poly;
-    land.push(poly);
-    const mid = c.x + 500 + c.w / 2;
-    notes.push({ text: c.own ? c.own.title : SHARED_CAPTION[c.surface], at: [mid, c.y + dy - gap * 0.5], below: [mid, c.y + dy + c.h + gap * 0.5], w: c.w, own: Boolean(c.own) });
-    if (c.own) placeTree(geo, c.own, poly, split, houses);
-    else if (c.kids.length === 1) placeTree(geo, c.kids[0], poly, split, houses);
-    else if (c.kids.length) {
-      const weights = c.kids.map(weightOf);
-      const places = c.surface === 'backoffice' ? c.kids.map(() => 'center') : c.kids.map((k) => site.places.get(k.id));
-      const polys = anchoredCells(anchorsFor(places, poly, `${root.id}:${c.surface}`), weights, poly) ?? splitByWeights(poly, weights);
-      c.kids.forEach((k, i) => placeTree(geo, k, ensureOrientation(polys[i]), split, houses));
-    }
-  }
-
-  // The project itself spans every continent; its card sits on the largest.
-  const main = continents.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
-  const rootGeo = describe(main.poly);
-  rootGeo.rings = land.slice();
-  rootGeo.area = land.reduce((s, r) => s + Math.abs(polygonArea(r)), 0);
-  rootGeo.size = Math.sqrt(rootGeo.area);
-  geo.set(root.id, rootGeo);
-
-  // A gentle warp: coastlines wander, but a screen still looks like a screen.
-  const all = land.flat();
-  const [bx0, by0, bx1, by1] = bounds(all);
-  const warp = makeWarp((bx0 + bx1) / 2, (by0 + by1) / 2, hashString(projectId ?? 'map'), { lobes: 0.15, waves: 0.7 });
-  const warped = warpAll(geo, land, notes, warp);
-  squareBlocks(geo, root, houses);
-  return { geo, land: warped, notes, projection: 'site' };
-}
-
-const PIN = 0.4;
-
-/**
- * A power diagram whose cells keep near their anchors: each round, sites move to
- * their cell's centroid but are pulled back toward the anchor, while weights grow
- * or shrink until every cell's area matches its share. Returns null if it can't.
- */
-function anchoredCells(anchors, weights, clip) {
-  const count = anchors.length;
-  const clipArea = Math.abs(polygonArea(clip));
-  const total = weights.reduce((s, w) => s + w, 0);
-  const sites = anchors.map(([x, y], i) => ({ i, x, y, ax: x, ay: y, target: (clipArea * weights[i]) / total, weight: clipArea / count / 8 }));
-  const diagram = weightedVoronoi()
-    .x((d) => d.x)
-    .y((d) => d.y)
-    .weight((d) => d.weight)
-    .clip(clip);
-  let best = null;
-  let bestErr = Infinity;
-  for (let it = 0; it < 120; it++) {
-    let cells;
-    try {
-      cells = diagram(sites);
-    } catch {
-      break;
-    }
-    const byIndex = new Array(count).fill(null);
-    for (const c of cells) if (c && c.length >= 3) byIndex[c.site.originalObject.i] = c;
-    let err = 0;
-    let complete = true;
-    for (const s of sites) {
-      const c = byIndex[s.i];
-      if (!c) complete = false;
-      err += Math.abs((c ? Math.abs(polygonArea(c)) : 0) - s.target);
-    }
-    err /= 2 * clipArea;
-    if (complete && err < bestErr) {
-      bestErr = err;
-      best = byIndex.map((c) => c.map(([x, y]) => [x, y]));
-    }
-    if (complete && err < 0.006) break;
-    for (const s of sites) {
-      const c = byIndex[s.i];
-      if (!c) {
-        s.weight *= 1.25;
-        s.x = s.ax;
-        s.y = s.ay;
-        continue;
-      }
-      const [cx, cy] = polygonCentroid(c);
-      s.x = cx + (s.ax - cx) * PIN;
-      s.y = cy + (s.ay - cy) * PIN;
-      const ratio = Math.min(1.12, Math.max(0.88, s.target / Math.abs(polygonArea(c))));
-      s.weight = Math.max(1e-9, s.weight * ratio);
-    }
-    limitWeights(sites);
-  }
-  return best;
-}
-
-// A site heavier than a neighbour by more than their squared distance swallows that neighbour's cell.
-function limitWeights(sites) {
-  for (let pass = 0; pass < 60; pass++) {
-    let fixed = false;
-    for (let i = 0; i < sites.length; i++) {
-      for (let j = i + 1; j < sites.length; j++) {
-        const a = sites[i], b = sites[j];
-        const [hi, lo] = a.weight > b.weight ? [a, b] : [b, a];
-        const d2 = (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
-        if (d2 < hi.weight - lo.weight) {
-          hi.weight = d2 + lo.weight / 2;
-          fixed = true;
-        }
-      }
-    }
-    if (!fixed) return;
-  }
-}
-
-// ---------- Organic projection ----------
-
-const ISLAND = { cx: 500, cy: 500, r: 470 };
-const sitesByProject = new Map();
-
-function organicLayout(tree, projectId, houses) {
-  const sites = sitesByProject.get(projectId) ?? new Map();
-  sitesByProject.set(projectId, sites);
-  const geo = new Map();
-  const rootPoly = ensureOrientation(circle(ISLAND.cx, ISLAND.cy, ISLAND.r, 128));
-  placeTree(geo, tree.root, rootPoly, (n, kids, weights, poly) => voronoi(kids, weights, poly, n.id, sites), houses);
-  // Bend every border with the same smooth warp so the map reads as terrain, not a diagram.
-  const warp = makeWarp(ISLAND.cx, ISLAND.cy, hashString(projectId ?? 'map'));
-  warpAll(geo, [], [], warp);
-  squareBlocks(geo, tree.root, houses);
-  return { geo, land: [geo.get(tree.root.id).poly], notes: [], projection: 'organic' };
-}
-
-function voronoi(kids, weights, clip, seedKey, sites) {
-  const rng = mulberry32(hashString(seedKey));
-  const [x0, y0, x1, y1] = bounds(clip);
-  const randomInside = () => {
-    for (let i = 0; i < 200; i++) {
-      const p = [x0 + rng() * (x1 - x0), y0 + rng() * (y1 - y0)];
-      if (polygonContains(clip, p)) return p;
-    }
-    return [(x0 + x1) / 2, (y0 + y1) / 2];
-  };
-  const data = kids.map((k, i) => {
-    const prev = sites.get(k.id);
-    return { id: k.id, w: weights[i], start: prev && polygonContains(clip, prev) ? prev : randomInside() };
-  });
-  // Jitter duplicates: coincident sites break the power diagram.
-  const seen = new Set();
-  for (const d of data) {
-    const key = `${d.start[0].toFixed(3)},${d.start[1].toFixed(3)}`;
-    if (seen.has(key)) d.start = randomInside();
-    seen.add(key);
-  }
-  try {
-    const sim = voronoiMapSimulation(data)
-      .clip(clip)
-      .weight((d) => d.w)
-      .prng(rng)
-      .initialPosition((d) => d.start)
-      .maxIterationCount(80)
-      .convergenceRatio(0.004)
-      .stop();
-    let state = sim.state();
-    while (!state.ended) {
-      sim.tick();
-      state = sim.state();
-    }
-    const byId = new Map();
-    for (const poly of state.polygons) {
-      if (!poly) continue;
-      const d = poly.site.originalObject.data.originalData;
-      byId.set(d.id, poly.map(([x, y]) => [x, y]));
-      sites.set(d.id, [poly.site.x, poly.site.y]);
-    }
-    const out = kids.map((k) => byId.get(k.id));
-    if (out.some((p) => !p || p.length < 3 || Math.abs(polygonArea(p)) < 1e-9)) return null;
-    return out;
-  } catch {
-    return null;
-  }
 }

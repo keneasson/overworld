@@ -4,12 +4,16 @@
 // properties rather than one colour, and a parent's lot visibly holds its children's lots, streets inside streets.
 // The lens still decides the colour of the land; lots only shade it, so they work the same in every lens.
 
-import { hsl } from 'd3';
+import { hsl, interpolateRgb } from 'd3';
 import { smoothstep } from './geometry.js';
-import { parkId } from './layout.js';
 
 // Open land is park green in every lens, like a park on a street map (MARK-18): it says "not built yet", not what the lens measures.
 export const PARK = { light: '#c8ecc4', dark: '#2e5b3d' };
+// Wide open country at the vague edges of a place that promises far more than is written in it (PLACE-02).
+export const DESERT = { light: '#efe2bf', dark: '#5b5136' };
+
+/** The open land between a place's items: desert where it is mostly unwritten, park where it is well defined. */
+export const openLandOf = (n, geo, dark) => ((geo.get(n.id)?.open ?? 0) > 0.45 ? (dark ? DESERT.dark : DESERT.light) : dark ? PARK.dark : PARK.light);
 
 // Lightness steps for neighbouring lots. Siblings that touch never share one; a handful is enough for any map.
 const SHADES = [0, 0.075, -0.065, 0.14, -0.12, 0.2, -0.17];
@@ -121,22 +125,19 @@ export function lotsAt(scene, view, { lens, T }) {
     if (!inView(g.bbox)) return;
     const s = g.size * k;
     const sub = kidsOf(n).length ? smoothstep(T.sub * 0.8, T.sub * 1.25, s) : 0;
-    if (alpha > 0.01) grounds.push({ n, g, s, alpha, ground, here: alpha * (1 - sub) });
+    // As its items come into view, its own ground turns into the open land between them (PLACE-02, PLACE-03).
+    const open = sub > 0.01 ? interpolateRgb(ground, openLandOf(n, geo, lens.theme.dark))(sub) : ground;
+    if (alpha > 0.01) grounds.push({ n, g, s, alpha, ground: open, here: alpha * (1 - sub) });
     if (sub <= 0.01) return;
     const lots = [];
     for (const c of kidsOf(n)) {
       const before = grounds.length;
-      // A behaviour's house stands on its block's own ground (MARK-16); a child issue is land of its own.
+      // A behaviour's house stands on its own lot of its block's colour (MARK-16); a child issue is land of its own.
       walk(c, sub, c.issue ? ground : shaded(lens.fill(c, tree), shadeOf(geo, c)));
       if (grounds.length > before) lots.push(grounds[before]);
     }
-    // An issue's scope its houses don't fill yet is open land among them: a park (MARK-18).
-    const pg = geo.get(parkId(n));
-    const park = pg && inView(pg.bbox) ? { g: pg, alpha: sub, ground: lens.theme.dark ? PARK.dark : PARK.light } : null;
-    if (park) parks.push({ ...park, of: n, edge: edgeOf(park.ground, lens.theme.dark) });
-    // The root's children are the countries, drawn with their own borders; lots start inside them.
-    if (n.depth > 0 && (lots.length || park))
-      streets.push({ of: n, ground, alpha: sub, width: streetOf(s), lots: lots.map((l) => ({ ...l, edge: edgeOf(l.ground, lens.theme.dark) })), park: park && parks.at(-1) });
+    // The root's children are the islands, drawn with their own coasts; lots start inside them.
+    if (n.depth > 0 && lots.length) streets.push({ of: n, ground: open, alpha: sub, width: streetOf(s), lots: lots.map((l) => ({ ...l, edge: edgeOf(l.ground, lens.theme.dark) })), park: null });
   };
   walk(tree.root, 1, lens.fill(tree.root, tree));
   return { grounds, streets, parks };
