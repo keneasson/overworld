@@ -718,6 +718,12 @@ export function drawMap(ctx, scene, view, opts) {
     // Fog lies over the unknown parts of what you can see, wherever they are inside it (FOG-01).
     // At street zoom it lies over the houses of the behaviours not worked out yet, not over the whole block (FOG-06).
     if (lens.fog && here > 0.02) for (const f of fogPatches(n, { fog: lens.fog, geo, k, inView, kidsOf: scene.kidsOf })) fogged.push({ g: f.g, s, w: here * f.w });
+    // Once its items are drawn, a place in the Fog keeps its cloud over the open land between them: the room it has to
+    // grow into is the part nobody has defined yet (PLACE-02, FOG-01). Its items carry their own.
+    if (lens.fog && alpha - here > 0.02 && g.openLand) {
+      const w = lens.fog(n);
+      if (w > 0.02) fogged.push({ g: g.openLand, s, w: (alpha - here) * w });
+    }
   }
   // A big issue's open land is park green in every lens (MARK-18).
   for (const p of parks) {

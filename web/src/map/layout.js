@@ -159,6 +159,8 @@ function place(geo, n, shape, cx, cy, sizes) {
   if (shape.name) [g.label, g.labelR] = [[cx + shape.name.at[0], cy + shape.name.at[1]], shape.name.r];
   // Every house on a block is built the same size, facing the same way, so its rows read as a street (MARK-16).
   if (n.issue) g.footprint = [g.labelR * 0.62, g.labelR * 0.62 * 0.6];
+  // Its open land: the place with its items cut out, for what lies on the ground between them (fog, PLACE-02).
+  if (shape.kids.length) g.openLand = { rings: [poly, ...shape.kids.map((k) => geo.get(k.n.id).poly.slice().reverse())], bbox: g.bbox, size: g.size, area: g.area };
   geo.set(n.id, g);
 }
 

@@ -16,8 +16,9 @@ export function buildScene(nodes, projectId, prev, projection = 'site', report =
   const sig = `${projection}|${tree.list.map((n) => `${n.id}:${n.parent?.id ?? ''}:${n.stats.raw.toFixed(2)}${where(n)}:${n.behaviourRows.map((b) => b.id).join(',')}`).join('|')}`;
   const reuse = prev && prev.sig === sig && prev.projectId === projectId;
   const layout = reuse ? prev.layout : computeLayout(tree, projectId, { projection, site, houses });
+  // The smallest place on the map, houses included: zoom goes on until it fills the screen, however deep it is (PLACE-02).
   let minLeafSize = Infinity;
-  for (const n of tree.list) if (!n.children.length) minLeafSize = Math.min(minLeafSize, layout.geo.get(n.id).size);
+  for (const g of layout.geo.values()) minLeafSize = Math.min(minLeafSize, g.size);
   return {
     tree,
     houses,
