@@ -1384,8 +1384,9 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       </div>}
       <EditBar editing={editing} box={box} comments={comments} onPick={onPick} />
 
-      <ProofSection node={node} atBehaviour={atBehaviour} proof={proof} />
+      {/* One card is one item, in a fixed order (Everything is a behaviour, BEH-?8): its text, its code, its tests, its metrics, its children. */}
       <FileProof node={node} tree={tree} proof={proof} lit={lit} onPick={onPick} onDirections={onDirections} />
+      <ProofSection node={node} atBehaviour={atBehaviour} proof={proof} />
       {editing.projectId && <Photos itemKey={key} comments={comments.filter((c) => c.itemKey === key)} editing={editing} />}
 
       <section>
@@ -1432,7 +1433,7 @@ export function Details({ node, atBehaviour = null, tree, lens, comments = [], e
       {node.children.length > 0 && (
         <section>
           <h3>
-            Inside this {KIND_LABEL[node.kind].toLowerCase()} <span className="count">{node.children.length}</span>
+            Children <span className="count">{node.children.length}</span>
           </h3>
           <ul className="rows">
             {node.children.map((c) => (
