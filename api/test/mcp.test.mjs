@@ -650,7 +650,7 @@ test('CONN-08 after the standup the agent builds unassisted: blockers go to ask(
   assert.ok(how_to_work.some((line) => /without waiting/.test(line) && /ask\(/.test(line)), 'how work goes here says so too');
 });
 
-test('STATE-09 only leaf issues are offered as work; a parent with behaviours of its own needs them moved into a child', async () => {
+test('STATE-09 only leaves are offered as work: a parent with children is never offered as a whole, only the behaviours it lists itself', async () => {
   const { rest, agent } = await setup();
   const leafy = (await rest('POST', '/api/import/json', {
     nodes: [
@@ -662,13 +662,13 @@ test('STATE-09 only leaf issues are offered as work; a parent with behaviours of
   })).project.id;
   const a = await agent('Builder', leafy);
   const next = await a.use('next_work');
-  assert.deepEqual(next.work.map((w) => w.item), ['issue-21'], 'the child is the work, not its parent');
-  assert.deepEqual(next.need_a_split, ['issue-20']);
-  assert.match((await a.use('context', { issue: 'issue-20' })).needs_split.reason, /child/);
-  assert.match((await a.refused('claim', { behaviours: ['PA-01'] })).error, /needs a split/);
+  assert.deepEqual(next.work.map((w) => w.item).sort(), ['issue-20', 'issue-21'], 'the child, and the parent\'s own behaviour beside it');
+  assert.deepEqual(next.work.find((w) => w.item === 'issue-20').behaviours.map((b) => b.id), ['PA-01']);
+  assert.equal((await a.use('context', { issue: 'issue-20' })).needs_split, undefined, 'nothing ever needs a split first');
+  assert.ok((await a.use('claim', { behaviours: ['PA-01'] })).claimed ?? true);
 });
 
-test('STATE-10 STATE-12 an issue partly built needs a split; one tested throughout is to verify, not done; neither is offered to build', async () => {
+test('STATE-12 an issue tested throughout is to verify, not done, and is not offered to build; what is untested still is', async () => {
   const { rest, agent, shop } = await setup();
   const ready = { labels: [{ name: 'status:ready' }] };
   shop.issues.push(
@@ -682,52 +682,11 @@ test('STATE-10 STATE-12 an issue partly built needs a split; one tested througho
   const a = await agent('Builder', pid);
   const next = await a.use('next_work');
   assert.ok(next.work.some((w) => w.item === 'issue-32'), 'untested work is still offered');
-  assert.ok(!next.work.some((w) => ['issue-30', 'issue-31'].includes(w.item)), 'partly or wholly tested work is not');
+  assert.deepEqual(next.work.find((w) => w.item === 'issue-30').behaviours.map((b) => b.id), ['HB-02'], 'of a partly built issue, only what has no test');
+  assert.ok(!next.work.some((w) => w.item === 'issue-31'), 'wholly tested work is not');
   const s = await a.use('standup');
-  const half = s.needs_split.find((x) => x.item === 'issue-30');
-  assert.deepEqual(half.looks_built, ['HB-01']);
-  assert.ok(!s.needs_split.some((x) => x.item === 'issue-31'), 'tested throughout is not a split');
   assert.deepEqual(s.to_verify.find((x) => x.item === 'issue-31').behaviours, ['AB-01']);
   assert.deepEqual(next.to_verify, ['issue-31']);
-  assert.deepEqual((await a.use('context', { issue: '30' })).needs_split.still_to_build, ['HB-02']);
-});
-
-test('STATE-14 a person or an agent splits an item that needs it: what is left to build moves word for word into a child task, in their refinement', async () => {
-  const { rest, shop, agent } = await setup();
-  const ready = { labels: [{ name: 'status:ready' }] };
-  shop.issues.push(shop.issue(30, 'Half built', body({ behaviours: ['HB-01 Given one, when built, then tested.', 'HB-02 Given two, when not, then not.'] }), ready));
-  shop.issues.push(shop.issue(32, 'Not started', body({ behaviours: ['NS-01 Given none, when started, then work.'] }), ready));
-  shop.issues.push(shop.issue(33, 'Also half', body({ behaviours: ['AH-01 Given one, when built, then tested.', 'AH-02 Given two, when not, then not.'] }), ready));
-  shop.tree.push({ path: 'test/app.test.mjs', type: 'blob' });
-  shop.docs['test/app.test.mjs'] = "test('HB-01 one is built', () => {});\ntest('AH-01 one is built', () => {});\n";
-  const pid = (await rest('POST', '/api/import/github', { repo: 'octo/shop' })).project.id;
-  assert.deepEqual((await rest('GET', `/api/projects/${pid}/items/issue-30/split`)).split.still_to_build, ['HB-02'], 'the panel is told what would move');
-  assert.equal((await rest('GET', `/api/projects/${pid}/items/issue-32/split`)).split, null);
-
-  const { node, changeset, moved } = await rest('POST', `/api/projects/${pid}/items/issue-30/split`, { by: 'Ken' });
-  assert.deepEqual(moved, ['HB-02']);
-  assert.equal(changeset.author, 'Ken');
-  assert.match(node.title, /^Half built: what's left to build$/);
-  const child = node.description ?? node.body ?? '';
-  assert.match(child, /^Part of #30/m);
-  assert.match(child, /^- HB-02 Given two, when not, then not\.$/m, 'moved word for word, with its ID');
-  assert.doesNotMatch(child, /HB-01 Given/);
-  const parent = changeset.items.find((it) => it.key === 'issue-30').after.markdown;
-  assert.match(parent, /^- HB-01 Given one, when built, then tested\.$/m, 'the item keeps what is built');
-  assert.doesNotMatch(parent, /^- HB-02/m);
-  assert.match(parent, /HB-02\) moved to the child "Half built: what's left to build"/);
-
-  await rest('POST', `/api/projects/${pid}/changesets/${changeset.id}/accept`, { by: 'Ken' });
-  assert.equal((await rest('GET', `/api/projects/${pid}/items/issue-30/split`)).split, null, 'once accepted it no longer needs a split');
-
-  // An agent does the same with split(), in its own refinement, for a person to adopt.
-  const a = await agent('Builder', pid);
-  const { refinement } = await a.use('refine', { place: 'issue-33' });
-  const done = await a.use('split', { refinement, item: 'issue-33' });
-  assert.deepEqual([done.refinement, done.moved, done.title], [refinement, ['AH-02'], "Also half: what's left to build"]);
-  await assert.rejects(a.use('split', { refinement, item: 'issue-32' }), /doesn't need a split/);
-  const adopted = await rest('POST', `/api/projects/${pid}/changesets/${refinement}/items/${done.child}/adopt`, { by: 'Ken' });
-  assert.equal(adopted.nodes.find((n) => n.title.endsWith("what's left to build"))?.status, 'ready', 'adopted, what was ready to build is ready in its child');
 });
 
 test('HANDOFF-05 HANDOFF-01 a person chooses Build on an issue or on one behaviour: the request carries the prompt and waits for a builder; an agent cannot make one', async () => {
@@ -820,9 +779,9 @@ test('HANDOFF-03 an issue with nothing adopted and new offers no Build, and its 
     ],
   })).project.id;
   const { buildable, missing } = await rest('GET', `/api/projects/${pid}/builds`);
-  assert.deepEqual(Object.keys(buildable), ['issue-45'], 'only what is adopted and new is offered');
-  assert.deepEqual(Object.keys(missing).sort(), ['issue-40', 'issue-41', 'issue-42', 'issue-43', 'issue-44', 'issue-46'], 'nothing is said about work, places or what is finished');
-  for (const [key, says] of [['issue-40', /open questions/], ['issue-41', /planned, not ready: its behaviours still need improvement/], ['issue-42', /no behaviours yet/], ['issue-43', /FG-01 isn't worked out yet/], ['issue-44', /needs a split/], ['issue-46', /waits on #41 Planned \(planned\)/]]) {
+  assert.deepEqual(Object.keys(buildable).sort(), ['issue-44', 'issue-45'], 'only what is adopted and new is offered, a parent\'s own behaviours included');
+  assert.deepEqual(Object.keys(missing).sort(), ['issue-40', 'issue-41', 'issue-42', 'issue-43', 'issue-46'], 'nothing is said about work, places or what is finished');
+  for (const [key, says] of [['issue-40', /open questions/], ['issue-41', /planned, not ready: its behaviours still need improvement/], ['issue-42', /no behaviours yet/], ['issue-43', /FG-01 isn't worked out yet/], ['issue-46', /waits on #41 Planned \(planned\)/]]) {
     assert.ok(missing[key].some((m) => says.test(m)), `${key}: ${missing[key].join(' ')}`);
   }
 });
@@ -1028,41 +987,6 @@ test('REPORT-07 next_work offers ready bugs before ready features, whatever thei
   const web = (await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title === 'Web');
   const { nodes: [bug] } = await rest('POST', `/api/projects/${pid}/nodes`, { node: { parentId: web.id, kind: 'bug', title: 'Counts are wrong', status: 'ready', priority: 'P3', body: body({ behaviours: ['COUNT-01 Given a child, when shown, then its counts are right; now they are off by one.'] }) } });
   assert.deepEqual((await a.use('next_work')).work.map((w) => w.item).slice(0, 2), [`node-${bug.id}`, 'issue-11'], 'the P3 bug before the P0 feature');
-});
-
-test('STATE-14 a split keeps the person\'s edit to the item, is based on the item as it is now, and moves what is left into the child that already holds the rest', async () => {
-  const { rest, shop } = await setup();
-  const ready = { labels: [{ name: 'status:ready' }] };
-  shop.issues.push(shop.issue(30, 'Half built', body({ behaviours: ['HB-01 Given one, when built, then tested.', 'HB-02 Given two, when not, then not.'] }), ready));
-  shop.tree.push({ path: 'test/app.test.mjs', type: 'blob' });
-  shop.docs['test/app.test.mjs'] = "test('HB-01 one is built', () => {});\n";
-  const pid = (await rest('POST', '/api/import/github', { repo: 'octo/shop' })).project.id;
-  const text = async () => editableOf((await rest('GET', `/api/projects/${pid}`)).nodes.find((n) => n.title.startsWith('#30 ')));
-  const accept = async (markdown, who) => {
-    const { changeset: cs } = await rest('POST', `/api/projects/${pid}/changesets`, { author: who });
-    await rest('PUT', `/api/projects/${pid}/changesets/${cs.id}/items`, { key: 'issue-30', title: 'Half built', markdown });
-    return rest('POST', `/api/projects/${pid}/changesets/${cs.id}/accept`);
-  };
-  // Ken edits the Why in his refinement; meanwhile Ann's change to the Acceptance is accepted.
-  const { changeset: mine } = await rest('POST', `/api/projects/${pid}/changesets`, { author: 'Ken' });
-  await rest('PUT', `/api/projects/${pid}/changesets/${mine.id}/items`, { key: 'issue-30', title: 'Half built', markdown: (await text()).markdown.replace('Because.', 'Because Ken says so.') });
-  await accept((await text()).markdown.replace('It works.', 'It works, said Ann.'), 'Ann');
-
-  const { changeset } = await rest('POST', `/api/projects/${pid}/items/issue-30/split`, { by: 'Ken', changeset: mine.id });
-  const entry = changeset.items.find((it) => it.key === 'issue-30');
-  assert.deepEqual(entry.base, await text(), 'based on the item as it is now');
-  assert.match(entry.after.markdown, /Because Ken says so\./, "Ken's edit is kept");
-  assert.match(entry.after.markdown, /It works, said Ann\./);
-  assert.ok((await rest('POST', `/api/projects/${pid}/changesets/${mine.id}/accept`)).changeset, 'it can be accepted');
-
-  // Later the item has another behaviour still to build: it joins the child already holding what was left.
-  await accept((await text()).markdown.replace('- HB-01 Given one, when built, then tested.', '- HB-01 Given one, when built, then tested.\n- HB-03 Given three, when not, then not.'), 'Ken');
-  const again = await rest('POST', `/api/projects/${pid}/items/issue-30/split`, { by: 'Ken' });
-  assert.deepEqual(again.moved, ['HB-03']);
-  const children = (await rest('GET', `/api/projects/${pid}`)).nodes.filter((n) => n.title.endsWith("Half built: what's left to build"));
-  assert.equal(children.length, 1, 'one child holds what is left, never two');
-  const child = again.changeset.items.find((it) => it.key === itemKeyOf(children[0])).after.markdown;
-  assert.match(child, /^- HB-02 Given two, when not, then not\.\n- HB-03 Given three, when not, then not\.$/m, 'moved word for word, after what it already holds');
 });
 
 test('ADOPT-20 an agent\'s proposal that is just the item as it is never takes a person\'s edit out of their refinement', async () => {

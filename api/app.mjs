@@ -19,7 +19,7 @@ import { addresseesOf } from './notes.mjs';
 import { byAgent, turnOf } from '../shared/turns.js';
 import { createAgents } from './agents.mjs';
 import { createMcp } from './mcp.mjs';
-import { behavioursOf, childrenOf, isFinished, keyOf, missingOf, nextWork, splitOf } from './work.mjs';
+import { behavioursOf, childrenOf, isFinished, keyOf, missingOf, nextWork } from './work.mjs';
 import { VOCABULARY, duplicateIds, pairKey, textHash, vocabularyDrift } from '../shared/coherence.js';
 import { openQuestions } from './engine/lifecycle.mjs';
 import { imageInfo } from './photos.mjs';
@@ -1028,87 +1028,6 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         await model.comments.put(pid, comment);
         await model.inbox.delete(pid, id);
         return { comment: annotationOf(comment), reply: told, node, changeset };
-      },
-      { status: 201 },
-    ],
-
-    // ---- Splitting an item (#32 STATE-14) ----
-
-    [
-      'GET',
-      /^\/api\/projects\/([\w-]+)\/items\/(issue-\d+|node-[\w-]+)\/split$/,
-      // Whether an item needs a split before it can be built (STATE-10), and what would move: the panel offers Split from this.
-      async ({ params: [pid, key] }) => {
-        const { project, nodes } = await loadProject(pid);
-        const node = findItem(nodes, key);
-        if (!node) throw new HttpError(404, 'No such item on the map');
-        return { split: splitOf(node, childrenOf(nodes).get(node.id) ?? [], new Set(project?.tested ?? [])) };
-      },
-    ],
-
-    [
-      'POST',
-      /^\/api\/projects\/([\w-]+)\/items\/(issue-\d+|node-[\w-]+)\/split$/,
-      // Split an item that needs it (STATE-10, STATE-14): the behaviours it still has to build move, word for word and with
-      // their IDs, into a new child task; the item keeps what's built and says where the rest went. Both changes are in the
-      // person's refinement, to accept or discard like any edit (NEW-01), and nothing else about the item changes.
-      async ({ params: [pid, key], body }) => {
-        const { project, nodes } = await loadProject(pid);
-        const parent = findItem(nodes, key);
-        if (!parent) throw new HttpError(404, 'No such item on the map');
-        const split = splitOf(parent, childrenOf(nodes).get(parent.id) ?? [], new Set(project?.tested ?? []));
-        if (!split) throw new HttpError(409, 'This item doesn\'t need a split');
-        const by = author(body?.by);
-        const call = async (method, path, b) => {
-          const res = await handle({ method, path, body: b, trusted: true });
-          if (res.status >= 400) throw new HttpError(res.status, res.body?.error ?? 'Failed');
-          return res.body;
-        };
-        const cid = body?.changeset ? String(body.changeset) : (await call('POST', `/api/projects/${pid}/changesets`, { scopeId: parent.id, author: by })).changeset.id;
-        const cs = await loadChangeset(pid, cid, { open: true });
-        // The item as this refinement has it: a person's edit to it in progress is split along with it. Where none of what it
-        // changed has also changed since, that edit is carried onto the item as it is now, so the split is based on now (rebased).
-        const entry = cs.items.find((it) => it.key === key && !it.new);
-        const rebase = !entry || !conflictKeys(partsAgainst(entry, parent)).length;
-        const was = entry ? (rebase ? mergedOnto(entry, parent) : entry.after) : editableOf(parent);
-        const shape = parseIssue(was.markdown);
-        const leaving = new Set(split.still_to_build);
-        const kept = [];
-        const moved = [];
-        for (const row of parseBehaviours(sectionText(shape, 'Behaviours'))) {
-          if (!leaving.has(row.id)) {
-            kept.push(row.raw);
-            continue;
-          }
-          // A heading or note written after a behaviour is read as part of it: it stays with the item, not the behaviour.
-          const lines = row.raw.split('\n');
-          const cut = lines.findIndex((l, i) => i > 0 && /^\s*(#|$)/.test(l));
-          moved.push(lines.slice(0, cut < 0 ? lines.length : cut).join('\n'));
-          if (cut >= 0) kept.push(lines.slice(cut).join('\n'));
-        }
-        const short = parent.title.replace(/^#\d+\s+/, '');
-        const title = `${short}: what's left to build`.slice(0, 120);
-        // A child already holding what was left to build (in the spec, or new in this refinement) takes these too: one such child, never two.
-        const leftChild = (childrenOf(nodes).get(parent.id) ?? []).find((n) => !isFinished(n) && n.title.replace(/^#\d+\s+/, '') === title && (!n.refinement || n.refinement === cid));
-        let node;
-        if (leftChild) {
-          const childKey = itemKeyOf(leftChild);
-          const draft = cs.items.find((it) => it.key === childKey)?.after ?? editableOf(leftChild);
-          const its = parseIssue(draft.markdown);
-          const rows = sectionText(its, 'Behaviours').trim();
-          await call('PUT', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/items`, { key: childKey, title: draft.title, markdown: writeIssue(its, { Behaviours: [rows, ...moved].filter(Boolean).join('\n') }) });
-          node = findItem((await loadProject(pid)).nodes, childKey);
-        } else {
-          const template = newItemMarkdown({ kind: 'task', partOf: partOf(stores.forProject(project), parent), place: placeOf(was.markdown) });
-          const why = `Split from ${parent.title} (STATE-10): the behaviours it still had to build, moved here word for word. ${parent.title} keeps ${split.looks_built.join(', ') || 'what is built'}.`;
-          const markdown = writeIssue(parseIssue(template), { Why: why, Behaviours: moved.join('\n'), 'Open questions': 'None.' });
-          ({ node } = await call('POST', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/new`, { parentId: parent.id, kind: 'task', title, markdown, adoptAs: parent.status })); // what was ready stays ready once the split is adopted
-        }
-        const oldWhy = sectionText(shape, 'Why').trim();
-        const note = `What was left to build (${split.still_to_build.join(', ')}) moved to the child "${node.title.replace(/^#\d+\s+/, '')}".`;
-        const after = { title: was.title, markdown: writeIssue(shape, { Why: oldWhy ? `${oldWhy}\n\n${note}` : note, Behaviours: kept.join('\n') }) };
-        const { changeset } = await call('PUT', `/api/projects/${pid}/changesets/${encodeURIComponent(cid)}/items`, { key, ...after, rebase });
-        return { node, changeset, moved: split.still_to_build };
       },
       { status: 201 },
     ],
