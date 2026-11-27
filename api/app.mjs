@@ -598,6 +598,10 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
         const { project, nodes } = await loadProject(pid);
         const parent = nodes.find((n) => n.id === body?.parentId) ?? findItem(nodes, String(body?.parentId ?? '')) ?? nodes.find((n) => n.id === cs.scopeId);
         if (!parent) throw new HttpError(404, 'No such place on the map');
+        // A behaviour is saved before more work is added to it: a child under one the store hasn't given an ID yet would
+        // name an unsaved key. One drafted in this same refinement is fine; it is saved with it (#571 BEH-07).
+        const store = stores.forProject(project);
+        if (store && parent.parentId && !store.refOf(parent) && parent.refinement !== cs.id) throw new HttpError(409, `Save ${parent.title} first: a behaviour is saved before more work is added to it`);
         const kind = KINDS.includes(body?.kind) && !['project', 'area'].includes(body.kind) ? body.kind : 'task';
         const now = new Date().toISOString();
         const title = text(body?.title ?? '', 200, 'title').trim() || `New ${kind}`;
@@ -1568,7 +1572,7 @@ export function createApi({ model, accessKey = '', fetchImpl = fetch, log = cons
     if (ids.length > 5000) bad('behaviours: at most 5000');
     for (const id of ids) {
       const b = behaviours[id];
-      if (!/^[A-Z][A-Z0-9]*-\d+$/.test(id) || typeof b?.passed !== 'boolean' || !Array.isArray(b.tests) || !b.files || typeof b.files !== 'object') bad(`${id}: expected { passed, tests, files }`);
+      if (!/^(?:[A-Z][A-Z0-9]*-\d+|#\d+)$/.test(id) || typeof b?.passed !== 'boolean' || !Array.isArray(b.tests) || !b.files || typeof b.files !== 'object') bad(`${id}: expected { passed, tests, files }`);
     }
     if (JSON.stringify(body).length > 4_000_000) bad('at most 4 MB');
     return { commit, coverage, behaviours };

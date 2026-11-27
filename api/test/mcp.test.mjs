@@ -167,6 +167,20 @@ test('MCP-04 a claim is atomic and time-limited; a second claimant is refused an
   assert.match((await b.refused('claim', { behaviours: ['BL-01'] })).error, /waits on #13 Dependency/);
 });
 
+test('BEH-07 a behaviour that is its own issue is claimed by its store ID as well as its own', async () => {
+  const { agent, rest } = await setup();
+  const own = (await rest('POST', '/api/import/json', { nodes: [
+    { id: 'root', title: 'App', kind: 'project' },
+    issue(20, 'Refund to the card', { parentId: 'root', body: body({ behaviours: ['PAY-01 Given a refund, when asked, then the card is paid.'] }) }),
+    issue(21, 'Payments', { parentId: 'root', body: body({ behaviours: ['PAY-02 Given a card, when saved, then it is a token.', 'PAY-03 Given a wallet, when saved, then it is kept.'] }) }),
+  ] })).project.id;
+  const a = await agent('Builder', own);
+  assert.deepEqual((await a.use('claim', { behaviours: ['#20'] })).claimed, ['PAY-01']);
+  const b = await agent('Rival', own);
+  assert.match((await b.refused('claim', { behaviours: ['PAY-01'] })).error, /PAY-01 by Builder/, 'both names are the same behaviour');
+  assert.match((await b.refused('claim', { behaviours: ['#21'] })).error, /isn't one behaviour/);
+});
+
 test('MCP-04 two agents claiming the next work at the same moment never get the same work', async () => {
   const { agent } = await setup({ racing: 2 });
   const [a, b] = [await agent('One'), await agent('Two')];

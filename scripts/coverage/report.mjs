@@ -2,6 +2,9 @@
 // Nothing in it depends on when or where it was made, so the same commit always gives the same report (COVER-02).
 
 const BEHAVIOUR_ID = /\b[A-Z][A-Z0-9]*-\d+\b/g;
+// A store's ID names a behaviour only where IDs lead a test's name ("#574 …", "#574 BEH-07 …"); elsewhere "#13" is a mention (#571 BEH-07).
+const LEADING_STORE_IDS = /^(?:\s*(?:[A-Z][A-Z0-9]*-\d+|#\d+)\b)+/;
+const idsIn = (name) => [...new Set([...(name.match(BEHAVIOUR_ID) ?? []), ...((name.match(LEADING_STORE_IDS)?.[0] ?? '').match(/#\d+/g) ?? [])])];
 
 /** Line numbers as ranges: [1, 2, 3, 7] -> '1-3,7'. */
 export function rangesOf(lines) {
@@ -30,7 +33,7 @@ export function buildReport(runs, { commit, relative = (p) => p }) {
   for (const run of runs) {
     const file = relative(run.file);
     for (const t of run.tests) {
-      for (const id of new Set(t.name.match(BEHAVIOUR_ID) ?? [])) {
+      for (const id of idsIn(t.name)) {
         const b = found.get(id) ?? { tests: [], files: new Map() };
         b.tests.push({ name: t.name, file, passed: t.passed });
         // Per file (COVER-04), each behaviour in a file is given everything the file's tests reached together.

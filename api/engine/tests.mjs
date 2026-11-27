@@ -4,6 +4,9 @@
 
 const TEST_CALL = /\b(test|it)(?:\.\w+)?\s*\(\s*(['"`])((?:(?!\2)[^\\]|\\.)*)\2/g;
 const BEHAVIOUR_ID = /\b[A-Z][A-Z0-9]*-\d+\b/g;
+// A store's ID names a behaviour only where IDs lead a test's name ("#574 …", "#574 BEH-07 …"); elsewhere "#13" is a mention (#571 BEH-07).
+const LEADING_STORE_IDS = /^(?:\s*(?:[A-Z][A-Z0-9]*-\d+|#\d+)\b)+/;
+const idsIn = (name) => [...new Set([...(name.match(BEHAVIOUR_ID) ?? []), ...((name.match(LEADING_STORE_IDS)?.[0] ?? '').match(/#\d+/g) ?? [])])];
 const RUNNERS = [
   ['node', /from\s+['"]node:test['"]|require\(\s*['"]node:test['"]\s*\)/],
   ['vitest', /from\s+['"]vitest['"]/],
@@ -37,7 +40,7 @@ const tally = (list) => list.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new
 
 /** Each test in a file's text: { name, ids }. */
 export function testsIn(text) {
-  return [...String(text ?? '').matchAll(TEST_CALL)].map(([, , , name]) => ({ name, ids: [...new Set(name.match(BEHAVIOUR_ID) ?? [])] }));
+  return [...String(text ?? '').matchAll(TEST_CALL)].map(([, , , name]) => ({ name, ids: idsIn(name) }));
 }
 
 /** The project's main language, by its source files (and its manifests, for JavaScript without a file yet). */
