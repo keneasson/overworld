@@ -7,6 +7,8 @@ import { buildTree } from '../src/model/tree.js';
 import { LENS_BY_ID, statusKey } from '../src/map/lenses.js';
 import { behaviourHouses } from '../src/map/houses.js';
 import { FileProof, ProofSection } from '../src/components/Panel.jsx';
+import { proofOf } from '../../shared/proof.js';
+import { buildReport } from '../../scripts/coverage/report.mjs';
 
 const body = (behaviours) => `## Why\n\nBecause.\n\n## Behaviours\n\n${behaviours.map((b) => `- ${b}`).join('\n')}\n\n## Acceptance\n\nIt works.\n`;
 const NODES = [
@@ -85,4 +87,19 @@ test('PROVEN-05 a report older than the code says so, with the commit it came fr
   const t = tree();
   assert.match(card(t, 'i1', { proof: { report: REPORT, code: 'abc1234def', repo: 'octo/app' } }), /From the coverage report for abc1234/);
   assert.match(card(t, 'i1', { proof: { report: REPORT, code: '9999999fff', repo: 'octo/app' } }), /This report is from abc1234, older than the code, which is now at 9999999/);
+});
+
+test('BEH-07 a test may name a behaviour by its store ID: #574 counts for the behaviour that issue stands for, beside its own ID', () => {
+  const report = buildReport([{ file: 'api/test/a.test.mjs', byFile: false, tests: [{ name: '#574 a new behaviour is saved first', passed: true, lines: {} }, { name: 'BEH-07 its old name still counts', passed: true, lines: {} }, { name: 'see issue#9 and x#3', passed: true, lines: {} }] }], { commit: 'c' });
+  assert.deepEqual(Object.keys(report.behaviours).sort(), ['#574', 'BEH-07'], 'only a store ID standing alone is one');
+  const proof = proofOf('BEH-07', { report, aliases: ['#574'] });
+  assert.equal(proof.state, 'passing');
+  assert.equal(proof.tests.length, 2);
+  assert.equal(proofOf('BEH-07', { report }).tests.length, 1);
+  const nodes = [
+    { id: 'root', title: 'App', kind: 'project', parentId: null },
+    { id: 'issue-574', parentId: 'root', title: '#574 Saved first', kind: 'task', status: 'done', url: 'https://github.com/o/r/issues/574', body: body(['BEH-07 Given a behaviour, when more work is added, then it is saved first.']) },
+  ];
+  const row = buildTree(nodes, '2030-01-01', { report }).byId.get('issue-574').behaviourRows[0];
+  assert.equal(row.proof.tests.length, 2, 'the map counts both');
 });

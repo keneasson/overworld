@@ -2,8 +2,8 @@
 // zoom level needs: weight (map area), progress, health, bugs, definition…
 
 import { ROOT_ID } from '@shared/schema.js';
-import { editableOf, notWorkedOut, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
-import { doneOf, proofOf } from '@shared/proof.js';
+import { editableOf, issueOf, notWorkedOut, parseBehaviours, parseIssue, sectionText } from '@shared/issue-shape.js';
+import { doneOf, proofOf, storeAliases } from '@shared/proof.js';
 
 // Each behaviour an issue lists is a house on its own lot in the issue's block (#46 MARK-16), and weighs this much of
 // the map. A leaf issue's block is its scope: with few behaviours it is mostly open land, a park, and houses fill it as
@@ -18,17 +18,17 @@ const ADOPTED = new Set(['ready', 'in_progress', 'review', 'done']);
  * with an ID carries its proof from the latest coverage report (shared/proof.js) and, for a done issue, whether it is
  * done, unproven or broken.
  */
-const specOf = (n, report) =>
-  n.tags.includes('code') || PLACES.has(n.kind) || n.kind === 'behavior'
-    ? []
-    : parseBehaviours(sectionText(parseIssue(editableOf(n).markdown), 'Behaviours'))
-        .filter((r) => /^\s*[-*]\s/.test(r.raw ?? ''))
-        .map((r) => {
-          const row = { id: r.id, words: (r.then || r.text || r.when || r.given || '').trim(), said: [r.given, r.when, r.then, r.text].filter(Boolean).join(' '), fog: notWorkedOut(r) };
-          if (!r.id) return row;
-          const proof = proofOf(r.id, { report, raw: r.raw });
-          return { ...row, proof, done: doneOf(n.status === 'done', proof) };
-        });
+const specOf = (n, report) => {
+  if (n.tags.includes('code') || PLACES.has(n.kind) || n.kind === 'behavior') return [];
+  const rows = parseBehaviours(sectionText(parseIssue(editableOf(n).markdown), 'Behaviours')).filter((r) => /^\s*[-*]\s/.test(r.raw ?? ''));
+  const aliases = storeAliases(issueOf(n)?.number, rows.filter((r) => r.id).length);
+  return rows.map((r) => {
+    const row = { id: r.id, words: (r.then || r.text || r.when || r.given || '').trim(), said: [r.given, r.when, r.then, r.text].filter(Boolean).join(' '), fog: notWorkedOut(r) };
+    if (!r.id) return row;
+    const proof = proofOf(r.id, { report, raw: r.raw, aliases });
+    return { ...row, proof, done: doneOf(n.status === 'done', proof) };
+  });
+};
 const BASE_WEIGHT = { project: 8, area: 6, epic: 5, feature: 4, story: 3, task: 2, bug: 1.6, behavior: 1.2 };
 const SEVERITY = { off_track: 4, at_risk: 3, on_track: 2, not_started: 1, done: 0 };
 

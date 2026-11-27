@@ -493,6 +493,24 @@ const behaviours = [
     },
   ],
   [
+    'BEH-07 a behaviour is saved before more work is added to it: a child under one not yet in the store waits for its save',
+    {},
+    async (h) => {
+      const draft = (await h.call('POST', `/api/projects/${h.pid}/changesets`, {})).body.changeset;
+      const add = async (cs, parentId, title) => h.call('POST', `/api/projects/${h.pid}/changesets/${cs.id}/new`, { parentId, kind: 'task', title });
+      const parent = (await add(draft, 'root', 'Refunds')).body.node;
+      assert.equal((await add(draft, parent.id, 'Refund to the card')).status, 201, 'drafted in the same refinement, a child goes with it');
+      assert.equal((await h.call('POST', `/api/projects/${h.pid}/changesets/${draft.id}/accept`)).status, 200);
+      const later = (await h.call('POST', `/api/projects/${h.pid}/changesets`, {})).body.changeset;
+      const early = await add(later, parent.id, 'Refund as credit');
+      assert.equal(early.status, 409);
+      assert.match(early.body.error, /Save Refunds first/);
+      await h.save();
+      assert.equal((await h.sync.drain(h.pid)).status, 'synced');
+      assert.equal((await add(later, parent.id, 'Refund as credit')).status, 201, 'once saved, it takes more work');
+    },
+  ],
+  [
     "ADOPT-05 NEW-04 NEW-06 a new item adopted from someone else's refinement reaches the store at the next save, and one declined never does",
     {},
     async (h) => {

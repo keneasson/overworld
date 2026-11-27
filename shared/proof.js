@@ -23,10 +23,13 @@ export function viewableIn(raw) {
  * A behaviour's proof. `state` is what the latest report says (PROVEN-02): untested, passing or failing. `proven` is
  * whether its proof can be viewed and passes: its tests all pass, or with no tests, something viewable shows it.
  * @param {string} id the behaviour ID
- * @param {{ report?: object | null, raw?: string }} o the latest coverage report, and the behaviour's line in its issue
+ * @param {{ report?: object | null, raw?: string, aliases?: string[] }} o the latest coverage report, the behaviour's line in its
+ *   issue, and its other names (its store ID, when it is its own issue)
  */
-export function proofOf(id, { report = null, raw = '' } = {}) {
-  const b = report?.behaviours?.[id];
+export function proofOf(id, { report = null, raw = '', aliases = [] } = {}) {
+  // A behaviour's tests may name it by any of its names: its own ID, or its store's (#574) (#571 BEH-07).
+  const found = [id, ...aliases].map((k) => report?.behaviours?.[k]).filter(Boolean);
+  const b = found.length > 1 ? { passed: found.every((f) => f.passed), tests: found.flatMap((f) => f.tests ?? []), files: Object.assign({}, ...found.map((f) => f.files ?? {})) } : found[0];
   const tests = b?.tests ?? [];
   const viewable = viewableIn(raw);
   const state = !tests.length ? 'untested' : b.passed ? 'passing' : 'failing';
@@ -72,3 +75,6 @@ export function linesOf(ranges) {
       return Array.from({ length: b - a + 1 }, (_, i) => a + i);
     });
 }
+
+/** The store's name for the behaviour an item is the own node of (#571 BEH-07): `#574` for an issue holding one behaviour. */
+export const storeAliases = (issueNumber, rowCount) => (issueNumber && rowCount === 1 ? [`#${issueNumber}`] : []);

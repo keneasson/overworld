@@ -1,7 +1,7 @@
 // The coverage report (#20): each behaviour ID, its tests, pass or fail, and the files and lines its tests reached.
 // Nothing in it depends on when or where it was made, so the same commit always gives the same report (COVER-02).
 
-const BEHAVIOUR_ID = /\b[A-Z][A-Z0-9]*-\d+\b/g;
+const BEHAVIOUR_ID = /\b[A-Z][A-Z0-9]*-\d+\b|(?<![\w#])#\d+\b/g; // an ID, or a store's (#574, #571 BEH-07)
 
 /** Line numbers as ranges: [1, 2, 3, 7] -> '1-3,7'. */
 export function rangesOf(lines) {

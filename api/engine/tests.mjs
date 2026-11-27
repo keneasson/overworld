@@ -3,7 +3,7 @@
 // A project with no tests we can read gets its language instead, so its skeletons follow best practice for it (SKETCH-04).
 
 const TEST_CALL = /\b(test|it)(?:\.\w+)?\s*\(\s*(['"`])((?:(?!\2)[^\\]|\\.)*)\2/g;
-const BEHAVIOUR_ID = /\b[A-Z][A-Z0-9]*-\d+\b/g;
+const BEHAVIOUR_ID = /\b[A-Z][A-Z0-9]*-\d+\b|(?<![\w#])#\d+\b/g; // an ID, or a store's (#574, #571 BEH-07)
 const RUNNERS = [
   ['node', /from\s+['"]node:test['"]|require\(\s*['"]node:test['"]\s*\)/],
   ['vitest', /from\s+['"]vitest['"]/],

@@ -184,9 +184,16 @@ export function createAgents({ model, clock = Date.now, callsPerMinute = CALLS_P
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const owned = ownedByChildren(nodes); // a behaviour with a child issue of its own is claimed there
     const out = [];
-    for (const id of ids) {
+    for (const asked of ids) {
+      // A behaviour is named by its own ID or its store's: #574, 574 or issue-574 is the behaviour that issue stands for (#571 BEH-07).
+      const number = /^(?:#|issue-)?(\d+)$/.exec(asked)?.[1];
+      const own = number && nodes.find((n) => keyOf(n) === `issue-${number}`);
+      const id = own ? behavioursOf(own).length === 1 ? behavioursOf(own)[0].id : null : asked;
+      if (own && !id) throw new Refused(`${own.title} isn't one behaviour: name the behaviour you mean by its ID`);
       const node = nodes.find((n) => behavioursOf(n).some((b) => b.id === id) && !owned.get(n.id)?.has(id));
-      if (!node) throw new Refused(`${id} isn't a behaviour on the map`);
+      if (!node) throw new Refused(`${asked} isn't a behaviour on the map`);
+      // Work is only added to a behaviour that is saved, so nothing is ever claimed under a key the store hasn't given (BEH-07).
+      if (node.sync === 'unsaved' && keyOf(node).startsWith('node-')) throw new Refused(`${node.title} isn't saved yet: save it first, so its store ID is what the work names`);
       // A done item's behaviour whose proof now fails is work again (#21 PROVEN-07).
       if (mine.has(id) || brokenOf(node, report).some((b) => b.id === id)) {
         out.push({ id, node });

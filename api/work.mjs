@@ -15,8 +15,8 @@
 // A new item in an open refinement (NEW-03) needs improvement, and is never work, until a person adopts it.
 // When #32 lands, only this file changes.
 
-import { editableOf, hasOpenQuestions, itemKeyOf, notWorkedOut, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
-import { doneOf, proofOf } from '../shared/proof.js';
+import { editableOf, hasOpenQuestions, issueOf, itemKeyOf, notWorkedOut, parseBehaviours, parseIssue, sectionText } from '../shared/issue-shape.js';
+import { doneOf, proofOf, storeAliases } from '../shared/proof.js';
 
 const NOT_WORK = new Set(['project', 'area', 'epic']);
 const NOT_ITEMS = new Set(['project', 'area', 'behavior']); // places and spec rows: what an issue holds without being a parent
@@ -112,12 +112,15 @@ export const stateOf = (node) => (node.refinement ? 'needs improvement' : node.s
 export function buildingOf(node, claim, behaviour = null, report = null) {
   if (claim) return 'being coded';
   if (node.status !== 'done') return 'new';
-  const done = behaviour ? doneOf(true, proofOf(behaviour.id, { report, raw: behaviour.raw })) : 'done';
+  const done = behaviour ? doneOf(true, proofOf(behaviour.id, { report, raw: behaviour.raw, aliases: aliasesOf(node) })) : 'done';
   return done === 'done' ? 'coded' : done;
 }
 
 /** A done item's behaviours whose proof now fails (PROVEN-07): they are work again. */
-export const brokenOf = (node, report) => (node.status === 'done' && report ? behavioursOf(node).filter((b) => !b.fog && doneOf(true, proofOf(b.id, { report, raw: b.raw })) === 'broken') : []);
+export const brokenOf = (node, report) => (node.status === 'done' && report ? behavioursOf(node).filter((b) => !b.fog && doneOf(true, proofOf(b.id, { report, raw: b.raw, aliases: aliasesOf(node) })) === 'broken') : []);
+
+/** The store's name for an item's own behaviour, when it is one behaviour's own issue (#571 BEH-07). */
+export const aliasesOf = (node) => storeAliases(issueOf(node)?.number, behavioursOf(node).length);
 
 /**
  * Work that is new and unclaimed, grouped by item: bugs first (REPORT-07), then by priority, then by number. Only leaves (STATE-09):
