@@ -90,8 +90,8 @@ test('PROVEN-05 a report older than the code says so, with the commit it came fr
 });
 
 test('BEH-07 a test may name a behaviour by its store ID: #574 counts for the behaviour that issue stands for, beside its own ID', () => {
-  const report = buildReport([{ file: 'api/test/a.test.mjs', byFile: false, tests: [{ name: '#574 a new behaviour is saved first', passed: true, lines: {} }, { name: 'BEH-07 its old name still counts', passed: true, lines: {} }, { name: 'see issue#9 and x#3', passed: true, lines: {} }] }], { commit: 'c' });
-  assert.deepEqual(Object.keys(report.behaviours).sort(), ['#574', 'BEH-07'], 'only a store ID standing alone is one');
+  const report = buildReport([{ file: 'api/test/a.test.mjs', byFile: false, tests: [{ name: '#574 a new behaviour is saved first', passed: true, lines: {} }, { name: 'BEH-07 its old name still counts', passed: true, lines: {} }, { name: 'MCP-05 a mention of #9 is not a test of it', passed: true, lines: {} }] }], { commit: 'c' });
+  assert.deepEqual(Object.keys(report.behaviours).sort(), ['#574', 'BEH-07', 'MCP-05'], 'a store ID names a behaviour only where IDs lead the name');
   const proof = proofOf('BEH-07', { report, aliases: ['#574'] });
   assert.equal(proof.state, 'passing');
   assert.equal(proof.tests.length, 2);
